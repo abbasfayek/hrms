@@ -6,7 +6,7 @@ import { storage } from '../storage.js';
 import { toast } from './Toast.js';
 import { createModal } from './Modal.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, TERMINATION_REASONS, can, formatAmountWithCode, resolveEmployeeCurrency } from '../types.js';
+import { formatDate, TERMINATION_REASONS, can, formatAmountWithCode, resolveEmployeeCurrency } from '../types.js';
 import { calculateEOSB } from '../engines/eosbEngine.js';
 import { t, i18n } from '../i18n.js';
 
@@ -66,7 +66,7 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
         </div>
 
         <div class="form-group">
-          <label class="form-label">${isEn ? 'Additional Bonuses / Compensation' : 'مكافآت أو تعويضات إضافية'} (${csym})</label>
+          <label class="form-label">${isEn ? 'Additional Bonuses / Compensation' : 'مكافآت أو تعويضات إضافية'} (<span id="eosb-cur-code">${csym}</span>)</label>
           <input type="number" step="0.01" class="form-input" name="bonusCompensation" id="eosb-bonus" value="0">
         </div>
 
@@ -202,6 +202,15 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
         const emp = employees.find((e) => e.id === empId);
         if (!emp) return;
 
+        // P2.2 multi-currency: every figure shown in this breakdown is formatted
+        // with the EMPLOYEE's resolved currency CODE (e.g. "750,000.00 IQD") —
+        // never the global default symbol — so IQD amounts cannot be misread as USD.
+        const curRec = resolveEmployeeCurrency(emp, settings, companies);
+        const curCode = curRec.code || settings.currency || 'USD';
+        const curSym = curRec.symbol || csym;
+        const curCodeLabel = overlay.querySelector('#eosb-cur-code');
+        if (curCodeLabel) curCodeLabel.textContent = `${curCode} (${curSym})`;
+
         const terminationDate = termDateInput.value;
         const lastWorkingDay = lastWorkingDayInput.value || terminationDate;
         const reason = reasonSelect.value;
@@ -230,18 +239,18 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
         durationLabel.textContent = currentResult.settlementType === 'salary_bond'
           ? (isEn ? 'Salary bond (no service years)' : 'سند راتب (بدون سنوات خدمة)')
           : `${currentResult.serviceYears} ${isEn ? 'yrs' : 'سنة'}، ${currentResult.serviceMonths} ${isEn ? 'mo' : 'شهر'}، ${currentResult.serviceDays} ${isEn ? 'day(s)' : 'يوم'}`;
-        baseWageLabel.textContent = formatCurrency(currentResult.settlementType === 'salary_bond' ? currentResult.lastBasicSalary : currentResult.lastGrossSalary, csym);
+        baseWageLabel.textContent = formatAmountWithCode(currentResult.settlementType === 'salary_bond' ? currentResult.lastBasicSalary : currentResult.lastGrossSalary, curCode);
         const reasonLabel = TERMINATION_REASONS[currentResult.reason];
         const reasonText = typeof reasonLabel === 'object' ? (isEn ? reasonLabel.en : reasonLabel.ar) : (reasonLabel || currentResult.reason);
         ratioLabel.textContent = currentResult.settlementType === 'salary_bond'
           ? (isEn ? '100% (Salary Bond)' : '100% (سند راتب)')
           : `${Math.round(currentResult.entitlementRatio * 100)}% (${reasonText})`;
 
-        amountLabel.textContent = formatCurrency(currentResult.finalEOSBAmount, csym);
-        leaveCashoutLabel.textContent = `${formatCurrency(currentResult.leaveCompensationAmount, csym)} (${currentResult.unusedLeaveDays} ${isEn ? 'days' : 'يوم'})`;
-        finalSalaryLabel.textContent = formatCurrency(currentResult.finalMonthSalary, csym);
-        loansDeductLabel.textContent = `- ${formatCurrency(currentResult.remainingLoanDeductions, csym)}`;
-        netTotalLabel.textContent = formatCurrency(currentResult.netSettlementAmount, csym);
+        amountLabel.textContent = formatAmountWithCode(currentResult.finalEOSBAmount, curCode);
+        leaveCashoutLabel.textContent = `${formatAmountWithCode(currentResult.leaveCompensationAmount, curCode)} (${currentResult.unusedLeaveDays} ${isEn ? 'days' : 'يوم'})`;
+        finalSalaryLabel.textContent = formatAmountWithCode(currentResult.finalMonthSalary, curCode);
+        loansDeductLabel.textContent = `- ${formatAmountWithCode(currentResult.remainingLoanDeductions, curCode)}`;
+        netTotalLabel.textContent = formatAmountWithCode(currentResult.netSettlementAmount, curCode);
       }
 
       empSelect.addEventListener('change', updateCalculations);

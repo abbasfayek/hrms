@@ -4,7 +4,7 @@
 
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
-import { formatDate, TERMINATION_REASONS, can, resolveEmployeeCurrency, summarizeCurrencySegments, formatAmountWithCode } from '../types.js';
+import { formatDate, TERMINATION_REASONS, can, resolveEmployeeCurrency, formatAmountWithCode, summarizeCurrencySegmentsHtml } from '../types.js';
 import { openEOSBCalculatorModal } from './EOSBCalculatorModal.js';
 import { openClearanceCertificateModal } from './ClearanceCertificateModal.js';
 import { showConfirmDialog } from './Modal.js';
@@ -45,8 +45,9 @@ export function renderEOSBView(container, options = {}) {
   const fmtAmt = (item, amt) => formatAmountWithCode(amt, item.currency || curOf(item).code);
 
   // Financial KPI only counts fully disbursed settlements (paid or legacy).
-  // P2.2: totals stay segmented per currency, never merged.
-  const totalEOSBPaid = summarizeCurrencySegments(
+  // P2.2: totals stay segmented per currency, never merged — each currency on
+  // its own line with an explicit code so mixed-currency totals never overlap.
+  const totalEOSBPaid = summarizeCurrencySegmentsHtml(
     eosb
       .filter((item) => recordStatus(item) === 'paid')
       .map((item) => ({ code: item.currency || curOf(item).code, amount: Number(item.netSettlementAmount) || 0 }))

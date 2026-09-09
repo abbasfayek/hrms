@@ -298,3 +298,64 @@ export function generateBankPayrollFile(batch, settings) {
  * Legacy alias for backward compatibility with older imports.
  */
 export const generateWPSFile = generateBankPayrollFile;
+
+/**
+ * P2.2 "reject-and-return" rule: when the Financial Audit rejects a payroll,
+ * EVERY monetary figure in the batch is wiped to zero (statement renders as
+ * empty/zeros instead of showing the previously submitted amounts) and the
+ * batch is returned to HR as a draft. HR uses Recalculate to regenerate the
+ * figures from the live attendance, overtime, loans and absence records
+ * before re-submitting to the audit.
+ *
+ * Returns a NEW batch object; the input is never mutated.
+ */
+export function clearPayrollAmounts(batch, opts = {}) {
+  if (!batch) return batch;
+  const cleared = { ...batch, items: (batch.items || []).map((it) => ({ ...it })) };
+  cleared.status = 'draft';
+  cleared.auditStatus = 'rejected';
+  cleared.isAmountsCleared = true;
+  if (opts.rejectedBy) cleared.rejectedBy = opts.rejectedBy;
+  if (opts.rejectedAt) cleared.rejectedAt = opts.rejectedAt;
+  if (opts.auditNotes) cleared.auditNotes = opts.auditNotes;
+
+  cleared.items = cleared.items.map((it) => ({
+    ...it,
+    basicSalary: 0,
+    housingAllowance: 0,
+    transportAllowance: 0,
+    otherAllowances: 0,
+    overtimeAmount: 0,
+    bonuses: 0,
+    totalEarnings: 0,
+    grossSalary: 0,
+    gosiEmployeeDeduction: 0,
+    gosiCompanyContribution: 0,
+    loanInstallment: 0,
+    absentDays: 0,
+    absenceDeduction: 0,
+    lateMinutes: 0,
+    lateDeduction: 0,
+    otherDeductions: 0,
+    penaltiesDeduction: 0,
+    totalDeductions: 0,
+    netSalary: 0,
+    auditStatus: 'rejected',
+    isAmountsCleared: true,
+  }));
+
+  cleared.totalGross = 0;
+  cleared.totalDeductions = 0;
+  cleared.totalNet = 0;
+  cleared.totalGosi = 0;
+  cleared.totalCompanyGosi = 0;
+  cleared.totalEOSB = 0;
+  cleared.totalsByCurrency = (cleared.totalsByCurrency || []).map((g) => ({
+    code: g.code,
+    gross: 0,
+    deductions: 0,
+    net: 0,
+    gosi: 0,
+  }));
+  return cleared;
+}

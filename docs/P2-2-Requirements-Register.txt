@@ -133,5 +133,20 @@ HRMS - سجل متطلبات P2.2 (Requirements Register)
 4) القاعدة التنفيذية: طُبّقت — كل بند منفَّذ أعلاه كان مقابل
    Current -> Proposed -> تنفيذ -> اختبار معتمد في
    docs/P2-2-Business-Rules.txt، والاختبارات الآلية كلها خضراء
-   (npm run p22:test: 55/55، p21:test: 47/47).
+   (npm run p22:test: 78/78، p21:test: 47/47، release:test: 66/66).
+
+5) التسليم التكميلي المعتمد 2026-09-09 (كلها خضراء في p22):
+   - ربط العملات في تبويب EOSB: EOSBCalculatorModal.js يعرض كل بنود
+     الحساب التفصيلي برمز عملة الموظف (IQD (د.ع) لنفس الموظف)، و
+     ClearanceCertificateModal.js (المخالصة/Salary Bond) يطبع
+     المستحقات بعملة الموظف المدموغة على السجل بدلاً من رمز
+     الإعدادات العالمي ($).
+   - إجماليات متعددة العملات على أسطر ملونة منفصلة (LTR لكل سطر):
+     summarizeCurrencySegmentsHtml في PayrollView و EOSBView.
+   - أزرار Edit/Delete للسلف محمية (قفل المبلغ/القسط/المدة عند
+     وجود دفعات) + storage.updateLoan/deleteLoan.
+   - قاعدة رفض التدقيق (Reject-and-Return): رفض المدقق يُفرّغ
+     المسير إلى صفر (clearPayrollAmounts) ويعيده لمسؤول الرواتب
+     كمسودة مع تنبيه وزر إعادة الاحتساب للترحيل من البيانات الحية.
+     Enforced في PayrollView.js (نافذة تأكيد + addAudit reject).
 ============================================================

@@ -6,13 +6,16 @@
 import { storage } from '../storage.js';
 import { createModal } from './Modal.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, TERMINATION_REASONS, resolveEmployeeCurrency, escapeHtml } from '../types.js';
+import { formatDate, TERMINATION_REASONS, resolveEmployeeCurrency, formatAmountWithCode, escapeHtml } from '../types.js';
 import { i18n } from '../i18n.js';
 
 export function openClearanceCertificateModal(employeeOrEosb, customSettings = null) {
   const state = storage.getState();
   const settings = customSettings || state.settings || {};
-  const sym = (resolveEmployeeCurrency(employeeOrEosb, settings, state.companies).symbol) || settings.currencySymbol || '$';
+  // P2.2 multi-currency: the certificate prints the EMPLOYEE's currency CODE
+  // (stamped on the EOSB record at save time; resolved per employee otherwise)
+  // so IQD settlements are never implied as USD by a bare global symbol.
+  const curCode = employeeOrEosb.currency || resolveEmployeeCurrency(employeeOrEosb, settings, state.companies).code || settings.currency || 'USD';
   const isEn = i18n.getLang() === 'en';
 
   // Support both employee or eosb record
@@ -206,24 +209,24 @@ export function openClearanceCertificateModal(employeeOrEosb, customSettings = n
         ${
           isSalaryBond
             ? `<div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; font-size:13px;">
-          <div>${isEn ? 'Nominal Salary (Final Month Worked Days): ' : 'الراتب الاسمي (أيام العمل في الشهر الأخير): '}<strong>${formatCurrency(finalMonthSalary, sym)}</strong></div>
-          <div>${isEn ? 'Additional Bonuses / Compensation: ' : 'المكافآت أو التعويضات الإضافية: '}<strong>${formatCurrency(employeeOrEosb.bonusCompensation || 0, sym)}</strong></div>
+          <div>${isEn ? 'Nominal Salary (Final Month Worked Days): ' : 'الراتب الاسمي (أيام العمل في الشهر الأخير): '}<strong>${formatAmountWithCode(finalMonthSalary, curCode)}</strong></div>
+          <div>${isEn ? 'Additional Bonuses / Compensation: ' : 'المكافآت أو التعويضات الإضافية: '}<strong>${formatAmountWithCode(employeeOrEosb.bonusCompensation || 0, curCode)}</strong></div>
         </div>
         <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; font-size:13px; margin-top:8px;">
-          <div>${isEn ? 'End of Service Benefit: ' : 'مكافأة نهاية الخدمة: '}<strong>0.00 ${sym}</strong></div>
-          <div>${isEn ? 'Unused Leave Cashout: ' : 'بدل رصيد الإجازات: '}<strong>0.00 ${sym}</strong></div>
+          <div>${isEn ? 'End of Service Benefit: ' : 'مكافأة نهاية الخدمة: '}<strong>0.00 ${curCode}</strong></div>
+          <div>${isEn ? 'Unused Leave Cashout: ' : 'بدل رصيد الإجازات: '}<strong>0.00 ${curCode}</strong></div>
         </div>
         <div style="border-top:1px solid #e2e8f0; margin-top:10px; padding-top:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <span style="font-weight:800; font-size:14px;">${isEn ? 'Total paid to the employee under this salary bond:' : 'إجمالي المبلغ المصروف للموظف بموجب هذا السند:'}</span>
-          <span style="font-weight:900; font-size:18px; color:#059669;">${formatCurrency(netAmount, sym)}</span>
+          <span style="font-weight:900; font-size:18px; color:#059669;">${formatAmountWithCode(netAmount, curCode)}</span>
         </div>`
             : `<div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; font-size:13px;">
-          <div>${isEn ? 'End of Service Benefit: ' : 'مكافأة نهاية الخدمة: '}<strong>${formatCurrency(eosbAmount, sym)}</strong></div>
-          <div>${isEn ? 'Unused Leave Cashout: ' : 'بدل رصيد الإجازات: '}<strong>${formatCurrency(leaveComp, sym)}</strong></div>
+          <div>${isEn ? 'End of Service Benefit: ' : 'مكافأة نهاية الخدمة: '}<strong>${formatAmountWithCode(eosbAmount, curCode)}</strong></div>
+          <div>${isEn ? 'Unused Leave Cashout: ' : 'بدل رصيد الإجازات: '}<strong>${formatAmountWithCode(leaveComp, curCode)}</strong></div>
         </div>
         <div style="border-top:1px solid #e2e8f0; margin-top:10px; padding-top:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <span style="font-weight:800; font-size:14px;">${isEn ? 'Total amount paid to the employee under this clearance:' : 'إجمالي المبلغ المصروف للموظف بموجب هذه المخالصة:'}</span>
-          <span style="font-weight:900; font-size:18px; color:#059669;">${formatCurrency(netAmount, sym)}</span>
+          <span style="font-weight:900; font-size:18px; color:#059669;">${formatAmountWithCode(netAmount, curCode)}</span>
         </div>`
         }
       </div>

@@ -43,7 +43,7 @@ const {
   listCompanyHolidayDatesInRange,
   countAbsenceDays,
 } = await import(`${JS}types.js`);
-const { generateMonthlyPayroll } = await import(`${JS}engines/payrollEngine.js`);
+const { generateMonthlyPayroll, clearPayrollAmounts } = await import(`${JS}engines/payrollEngine.js`);
 const { getApprovedOvertimeSummary } = await import(`${JS}engines/overtimeEngine.js`);
 
 store.clear();
@@ -230,6 +230,19 @@ const htmlNeg = summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 100 }], { 
 ok('negative totals prefix every line with a minus', htmlNeg.includes('- 100.00'));
 ok('single-currency total still renders a code line', summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 1500 }]).includes('1,500.00 <span'));
 ok('empty segments render a 0.00 placeholder', summarizeCurrencySegmentsHtml([]).includes('0.00'));
+
+console.log('  [P2.2 reject-and-return (audit rejection clears amounts)]');
+const clearedMC = clearPayrollAmounts(batchMC, { rejectedBy: 'Auditor X', rejectedAt: '2026-02-15T10:00:00.000Z', auditNotes: '[Audit rejected] Auditor X — amounts cleared, recalculate before re-submission' });
+ok('rejection returns the batch to HR (status draft)', clearedMC.status === 'draft' && clearedMC.auditStatus === 'rejected');
+ok('rejection stamps the rejector and timestamp', clearedMC.rejectedBy === 'Auditor X' && clearedMC.rejectedAt === '2026-02-15T10:00:00.000Z');
+ok('rejection appends the auditor note', clearedMC.auditNotes.includes('amounts cleared'));
+ok('rejection zeroes every item netSalary', clearedMC.items.every((it) => it.netSalary === 0 && it.basicSalary === 0 && it.grossSalary === 0 && it.totalDeductions === 0 && it.overtimeAmount === 0));
+ok('rejection zeroes every item auditStatus and flags cleared', clearedMC.items.every((it) => it.auditStatus === 'rejected' && it.isAmountsCleared === true));
+ok('rejection zeroes batch totals (legacy + per-currency)', clearedMC.totalGross === 0 && clearedMC.totalDeductions === 0 && clearedMC.totalNet === 0 && clearedMC.totalGosi === 0 && clearedMC.totalEOSB === 0);
+ok('rejection zeroes all totalsByCurrency segments, keeping codes', clearedMC.totalsByCurrency.length === 2 && clearedMC.totalsByCurrency.every((g) => g.gross === 0 && g.deductions === 0 && g.net === 0 && g.gosi === 0));
+ok('clearPayrollAmounts never mutates the submitted batch', Math.abs(batchMC.totalNet - (itA.netSalary + itB.netSalary)) < 0.01 && batchMC.items.every((it) => it.netSalary > 0) && batchMC.totalsByCurrency.some((g) => g.net > 0));
+const recalculated = generateMonthlyPayroll([empA, empB], stateMC.overtime, stateMC.loans, stateMC.attendance, { month: '2026-02', issueDate: '2026-02-28', title: 'MC-recalc', companies: defaultCompanies }, stateMC.settings);
+ok('HR recalculation after rejection regenerates live amounts (non-zero)', recalculated.totalNet > 0 && recalculated.items.every((it) => it.netSalary > 0));
 
 console.log('\n============================================');
 console.log(`P2.2 TEST MATRIX: ${passed} passed, ${failed} failed`);
