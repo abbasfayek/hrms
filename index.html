@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>بينو سوفت | نظام إدارة الموارد البشرية</title>
+  <meta name="description" content="بينو سوفت — نظام إدارة الموارد البشرية وشؤون الموظفين المتكامل: رواتب، إجازات، ترحيل رصيد السنة، عمل إضافي، استقالات، ومكافأة نهاية الخدمة">
+  <link rel="stylesheet" href="/public/css/app.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- SheetJS for real Excel import & export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+  <!-- 1. Login View Container (Rendered when unauthenticated) -->
+  <div id="app-login-wrapper" style="display:none;"></div>
+
+  <!-- 2. Main Authenticated App Container -->
+  <div class="app-container" id="app-main-wrapper" style="display:none;">
+    
+    <!-- Sidebar -->
+    <aside class="sidebar" id="app-sidebar">
+      <div class="sidebar-header">
+        <div class="brand-logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+        </div>
+        <div class="brand-info">
+<h2 data-i18n="appTitle">بينو سوفت</h2>
+          <p data-i18n="appSubtitle">بينو سوفت — نظام إدارة الموارد البشرية</p>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section-title" data-i18n="mainSection">الرئيسية والتحليلات</div>
+        <a href="#" class="nav-item active" data-route="dashboard">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span data-i18n="dashboard">لوحة التحكم المركزية</span>
+        </a>
+
+        <div class="nav-section-title" data-i18n="operationsSection">إدارة الموظفين والعمليات</div>
+        <a href="#" class="nav-item" data-route="employees">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span data-i18n="employees">دليل وشؤون الموظفين</span>
+          <span class="nav-badge" id="badge-nav-employees"></span>
+        </a>
+
+<a href="#" class="nav-item" data-route="leaves">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>
+          <span data-i18n="leaves">الإجازات والأرصدة</span>
+          <span class="nav-badge" id="badge-nav-leaves" style="background:var(--warning);"></span>
+        </a>
+
+        <a href="#" class="nav-item" data-route="hourly-leaves">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span data-i18n="hourlyLeaves">الإجازات الزمنية</span>
+        </a>
+
+
+        <a href="#" class="nav-item" data-route="attendance">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span data-i18n="attendance">العمل الإضافي والحضور</span>
+          <span class="nav-badge" id="badge-nav-attendance" style="background:var(--primary);"></span>
+        </a>
+
+        <div class="nav-section-title" data-i18n="financeSection">الشؤون المالية والرواتب</div>
+        <a href="#" class="nav-item" data-route="payroll">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <span data-i18n="payroll">مسير الرواتب والزيادات</span>
+        </a>
+
+        <a href="#" class="nav-item" data-route="eosb">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/></svg>
+          <span data-i18n="eosb">الاستقالات ونهاية الخدمة</span>
+        </a>
+
+        <div class="nav-section-title" data-i18n="systemSection">الشركات والنظام</div>
+        <a href="#" class="nav-item" data-route="companies">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="20" x="4" y="2" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M8 10h.01"/><path d="M16 10h.01"/><path d="M8 14h.01"/><path d="M16 14h.01"/></svg>
+          <span data-i18n="companies">الشركات والفروع</span>
+        </a>
+
+<a href="#" class="nav-item" data-route="users">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            <span data-i18n="users">المستخدمون والصلاحيات</span>
+          </a>
+
+          <a href="#" class="nav-item" data-route="audit">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+            <span data-i18n="audit">سجل التدقيق</span>
+          </a>
+
+        <a href="#" class="nav-item" data-route="reports">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+          <span data-i18n="reports">التقارير والتصدير الشامل</span>
+        </a>
+
+        <a href="#" class="nav-item" data-route="settings">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span data-i18n="settings">إعدادات النظام والمنشأة</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="user-profile-badge">
+          <div class="user-avatar" id="user-footer-avatar">م</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:13.5px; color:var(--text-main); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;" id="user-footer-name">المدير العام</div>
+            <div style="font-size:11.5px; color:var(--text-muted); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;" id="user-footer-role">صلاحية عامة (Super Admin)</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Wrapper -->
+    <div class="main-wrapper">
+      <!-- Navbar -->
+      <header class="navbar">
+        <div class="navbar-right">
+          <button type="button" class="btn btn-icon btn-outline" id="btn-sidebar-toggle" style="display:none;" title="القائمة">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+          </button>
+          <div class="page-title">
+            <h1 id="page-title-text" data-i18n="dashboard">لوحة التحكم المركزية</h1>
+            <p id="page-sub-text" data-i18n="appSubtitle">نظرة عامة على مؤشرات الأداء وإدارة الموارد البشرية</p>
+          </div>
+        </div>
+
+        <!-- Global Multi-Company & User Actions in Header -->
+        <div class="navbar-actions" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          
+          <!-- Company Selector -->
+          <div style="display:flex; align-items:center; gap:4px;">
+            <select class="form-select" id="topbar-company-select" style="font-size:12.5px; padding:6px 10px; width:auto; max-width:210px; font-weight:700; background:var(--bg-card-hover);">
+              <!-- Rendered dynamically -->
+            </select>
+          </div>
+
+          <!-- Branch Selector -->
+          <div style="display:flex; align-items:center; gap:4px;">
+            <select class="form-select" id="topbar-branch-select" style="font-size:12.5px; padding:6px 10px; width:auto; max-width:180px; font-weight:600; background:var(--bg-card-hover);">
+              <!-- Rendered dynamically -->
+            </select>
+          </div>
+
+          <!-- User Name Pill -->
+          <div style="display:flex; align-items:center; gap:6px; background:var(--primary-light); padding:4px 10px; border-radius:var(--radius-md); border:1px solid rgba(79,70,229,0.2);">
+            <span style="width:8px; height:8px; border-radius:50%; background:var(--success); display:inline-block;"></span>
+            <span style="font-size:12.5px; font-weight:700; color:var(--primary);" id="topbar-user-name">المدير العام</span>
+          </div>
+
+          <!-- Language Switcher Button (AR / EN) -->
+          <button type="button" class="btn btn-sm btn-outline" id="btn-lang-toggle" style="font-weight:700;">
+            <span>🌐 English</span>
+          </button>
+
+          <!-- Theme Toggle Button -->
+          <button type="button" class="btn btn-icon btn-outline" id="btn-theme-toggle" title="تغيير المظهر">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+          </button>
+
+          <!-- Deletion Log / Recovery (super admin & programmer only) -->
+          <button type="button" class="btn btn-icon btn-outline" id="btn-restore-records" title="سجل الحذف والاسترجاع" style="display:none;">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+          </button>
+
+          <!-- Logout Button -->
+          <button type="button" class="btn btn-sm btn-outline" id="btn-logout" style="color:var(--danger); border-color:rgba(239,68,68,0.3);" title="تسجيل الخروج">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+            <span data-i18n="logout">خروج</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main Dynamic View Container -->
+      <main id="view-content" class="content-body">
+        <!-- Rendered dynamically by JavaScript -->
+      </main>
+    </div>
+
+  </div>
+
+  <script type="module" src="/public/js/app.js?v=6.21"></script>
+</body>
+</html>
+

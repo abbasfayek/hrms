@@ -1,0 +1,526 @@
+${b.pendingDays > 0 ? `<span class="badge badge-warning">${b.pendingDays} يوم معلق</span>` : `<span style="color:var(--text-muted);">-</span>`}
+${emp.isSubjectToGosi ? `<span class="badge badge-success">${isEn ? 'Covered' : 'خاضع'} (${formatCurrency(emp.gosiRegisteredWage, sym)})</span>` : `<span class="badge badge-gray">${isEn ? 'Exempt' : 'غير خاضع'}</span>`}
+${isArchive ? `<span style="font-size:12px; color:var(--text-muted);">${isEn ? 'Historical records preserved and excluded from active payroll runs' : 'جميع السجلات محفوظة تاريخياً ولا يتم استهلاكها في مسيرات الرواتب الجديدة'}</span>` : ''}
+${isEn ? 'Parsed Data Preview' : 'معاينة البيانات المستخرجة'} (<span id="preview-count">0</span> ${isEn ? 'employees' : 'موظف'})
+${notes ? `<div class="notes-box">📝 البيان والملاحظات: ${notes}</div>` : ''}
+${settings.defaultHourlyLeaveQuota || 4} <span style="font-size:14px; font-weight:600;">${isEn ? 'hrs/month' : 'ساعة/شهر'}</span>
+${totalDeductions === 0 ? `<tr><td colspan="2" style="padding:7px 0; color:var(--text-muted); text-align:center;">لا توجد استقطاعات</td></tr>` : ""}
+${totalHoursApproved} <span style="font-size:14px; font-weight:600;">${isEn ? 'hrs' : 'ساعة'}</span>
+: `<div style="color:var(--text-muted); font-size:12.5px;">${isEn ? 'Employee is not registered in social security.' : 'الموظف غير مشمول باشتراك الضمان الاجتماعي.'}</div>`
+: `<span class="badge badge-warning">${isEn ? 'Pending' : 'قيد الانتظار'}</span>`
+: `<span style="color:#d97706; font-weight:700;">بعد ${b.daysLeft} يوم • ${b.age} سنة</span>`}
+<button onclick="window.print()" style="padding:10px 30px; background:#4f46e5; color:#fff; border:none; border-radius:8px; font-size:15px; font-weight:700; cursor:pointer;">🖨️ طباعة الوصل</button>
+<button type="button" class="btn btn-icon btn-outline" id="btn-sidebar-toggle" style="display:none;" title="ط§ظ„ظ‚ط§ط¦ظ…ط©">
+<button type="button" class="btn btn-icon btn-outline" id="btn-theme-toggle" title="طھط؛ظٹظٹط± ط§ظ„ظ…ط¸ظ‡ط±">
+<button type="button" class="btn btn-outline" id="btn-print-loan-receipt">🖨️ طباعة الوصل فقط</button>
+<button type="button" class="btn btn-outline" id="btn-print-payslip">🖨️ طباعة القسيمة</button>
+<button type="button" class="btn btn-primary submit-att-btn">حفظ حركة الحضور</button>
+<button type="button" class="btn btn-primary submit-ded-bonus-btn">✓ حفظ وتطبيق</button>
+<button type="button" class="btn btn-primary submit-hl-btn">✓ تسجيل الإجازة الزمنية</button>
+<button type="button" class="btn btn-primary submit-hol-btn">${isEdit ? t('save') : 'إضافة العطلة الرسمية'}</button>
+<button type="button" class="btn btn-primary submit-loan-btn">تسجيل واعتماد السلفة</button>
+<button type="button" class="btn btn-primary submit-ot-btn">تسجيل واعتماد العمل الإضافي</button>
+<button type="button" class="btn btn-primary" id="btn-save-loan-payment">✓ تسجيل الدفعة وحفظ الوصل</button>
+<button type="button" class="btn btn-secondary close-modal-btn">${isEn ? 'Cancel' : 'إلغاء'}</button>
+<button type="button" class="btn btn-secondary close-modal-btn">إغلاق</button>
+<button type="button" class="btn btn-sm ${statusFilter === 'all' ? 'btn-primary' : 'btn-outline'} filter-btn" data-status="all">${isEn ? 'All' : 'الكل'} (${monthLeaves.length})</button>
+<button type="button" class="btn btn-sm ${statusFilter === 'approved' ? 'btn-primary' : 'btn-outline'} filter-btn" data-status="approved">${isEn ? 'Approved' : 'معتمدة'}</button>
+<button type="button" class="btn btn-sm ${statusFilter === 'pending' ? 'btn-primary' : 'btn-outline'} filter-btn" data-status="pending">${isEn ? 'Pending' : 'معلقة'} (${pendingRequests.length})</button>
+<button type="button" class="btn btn-sm ${statusFilter === 'rejected' ? 'btn-primary' : 'btn-outline'} filter-btn" data-status="rejected">${isEn ? 'Rejected' : 'مرفوضة'}</button>
+<button type="button" class="btn btn-sm btn-danger btn-reject-leave" title="${t('reject')}>${Icons.x(14)} رفض</button>
+<button type="button" class="btn btn-sm btn-outline btn-payslip-emp" style="color:var(--primary); font-size:11.5px; padding:4px 8px;" title="${isEn ? 'View Payslip' : 'قسيمة الراتب'}">
+<button type="button" class="btn btn-sm btn-outline" id="btn-logout" style="color:var(--danger); border-color:rgba(239,68,68,0.3);" title="طھط³ط¬ظٹظ„ ط§ظ„ط®ط±ظˆط¬">
+<button type="button" class="btn btn-sm btn-success btn-approve-leave" title="${t('approve')}>${Icons.check(14)} اعتماد</button>
+<div class="badge-receipt">وصل تسديد سلفة رسمي</div>
+<div class="info-row"><span>إجمالي السلفة الأصلية</span><strong>${formatCurrency(l.totalAmount, sym)}</strong></div>
+<div class="info-row"><span>اسم الموظف</span><strong>${emp?.fullName || '-'}</strong></div>
+<div class="info-row"><span>تاريخ الدفع</span><strong>${payDate || new Date().toLocaleDateString('en-US')}</strong></div>
+<div class="info-row"><span>رقم الوصل</span><strong>${receiptNo}</strong></div>
+<div class="info-row"><span>طريقة السداد</span><strong>${methodText}</strong></div>
+<div class="label">المبلغ المسدَّد في هذه الدفعة</div>
+<div class="nav-section-title" data-i18n="financeSection">ط§ظ„ط´ط¤ظˆظ† ط§ظ„ظ…ط§ظ„ظٹط© ظˆط§ظ„ط±ظˆط§طھط¨</div>
+<div class="nav-section-title" data-i18n="mainSection">ط§ظ„ط±ط¦ظٹط³ظٹط© ظˆط§ظ„طھط­ظ„ظٹظ„ط§طھ</div>
+<div class="nav-section-title" data-i18n="operationsSection">ط¥ط¯ط§ط±ط© ط§ظ„ظ…ظˆط¸ظپظٹظ† ظˆط§ظ„ط¹ظ…ظ„ظٹط§طھ</div>
+<div class="nav-section-title" data-i18n="systemSection">ط§ظ„ط´ط±ظƒط§طھ ظˆط§ظ„ظ†ط¸ط§ظ…</div>
+<div class="stat-label">إجمالي رصيد الإجازات المتبقي لكافة الموظفين</div>
+<div class="stat-label">نظام احتساب مكافأة نهاية الخدمة</div>
+<div class="stat-sub">استقالات وإنهاء عقود</div>
+<div class="stat-sub">تشمل المكافأة وبدل الإجازات</div>
+<div class="stat-sub">مع نظام العمل ولوائح الاستقالة</div>
+<div class="stat-value" style="font-size:17px;">متوافق 100%</div>
+<div class="stat-value">${pendingLeaves.length} طلب</div>
+<div class="stat-value">${totalRemainingDays.toFixed(1)} يوم</div>
+<div class="stat-value">${totalUsedDays} يوم</div>
+<div class="user-avatar" id="user-footer-avatar">ظ…</div>
+<div style="color:#065f46; font-size:12px; font-weight:700;">الراتب الجديد بعد تطبيق الزيادة:</div>
+<div style="color:var(--text-muted); font-size:11.5px;">${isEn ? 'National ID / Iqama' : 'رقم الهوية / الإقامة'}</div>
+<div style="color:var(--text-muted); font-size:11.5px;">${isEn ? 'Passport Number' : 'رقم جواز السفر'}</div>
+<div style="color:var(--text-muted); font-size:12px;">(مرحّل: ${bal.carriedOver} • مستهلك: ${bal.usedAnnualDays})</div>
+<div style="color:var(--text-muted); font-size:12px;">الراتب الحالي قبل الزيادة:</div>
+<div style="color:var(--text-muted);">${isEn ? 'Company Share' : 'مساهمة الشركة'} (${employee.gosiCompanyPercent || 11.75}%)</div>
+<div style="color:var(--text-muted);">${isEn ? 'Emp Deduction' : 'استقطاع الموظف'} (${employee.gosiEmployeePercent || 9.75}%)</div>
+<div style="color:var(--text-muted);">${isEn ? 'Registered Wage' : 'الأجر المسجل'}</div>
+<div style="color:var(--text-muted);">الأجر المعتمد للحساب</div>
+<div style="color:var(--text-muted);">مدة الخدمة الفعلية</div>
+<div style="color:var(--text-muted);">نسبة الاستحقاق النظامية</div>
+<div style="font-size:11.5px; color:#065f46; font-weight:600;" id="inc-new-basic-label">أساسي: 0.00 ر.س</div>
+<div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${isEn ? 'Awaiting HR decision' : 'بانتظار قرار الموارد البشرية'}</div>
+<div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${isEn ? 'During month' : 'خلال شهر'} ${selectedMonth}</div>
+<div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${isEn ? 'Hourly exit passes' : 'إذن مغادرة بالساعة'}</div>
+<div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${isEn ? 'Per employee per month' : 'لكل موظف شهرياً'}</div>
+<div style="font-size:11.5px; color:var(--text-muted); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;" id="user-footer-role">طµظ„ط§ط­ظٹط© ط¹ط§ظ…ط© (Super Admin)</div>
+<div style="font-size:11.5px; color:var(--text-muted);" id="inc-old-basic-label">أساسي: 0.00 ر.س</div>
+<div style="font-size:11.5px; color:var(--text-muted);">إضافة مبلغ إلى الراتب الشهري</div>
+<div style="font-size:11.5px; color:var(--text-muted);">اقتطاع مبلغ من الراتب الشهري</div>
+<div style="font-size:11px; color:#64748b; margin-top:4px;">التوقيع والتاريخ</div>
+<div style="font-size:11px; color:#64748b; margin-top:4px;">الختم والاعتماد</div>
+<div style="font-size:11px; color:#64748b; margin-top:4px;">توقيع المستلم</div>
+<div style="font-size:11px; color:#64748b;">رقم السند: REC-${it.employeeNumber}-${payrollBatch.month} • تاريخ الإصدار: ${formatDate(payrollBatch.issueDate)}</div>
+<div style="font-size:12.5px; color:var(--text-muted);">${comp.nameEn || ''} • كود: <span style="font-weight:700;">${comp.code}</span></div>
+<div style="font-size:12.5px; color:var(--text-muted);">سيتم إضافة/اقتطاع هذا المبلغ من مسير رواتب الموظف في الشهر المحدد تلقائياً</div>
+<div style="font-size:12.5px; font-weight:700; color:#0f172a; margin-top:6px;">فترة الراتب: ${payrollBatch.month}</div>
+<div style="font-size:12px; color:#64748b; margin-top:2px;">السجل التجاري: ${settings.commercialRegistration || '-'}</div>
+<div style="font-size:12px; color:#64748b; margin-top:4px;">التاريخ: ${formatDate(new Date().toISOString())}</div>
+<div style="font-size:12px; color:#cbd5e1;">صافي الراتب المستحق للصرف والتحويل (Net Payable Salary)</div>
+<div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Approved Permissions Count' : 'إجمالي أذونات الخروج المعتمدة'}</div>
+<div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Default Monthly Quota' : 'حصة الساعات الافتراضية'}</div>
+<div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Pending Approvals' : 'الطلبات المعلقة للموافقة'}</div>
+<div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Total Approved Hours (Month)' : 'إجمالي الساعات المصروفة للشهر'}</div>
+<div style="font-size:12px; color:var(--text-muted);">${parsedEmployees.length} ${isEn ? 'records parsed' : 'موظف تم استخراجه'}</div>
+<div style="font-size:13px; color:var(--text-muted); margin-top:4px;">Payslip - ${month} | تاريخ الطباعة: ${today.toLocaleDateString("ar")}</div>
+<div style="font-size:13px; color:var(--text-muted);">صافي الراتب للشهر الكامل (${daysInMonth} يوم)</div>
+<div style="font-size:13px; color:var(--text-muted);">صافي حتى اليوم (${daysWorked} يوم)</div>
+<div style="font-size:13px; margin-top:4px;">انقر على زر "إضافة شركة جديدة" لإنشاء أول شركة.</div>
+<div style="font-size:15px; font-weight:700;">لا توجد شركات مسجلة حالياً</div>
+<div style="font-size:22px; font-weight:900; color:var(--primary);">📋 قسيمة الراتب التفصيلية</div>
+<div style="font-weight:700; font-size:13.5px; color:var(--text-main); white-space:nowrap; text-overflow:ellipsis; overflow:hidden;" id="user-footer-name">ط§ظ„ظ…ط¯ظٹط± ط§ظ„ط¹ط§ظ…</div>
+<div style="font-weight:700; font-size:14px; color:var(--text-main);">إدارة وتفريغ البيانات</div>
+<div style="font-weight:700; font-size:14px; margin-bottom:10px; color:var(--text-main);">${Icons.dollar(16)} ${isEn ? 'Active Advances & Loans' : 'السلف والقروض النشطة'}</div>
+<div style="font-weight:700; font-size:16px; color:var(--text-main);" id="inc-old-salary-label">0.00 ر.س</div>
+<div style="font-weight:700; margin-bottom:10px; color:var(--text-main);">${Icons.briefcase(16)} ${isEn ? 'Job & Personal Details' : 'بيانات العمل والتعاقد والشخصية'}</div>
+<div style="font-weight:800; font-size:17px; color:var(--success);" id="inc-new-salary-label">0.00 ر.س</div>
+<div style="grid-column: span 1;">الآيبان IBAN: <strong style="font-family:monospace; color:#0f172a; font-size:11.5px;">${it.iban}</strong></div>
+<div>${isEn ? 'Bank Name' : 'اسم البنك'}: <strong style="color:var(--text-main);">${employee.bankName || '-'}</strong></div>
+<div>${isEn ? 'Contract Type' : 'نوع العقد'}: <strong style="color:var(--text-main);">${CONTRACT_TYPE_LABELS[employee.contractType]?.ar || employee.contractType}</strong></div>
+<div>${isEn ? 'Date of Birth' : 'تاريخ الميلاد'}: <strong style="color:var(--text-main);">${formatDate(employee.dateOfBirth)}</strong></div>
+<div>${isEn ? 'Email' : 'البريد الإلكتروني'}: <strong style="color:var(--text-main);">${employee.email || '-'}</strong></div>
+<div>${isEn ? 'Employee ID' : 'الرقم الوظيفي'}: <strong style="color:var(--text-main);">${employee.employeeNumber}</strong></div>
+<div>${isEn ? 'Hire Date' : 'تاريخ المباشرة'}: <strong style="color:var(--text-main);">${formatDate(employee.hireDate)}</strong></div>
+<div>${isEn ? 'IBAN' : 'الآيبان'}: <strong style="color:var(--text-main);">${employee.iban || employee.bankAccountNumber || '-'}</strong></div>
+<div>${isEn ? 'Nationality' : 'الجنسية'}: <strong style="color:var(--text-main);">${employee.nationality || 'سعودي'}</strong></div>
+<div>${isEn ? 'Phone' : 'رقم الجوال'}: <strong style="color:var(--text-main);">${employee.phone || '-'}</strong></div>
+<div><span style="color:var(--text-muted);">إجمالي السلفة:</span><br><strong>${formatCurrency(l.totalAmount, sym)}</strong></div>
+<div><span style="color:var(--text-muted);">الرقم الوظيفي: </span><strong>${employee.employeeNumber}</strong></div>
+<div><span style="color:var(--text-muted);">الشهر المحاسبي: </span><strong>${month} (${daysWorked}/${daysInMonth} يوم)</strong></div>
+<div><span style="color:var(--text-muted);">القسط الشهري:</span><br><strong>${formatCurrency(l.installmentAmount, sym)}</strong></div>
+<div><span style="color:var(--text-muted);">القسم: </span><strong>${employee.department}</strong></div>
+<div><span style="color:var(--text-muted);">المبلغ المتبقي:</span><br><strong style="color:var(--danger);">${formatCurrency(l.remainingAmount, sym)}</strong></div>
+<div><span style="color:var(--text-muted);">المسمى الوظيفي: </span><strong>${employee.jobTitle}</strong></div>
+<div><span style="color:var(--text-muted);">الموظف: </span><strong>${employee.fullName}</strong></div>
+<div><span style="color:var(--text-muted);">الموظف:</span><br><strong>${emp ? emp.fullName : '-'}</strong></div>
+<div><span style="color:var(--text-muted);">تاريخ التعيين: </span><strong>${formatDate(employee.hireDate)}</strong></div>
+<div><span style="color:var(--text-muted);">سبب السلفة:</span><br><strong>${l.reason || '-'}</strong></div>
+<div><span style="color:var(--text-muted);">عدد الأقساط المتبقية:</span><br><strong>${l.remainingInstallments || '-'} قسط</strong></div>
+<div>اسم الموظف: <strong style="color:#0f172a; font-size:13.5px;">${it.employeeName}</strong></div>
+<div>البنك المحول إليه: <strong style="color:#0f172a;">${it.bankName}</strong></div>
+<div>التوقيع والتاريخ</div>
+<div>التوقيع</div>
+<div>الرقم الوظيفي: <strong style="color:#0f172a;">${it.employeeNumber}</strong></div>
+<div>القسم / الإدارة: <strong style="color:#0f172a;">${it.department}</strong></div>
+<div>المسمى الوظيفي: <strong style="color:#0f172a;">${it.jobTitle}</strong></div>
+<div>الموظف المستفيد (إقرار واستلام)</div>
+<div>بدل رصيد الإجازات: <strong>${formatCurrency(leaveComp, sym)}</strong></div>
+<div>مسؤول المالية والرواتب (إعداد)</div>
+<div>مكافأة نهاية الخدمة: <strong>${formatCurrency(eosbAmount, sym)}</strong></div>
+<h1 id="page-title-text" data-i18n="dashboard">ظ„ظˆط­ط© ط§ظ„طھط­ظƒظ… ط§ظ„ظ…ط±ظƒط²ظٹط©</h1>
+<h1>${settings.companyName || 'الشركة الرئيسية'}</h1>
+<h2 data-i18n="appTitle">ظ†ط¸ط§ظ… ط§ظ„ظ…ظˆط§ط±ط¯ ط§ظ„ط¨ط´ط±ظٹط©</h2>
+<h2 style="font-size: 22px; font-weight: 900; color: var(--text-main);">${isEn ? 'HR Management System' : 'نظام إدارة الموارد البشرية'}</h2>
+<h2 style="font-size:20px; font-weight:900; color:#0f172a;">${settings.companyName || 'الشركة'}</h2>
+<h4 style="font-size:14px; font-weight:700; color:var(--text-main);">معاينة أثر الترحيل على الموظفين</h4>
+<h4 style="font-size:14px; font-weight:800; margin-bottom:10px; color:#0f172a;">بيان التصفية المالية المستحقة:</h4>
+<h4 style="font-size:14px; font-weight:800; margin-bottom:10px; color:#0f172a;">بيان تسليم العهد وإخلاء الطرف الإداري:</h4>
+<input type="number" class="form-input" id="loan-pay-amount" step="0.01" min="0.01" placeholder="أدخل مبلغ التسديد">
+<input type="number" class="form-input" name="amount" step="0.01" min="0.01" required placeholder="أدخل المبلغ">
+<input type="number" class="form-input" name="hours" id="hl-hours-input" step="0.5" min="0.5" max="8" value="2" required placeholder="مثال: 2">
+<input type="number" min="0" class="form-input" name="workedDaysInFinalMonth" id="eosb-worked-days" value="0" placeholder="يُحتسب تلقائياً حتى تاريخ الانتهاء">
+<input type="number" step="0.5" class="form-input" name="defaultHourlyLeaveQuota" value="${settings.defaultHourlyLeaveQuota !== undefined ? settings.defaultHourlyLeaveQuota : 4}" required title="تتجدد شهرياً وغير قابلة للترحيل">
+<input type="number" step="0.5" class="form-input" name="eosbMinYearsForResignation" value="${settings.eosbMinYearsForResignation !== undefined ? settings.eosbMinYearsForResignation : 2}" required title="أقل مدة خدمة يستحق بعدها الموظف مكافأة عند الاستقالة">
+<input type="password" class="form-input" id="login-password" name="password" value="admin123" required placeholder="${isEn ? 'Enter your password' : 'كلمة المرور (مثال: admin123)'}" style="padding-left: 40px;">
+<input type="password" class="form-input" name="password" value="${data.password || ''}" required placeholder="أدخل كلمة مرور الدخول">
+<input type="text" class="form-input" id="loan-pay-notes" placeholder="مثال: تسديد قسط شهر أغسطس">
+<input type="text" class="form-input" id="login-username" name="username" value="admin" required placeholder="${isEn ? 'Enter username or email' : 'اسم المستخدم (مثال: admin)'}">
+<input type="text" class="form-input" name="city" value="${data.city}" required placeholder="مثال: الخبر / الدمام">
+<input type="text" class="form-input" name="code" value="${data.code}" required placeholder="مثال: VTG">
+<input type="text" class="form-input" name="jobTitle" value="${data.jobTitle}" placeholder="مثال: أخصائي أول موارد بشرية">
+<input type="text" class="form-input" name="name" value="${data.name}" required placeholder="مثال: سارة خالد المنصور">
+<input type="text" class="form-input" name="name" value="${data.name}" required placeholder="مثال: عطلة عيد الفطر المبارك / إجازة رسمية بقرار الإدارة">
+<input type="text" class="form-input" name="nameAr" value="${data.nameAr}" required placeholder="مثال: شركة الرؤية المتقدمة">
+<input type="text" class="form-input" name="nameAr" value="${data.nameAr}" required placeholder="مثال: فرع الخبر والمنطقة الشرقية">
+<input type="text" class="form-input" name="notes" placeholder="ملاحظات الحضور أو مبرر التأخير...">
+<input type="text" class="form-input" name="reason" required placeholder="مثال: مراجعة مستشفى، ظرف عائلي طارئ، مراجعة دائرة حكومية">
+<input type="text" class="form-input" name="username" value="${data.username || ''}" required placeholder="مثال: sarah_hr">
+<label class="form-label">${isEn ? 'Password' : 'كلمة المرور'} *</label>
+<label class="form-label">${isEn ? 'Username or Email' : 'اسم المستخدم أو البريد الإلكتروني'} *</label>
+<label class="form-label">${t('currency')} ورمزها *</label>
+<label class="form-label">أيام العمل المنجزة في الشهر الأخير</label>
+<label class="form-label">إلى الساعة</label>
+<label class="form-label">إلى تاريخ (نهاية العطلة) *</label>
+<label class="form-label">اختر السلفة للتسديد *</label>
+<label class="form-label">اختيار العملة الأساسية للنظام *</label>
+<label class="form-label">اسم الشركة بالإنجليزي</label>
+<label class="form-label">اسم الشركة بالعربي *</label>
+<label class="form-label">اسم الفرع الأولي الرئيسي *</label>
+<label class="form-label">اسم الفرع بالإنجليزي</label>
+<label class="form-label">اسم الفرع بالعربي *</label>
+<label class="form-label">اسم المستخدم للدخول (Username) *</label>
+<label class="form-label">اسم المناسبة / العطلة الرسمية *</label>
+<label class="form-label">اسم المنشأة بالإنجليزي</label>
+<label class="form-label">اسم مستخدم الجهاز</label>
+<label class="form-label">البيان والتفاصيل الإدارية / سبب المنح</label>
+<label class="form-label">التاريخ *</label>
+<label class="form-label">الحد الأقصى لترحيل الإجازات (أيام)</label>
+<label class="form-label">السبب والوصف *</label>
+<label class="form-label">الشركة التابع لها الفرع</label>
+<label class="form-label">الشركة المطبق عليها *</label>
+<label class="form-label">الفترة المالية (الشهر) *</label>
+<label class="form-label">المبلغ *</label>
+<label class="form-label">المدينة / الموقع الجغرافي *</label>
+<label class="form-label">المسمى الوظيفي للمستخدم</label>
+<label class="form-label">المنفذ (Port)</label>
+<label class="form-label">الموظف *</label>
+<label class="form-label">الموظف المراد تصفية مستحقاته *</label>
+<label class="form-label">الموظف المستحق *</label>
+<label class="form-label">الموظف المستحق للزيادة *</label>
+<label class="form-label">تاريخ آخر يوم عمل (إنهاء الخدمة) *</label>
+<label class="form-label">تاريخ الإجازة الزمنية *</label>
+<label class="form-label">تاريخ البداية *</label>
+<label class="form-label">تاريخ الدفع *</label>
+<label class="form-label">تاريخ العمل الإضافي *</label>
+<label class="form-label">تاريخ القرار</label>
+<label class="form-label">تاريخ النهاية *</label>
+<label class="form-label">تاريخ سريان وتطبيق الزيادة *</label>
+<label class="form-label">حالة الحضور *</label>
+<label class="form-label">حالة الطلب</label>
+<label class="form-label">دقائق التأخير (إن وجدت)</label>
+<label class="form-label">رصيد الإجازات الزمنية (ساعات/شهر) *</label>
+<label class="form-label">رصيد الإجازات الزمنية (ساعات/شهر)</label>
+<label class="form-label">رمز العملة الظاهر بالنظام *</label>
+<label class="form-label">رمز كود الشركة (Code) *</label>
+<label class="form-label">ساعات العمل الفعلية</label>
+<label class="form-label">ساعات العمل اليومية</label>
+<label class="form-label">سبب الإجازة الزمنية *</label>
+<label class="form-label">سبب الإجازة وملاحظات</label>
+<label class="form-label">سبب التكليف بالعمل الإضافي ومبرراته *</label>
+<label class="form-label">سبب انتهاء العلاقة التعاقدية *</label>
+<label class="form-label">سبب منح السلفة *</label>
+<label class="form-label">سبب ومبررات الزيادة *</label>
+<label class="form-label">سبب ومنشأ العطلة *</label>
+<label class="form-label">شهر بداية الخصم من مسير الرواتب *</label>
+<label class="form-label">صاحب الاعتماد / القرار</label>
+<label class="form-label">طريقة السداد</label>
+<label class="form-label">عدد أشهر السداد (الأقساط) *</label>
+<label class="form-label">عدد الساعات الإضافية *</label>
+<label class="form-label">عدد الساعات المطلوبة *</label>
+<label class="form-label">عدد سنوات بدء استحقاق الاستقالة</label>
+<label class="form-label">عنوان IP لجهاز البصمة</label>
+<label class="form-label">فترة مسير الرواتب المستهدفة</label>
+<label class="form-label">قيمة الزيادة *</label>
+<label class="form-label">قيمة القسط الشهري المحسوبة</label>
+<label class="form-label">كلمة المرور (Password) *</label>
+<label class="form-label">كلمة مرور جهاز البصمة</label>
+<label class="form-label">مبلغ التسديد *</label>
+<label class="form-label">مبلغ السلفة الإجمالي * (${settings.currencySymbol})</label>
+<label class="form-label">معامل الإضافي في الأيام العادية</label>
+<label class="form-label">معامل الإضافي في العطل الرسمية</label>
+<label class="form-label">مكافآت أو تعويضات إضافية (${settings.currencySymbol})</label>
+<label class="form-label">ملاحظات / بيان الدفع</label>
+<label class="form-label">ملاحظات وقرارات إضافية</label>
+<label class="form-label">ملاحظات</label>
+<label class="form-label">من الساعة</label>
+<label class="form-label">من تاريخ (بداية العطلة) *</label>
+<label class="form-label">نسبة إنهاء الخدمة من طرف المنشأة (%)</label>
+<label class="form-label">نسبة الاستقالة (10 سنوات فأكثر) %</label>
+<label class="form-label">نسبة الاستقالة (من 2 إلى 5 سنوات) %</label>
+<label class="form-label">نسبة الاستقالة (من 5 إلى 10 سنوات) %</label>
+<label class="form-label">نسبة التأمينات/الضمان على الشركة (%)</label>
+<label class="form-label">نسبة التأمينات/الضمان على الموظف (%)</label>
+<label class="form-label">نوع الإجازة *</label>
+<label class="form-label">نوع الزيادة *</label>
+<label class="form-label">نوع الصلاحية ومستوى الوصول *</label>
+<label class="form-label">نوع العملية *</label>
+<label class="form-label">نوع اليوم والمعامل الاحتسابي *</label>
+<label class="form-label">وقت الانصراف (Check-Out)</label>
+<label class="form-label">وقت الحضور (Check-In)</label>
+<option value="AED|د.إ" ${data.currency === 'AED' ? 'selected' : ''}>درهم إماراتي (AED - د.إ)</option>
+<option value="EGP|ج.م" ${data.currency === 'EGP' ? 'selected' : ''}>جنيه مصري (EGP - ج.م)</option>
+<option value="SAR|ر.س" ${data.currency === 'SAR' ? 'selected' : ''}>ريال سعودي (SAR - ر.س)</option>
+<option value="USD|$" ${data.currency === 'USD' ? 'selected' : ''}>دولار أمريكي (USD - $)</option>
+<option value="absent">غائب (بدون عذر)</option>
+<option value="all" ${data.companyId === 'all' ? 'selected' : ''}>كافة الشركات والفروع (عطلة عامة)</option>
+<option value="all" ${selectedAllowance === 'all' ? 'selected' : ''}>${isEn ? '💰 All Allowances' : '💰 جميع البدلات'}</option>
+<option value="all" ${selectedGosi === 'all' ? 'selected' : ''}>${isEn ? '🛡️ All GOSI Statuses' : '🛡️ جميع حالات الضمان'}</option>
+<option value="annual" ${editData.leaveType === 'annual' ? 'selected' : ''}>إجازة سنوية اعتيادية</option>
+<option value="append">${isEn ? 'Append New Only (Skip existing IDs)' : 'إضافة كجدد فقط (تخطي الأرقام الوظيفية المكررة)'}</option>
+<option value="approved" ${(!editData.status || editData.status === 'approved') ? 'selected' : ''}>معتمدة ومباشرة (تخصم من الرصيد)</option>
+<option value="approved" selected>معتمد فوراً (Approved)</option>
+<option value="bank_transfer">تحويل بنكي (Bank Transfer)</option>
+<option value="bereavement" ${editData.leaveType === 'bereavement' ? 'selected' : ''}>إجازة وفاة</option>
+<option value="branch_hr" ${data.role === 'branch_hr' ? 'selected' : ''}>${t('branchHrRole')} - وصول مقيد لفرع محدد فقط</option>
+<option value="cash">نقداً (Cash)</option>
+<option value="company_decision" ${data.reasonCategory === 'company_decision' ? 'selected' : ''}>إجازة استثنائية بقرار من إدارة الشركة</option>
+<option value="company_hr" ${data.role === 'company_hr' ? 'selected' : ''}>مسؤول شركة (كافة فروع الشركة المحددة)</option>
+<option value="emergency" ${editData.leaveType === 'emergency' ? 'selected' : ''}>إجازة اضطرارية</option>
+<option value="emergency_closure" ${data.reasonCategory === 'emergency_closure' ? 'selected' : ''}>ظرف طارئ / أحوال جوية</option>
+<option value="fixed_amount">مبلغ مالي ثابت (${settings.currencySymbol})</option>
+<option value="gosi_covered" ${selectedGosi === 'gosi_covered' ? 'selected' : ''}>${isEn ? '✓ Registered in GOSI' : '✓ المسجلون في الضمان والتأمينات'}</option>
+<option value="gosi_exempt" ${selectedGosi === 'gosi_exempt' ? 'selected' : ''}>${isEn ? '✕ Exempt / Non-GOSI' : '✕ غير المسجلين (غير خاضع)'}</option>
+<option value="hajj" ${editData.leaveType === 'hajj' ? 'selected' : ''}>إجازة حج</option>
+<option value="half_day">نصف يوم</option>
+<option value="has_both" ${selectedAllowance === 'has_both' ? 'selected' : ''}>${isEn ? '🏠🚗 Has Both (Housing & Transport)' : '🏠🚗 لديه بدل سكن ونقل معاً'}</option>
+<option value="has_housing" ${selectedAllowance === 'has_housing' ? 'selected' : ''}>${isEn ? '🏠 Has Housing Allowance' : '🏠 لديه بدل سكن'}</option>
+<option value="has_transport" ${selectedAllowance === 'has_transport' ? 'selected' : ''}>${isEn ? '🚗 Has Transport Allowance' : '🚗 لديه بدل نقل'}</option>
+<option value="holiday" data-mult="2.0">عطلة رسمية / عيد أو يوم وطني (2.0x أجر الساعة)</option>
+<option value="marriage" ${editData.leaveType === 'marriage' ? 'selected' : ''}>إجازة زواج</option>
+<option value="maternity" ${editData.leaveType === 'maternity' ? 'selected' : ''}>إجازة أمومة / وضع</option>
+<option value="merge" selected>${isEn ? 'Merge & Update (Add new, update existing by ID)' : 'دمج وتحديث (إضافة الجدد وتحديث بيانات الموظفين الموجودين)'}</option>
+<option value="national_holiday" ${data.reasonCategory === 'national_holiday' ? 'selected' : ''}>عطلة وطنية / رسمية</option>
+<option value="no_allowances" ${selectedAllowance === 'no_allowances' ? 'selected' : ''}>${isEn ? '🚫 No Allowances' : '🚫 بدون بدلات'}</option>
+<option value="paternity" ${editData.leaveType === 'paternity' ? 'selected' : ''}>إجازة رعاية مولود / أبوة</option>
+<option value="pending" ${editData.status === 'pending' ? 'selected' : ''}>قيد المراجعة والاعتماد</option>
+<option value="pending">قيد الموافقة (Pending)</option>
+<option value="percentage">نسبة مئوية (%)</option>
+<option value="present" selected>حاضر (في الوقت)</option>
+<option value="regular_day" data-mult="1.5">يوم عمل عادي (1.5x أجر الساعة)</option>
+<option value="rejected" ${editData.status === 'rejected' ? 'selected' : ''}>مرفوضة</option>
+<option value="religious_eid" ${data.reasonCategory === 'religious_eid' ? 'selected' : ''}>أعياد ومناسبات دينية (عيد الفطر / الأضحى)</option>
+<option value="resigned" ${selectedStatus === 'resigned' ? 'selected' : ''}>${isEn ? 'Resigned' : 'استقالة'}</option>
+<option value="salary_deduction" selected>خصم من الراتب الشهري</option>
+<option value="sick" ${editData.leaveType === 'sick' ? 'selected' : ''}>إجازة مرضية</option>
+<option value="super_admin" ${data.role === 'super_admin' ? 'selected' : ''}>${t('superAdminRole')} - وصول شامل لكافة الشركات والفروع</option>
+<option value="terminated" ${selectedStatus === 'terminated' ? 'selected' : ''}>${isEn ? 'Terminated' : 'إنهاء خدمة'}</option>
+<option value="unpaid" ${editData.leaveType === 'unpaid' ? 'selected' : ''}>إجازة بدون راتب</option>
+<option value="weekend" data-mult="2.0">عطلة أسبوعية / جمعة أو سبت (2.0x أجر الساعة)</option>
+<p id="page-sub-text" data-i18n="appSubtitle">ظ†ط¸ط±ط© ط¹ط§ظ…ط© ط¹ظ„ظ‰ ظ…ط¤ط´ط±ط§طھ ط§ظ„ط£ط¯ط§ط، ظˆط¥ط¯ط§ط±ط© ط§ظ„ظ…ظˆط§ط±ط¯ ط§ظ„ط¨ط´ط±ظٹط©</p>
+<p style="font-size:13px; color:var(--text-muted);">احتساب الأرصدة المتبقية، دورة الموافقات، وترحيل وتجديد رصيد السنة الجديدة</p>
+<p>${settings.companyNameEn || ''} ${settings.commercialRegistration ? '• س.ت: ' + settings.commercialRegistration : ''}</p>
+<span class="badge ${isArchive ? 'badge-gray' : 'badge-primary'}">${filtered.length} ${isEn ? 'employees' : 'موظف'}</span>
+<span class="badge badge-danger">${expiringDocs.length} وثيقة</span>
+<span class="badge badge-gray" style="font-size:11px;">${branchEmps.length} موظف</span>
+<span class="badge badge-primary" id="eosb-service-period-badge">0 سنة</span>
+<span class="badge badge-primary" id="rollover-preview-count">0 موظف نشط</span>
+<span class="badge badge-primary">${compEmployees.length} موظف مسجل</span>
+<span class="badge badge-primary">${eosb.length} تسوية</span>
+<span class="badge badge-primary">${leaves.length} طلب إجمالي</span>
+<span class="badge badge-primary">${users.length} مستخدمين</span>
+<span class="badge badge-success" id="lbl-hol-days-count">المدة: ${data.daysCount} أيام</span>
+<span class="badge badge-success" id="preview-status-badge">${isEn ? 'Ready to Import' : 'جاهز للاستيراد والحفظ'}</span>
+<span class="badge badge-success">محددات الاحتساب والنظام</span>
+<span class="badge badge-success">معتمد ومخلى</span>
+<span class="badge badge-warning">${upcomingBirthdays.length} موظف</span>
+<span data-i18n="attendance">ط§ظ„ط¹ظ…ظ„ ط§ظ„ط¥ط¶ط§ظپظٹ ظˆط§ظ„ط­ط¶ظˆط±</span>
+<span data-i18n="companies">ط§ظ„ط´ط±ظƒط§طھ ظˆط§ظ„ظپط±ظˆط¹</span>
+<span data-i18n="dashboard">ظ„ظˆط­ط© ط§ظ„طھط­ظƒظ… ط§ظ„ظ…ط±ظƒط²ظٹط©</span>
+<span data-i18n="employees">ط¯ظ„ظٹظ„ ظˆط´ط¤ظˆظ† ط§ظ„ظ…ظˆط¸ظپظٹظ†</span>
+<span data-i18n="eosb">ط§ظ„ط§ط³طھظ‚ط§ظ„ط§طھ ظˆظ†ظ‡ط§ظٹط© ط§ظ„ط®ط¯ظ…ط©</span>
+<span data-i18n="hourlyLeaves">ط§ظ„ط¥ط¬ط§ط²ط§طھ ط§ظ„ط²ظ…ظ†ظٹط© (ط¨ط§ظ„ط³ط§ط¹ط©)</span>
+<span data-i18n="leaves">ط§ظ„ط¥ط¬ط§ط²ط§طھ ظˆط§ظ„ط£ط±طµط¯ط©</span>
+<span data-i18n="logout">ط®ط±ظˆط¬</span>
+<span data-i18n="payroll">ظ…ط³ظٹط± ط§ظ„ط±ظˆط§طھط¨ ظˆط§ظ„ط²ظٹط§ط¯ط§طھ</span>
+<span data-i18n="reports">ط§ظ„طھظ‚ط§ط±ظٹط± ظˆط§ظ„طھطµط¯ظٹط± ط§ظ„ط´ط§ظ…ظ„</span>
+<span data-i18n="settings">ط¥ط¹ط¯ط§ط¯ط§طھ ط§ظ„ظ†ط¸ط§ظ… ظˆط§ظ„ظ…ظ†ط´ط£ط©</span>
+<span data-i18n="users">ط§ظ„ظ…ط³طھط®ط¯ظ…ظˆظ† ظˆط§ظ„طµظ„ط§ط­ظٹط§طھ</span>
+<span style="color:var(--danger);">${isEn ? 'Remaining' : 'المتبقي'}: ${formatCurrency(loan.remainingAmount, sym)}</span>
+<span style="color:var(--text-muted);">المتبقي للشهر:</span>
+<span style="color:var(--text-muted);">المستهلك:</span>
+<span style="color:var(--text-muted);">رصيد الإجازات السنوية المتبقي: </span>
+<span style="color:var(--text-muted);">رصيد شهر (${month}):</span>
+<span style="font-size:11.5px; color:var(--text-muted);">0 يعني ترحيل كافة الأيام بدون حد</span>
+<span style="font-size:12.5px; font-weight:700; color:var(--primary);" id="topbar-user-name">ط§ظ„ظ…ط¯ظٹط± ط§ظ„ط¹ط§ظ…</span>
+<span style="font-size:15px; font-weight:800; color:var(--text-main);">صافي مستحقات التصفية النهائية (Net):</span>
+<span style="font-size:20px; font-weight:900; color:var(--success);" id="eosb-net-total-label">0.00 ر.س</span>
+<span style="font-weight:700; color:var(--text-main);">أجر الساعة العادي المحتسب:</span>
+<span style="font-weight:800; font-size:14px;">إجمالي المبلغ المصروف للموظف بموجب هذه المخالصة:</span>
+<span style="font-weight:800; font-size:15px; color:var(--primary);">إجمالي المبلغ المستحق للإضافي:</span>
+<span>${Icons.building(15)} فروع ومواقع الشركة (${(comp.branches || []).length} فرع):</span>
+<span>${Icons.calendar(16)} ${isEn ? 'Leave & Hourly Quota Balances' : 'أرصدة الإجازات والساعات'}</span>
+<span>${Icons.dollar(16)} ${isEn ? 'Monthly Salary Structure' : 'هيكل الراتب الشهري'}</span>
+<span>${Icons.landmark(16)} تفاصيل احتساب مكافأة نهاية الخدمة والبدلات:</span>
+<span>${Icons.shieldCheck(16)} ${isEn ? 'Social Security & GOSI' : 'التأمينات والضمان الاجتماعي'}</span>
+<span>${isArchive ? (isEn ? 'Archived Employee Records' : 'سجلات الموظفين المؤرشفين') : t('employeeDirectory')}</span>
+<span>${isEn ? 'Monthly Hourly Permission Quota' : 'رصيد الساعات الشهري (إذن خروج)'}:</span>
+<span>${isEn ? 'Remember me' : 'تذكرني'}</span>
+<span>${isEn ? 'Total Loan' : 'إجمالي السلفة'}: ${formatCurrency(loan.totalAmount, sym)}</span>
+<span>أجر أيام العمل للشهر الأخير:</span>
+<span>إجمالي الاستحقاقات (Gross):</span>
+<span>إجمالي الاستقطاعات:</span>
+<span>احتساب أجر أيام العمل الفعلية للشهر الأخير تلقائياً في التصفية</span>
+<span>استقطاع السلف والقروض المعلقة:</span>
+<span>استقطاعات أخرى:</span>
+<span>الاستقطاعات والخصومات (Deductions)</span>
+<span>الراتب الأساسي:</span>
+<span>الضمان الاجتماعي والتأمينات:</span>
+<span>العمل الإضافي (${it.overtimeHours} ساعة):</span>
+<span>المبلغ</span>
+<span>المستحقات والبدلات (Earnings)</span>
+<span>بدل السكن:</span>
+<span>بدل المواصلات والنقل:</span>
+<span>بدل رصيد الإجازات غير المستهلكة نقداً:</span>
+<span>بدلات ومكافآت أخرى:</span>
+<span>حوافز ومكافآت:</span>
+<span>خصم أيام الغياب (${it.absenceDays || 1} يوم):</span>
+<span>خصم دقائق التأخير (${it.lateMinutes || 0} دقيقة):</span>
+<span>زيادة بدلات السكن والنقل نسبياً بنفس نسبة زيادة الراتب الأساسي</span>
+<span>عدد الأيام المحتسبة ${excludeFriday ? '<span style="font-size:11px; color:var(--text-muted); background:rgba(239,68,68,0.08); padding:2px 6px; border-radius:4px;">(مستثنى يوم الجمعة)</span>' : ''}:</span>
+<span>قسط السلفة / القرض الشهري:</span>
+<span>مكافأة نهاية الخدمة النظامية:</span>
+<span>نمط العمل التلقائي: احتساب 30 يوم شهرياً • الجمعة عطلة أسبوعية مدفوعة</span>
+<span>ًں‡؛ًں‡¸ English</span>
+<span>🗓️ الراتب المحتسب حتى اليوم (${daysWorked} من ${daysInMonth} يوم):</span>
+<strong style="color:var(--primary); font-size:15px;">${req.hours}</strong> <span style="font-size:11px;">${isEn ? 'hrs' : 'ساعة'}</span>
+<strong>${u.name}</strong> ${isCurrent ? `<span class="badge badge-success" style="font-size:10px; margin-right:4px;">حسابك الحالي</span>` : ''}
+<td style="padding:7px 0; color:var(--text-muted);">خصم تأخر (${lateMinutes} دقيقة)</td>
+<td style="padding:7px 0; color:var(--text-muted);">خصم غياب (${absenceDays} يوم)</td>
+<td style="padding:7px 0; color:var(--text-muted);">ضمان اجتماعي (${employee.gosiEmployeePercent}%)</td>
+<td style="padding:7px 0; color:var(--text-muted);">عمل إضافي (${totalOvertimeHours} ساعة)</td>
+<td style="padding:7px 0; color:var(--text-muted);">قسط سلفة / قرض</td>
+<td style="padding:8px 0; font-weight:900; font-size:14px;">إجمالي الاستقطاع</td>
+<td>${e.isSubjectToGosi ? e.gosiRegisteredWage : `<span class="badge badge-gray">${isEn ? 'Exempt' : 'غير خاضع'}</span>`}</td>
+<td>${formatDate(l.startDate)} إلى ${formatDate(l.endDate)}</td>
+<td>${l.leaveType === 'annual' ? 'إجازة سنوية' : l.leaveType}</td>
+<td><span class="badge badge-gray">${b.annualEntitlement} يوم/سنة</span></td>
+<td><span class="badge badge-gray">${r.previousRemaining} يوم</span></td>
+<td><span style="color:#059669; font-weight:700;">✓ تم التسليم والإخلاء</span></td>
+<td><span style="color:var(--text-muted);">${b.accruedCurrentYear} يوم</span></td>
+<td><strong style="color:var(--danger);">${b.usedAnnualDays} يوم</strong></td>
+<td><strong style="color:var(--primary);">${l.daysCount} يوم</strong></td>
+<td><strong style="color:var(--primary);">+ ${r.newAnnualEntitlement} يوم</strong></td>
+<td><strong style="color:var(--success);">${r.carriedOverToNewYear} يوم</strong></td>
+<td><strong style="color:var(--text-main);">${b.carriedOver} يوم</strong></td>
+<td><strong style="color:var(--text-main);">${item.serviceYears} سنة و ${item.serviceMonths} شهر</strong></td>
+<td><strong>${emp ? emp.fullName : 'غير معروف'}</strong></td>
+<td><strong>${emp ? emp.fullName : 'موظف'}</strong></td>
+<textarea class="form-input" name="notes" rows="2" placeholder="اكتب تفاصيل قرار منح العطلة...">${data.notes || ''}</textarea>
+<textarea class="form-textarea" name="notes" placeholder="ملاحظات التسوية النهائية..."></textarea>
+<textarea class="form-textarea" name="reason" placeholder="سبب الإجازة أو تفاصيل إضافية...">${editData.reason || ''}</textarea>
+<textarea class="form-textarea" name="reason" required placeholder="مثال: التقييم السنوي الاستثنائي، ترقية وظيفية، مكافأة أداء متميز..."></textarea>
+<textarea class="form-textarea" name="reason" required placeholder="مثال: سلفة لتغطية مصاريف دراسية، ظروف شخصية طارئة..."></textarea>
+<textarea class="form-textarea" name="reason" required placeholder="مثال: صيانة طارئة لخوادم النظام، إنهاء الجرد السنوي، تغطية ضغط عمليات..."></textarea>
+<th style="text-align:left;">الإجراء</th>
+<th style="text-align:left;">المخالصة والطباعة</th>
+<th>${isEn ? 'Allowances' : 'البدلات'}</th>
+<th>${isEn ? 'Bank Account / IBAN' : 'الحساب البنكي / IBAN'}</th>
+<th>${isEn ? 'Basic Salary' : 'الراتب الأساسي'}</th>
+<th>${isEn ? 'Company / Branch' : 'الشركة / الفرع'}</th>
+<th>${isEn ? 'Department & Job' : 'القسم والوظيفة'}</th>
+<th>${isEn ? 'Emp ID' : 'الرقم الوظيفي'}</th>
+<th>${isEn ? 'Employee Name' : 'اسم الموظف'}</th>
+<th>${isEn ? 'GOSI / Social Security' : 'الضمان / التأمينات'}</th>
+<th>${isEn ? 'GOSI Wage' : 'أجر الضمان'}</th>
+<th>${isEn ? 'Hours' : 'عدد الساعات'}</th>
+<th>${isEn ? 'Month Balance' : 'رصيد الشهر'}</th>
+<th>${isEn ? 'National ID' : 'رقم الهوية'}</th>
+<th>${isEn ? 'Permission Date' : 'تاريخ الإذن'}</th>
+<th>${isEn ? 'Phone' : 'الجوال'}</th>
+<th>${isEn ? 'Time Slot' : 'فترة الخروج'}</th>
+<th>اسم الدخول (Username)</th>
+<th>الأيام الساقطة / المصروفة</th>
+<th>الإدارة المعنية</th>
+<th>الاستحقاق السنوي الجديد</th>
+<th>البند والعهد المسلمة</th>
+<th>الرصيد المتبقي حالياً</th>
+<th>الرصيد المرحّل للسنة الجديدة</th>
+<th>المتبقي</th>
+<th>المستخدم</th>
+<th>تاريخ الانتهاء</th>
+<th>توقيع المسؤول</th>
+<th>حالة الاستلام والتسليم</th>
+<th>رقم الوثيقة</th>
+<th>نطاق الشركة المتاح</th>
+<th>نطاق الفرع المتاح</th>
+<th>نوع الصلاحية</th>
+<th>نوع الوثيقة</th>
+? `<div style="color:var(--text-muted); font-size:12.5px;">${isEn ? 'No active loans for this employee' : 'لا توجد سلف نشطة على الموظف'}</div>`
+? `<span class="badge badge-danger">${isEn ? 'Rejected' : 'مرفوض'}</span>`
+? `<span class="badge badge-success">${isEn ? 'Approved' : 'معتمد'}</span>`
+? `<span class="badge badge-warning">🎉 عيد ميلاد اليوم! (${b.age} سنة)</span>`
+? `<span style="color:var(--danger); font-weight:700;">سقوط ${r.expiredDays} يوم</span>`
+? `<span style="color:var(--primary); font-weight:700;">صرف نقدي (${formatCurrency(r.cashOutAmount, settings.currencySymbol)})</span>`
+? `<span style="font-size:12px;">متبقي: <strong>${bal.remainingHours}</strong> من ${bal.quotaHours}</span>`
+? `<tr><td colspan="10" style="text-align:center; padding:32px; color:var(--text-muted);">لا توجد تصفيات نهاية خدمة مسجلة حالياً. اضغط "احتساب وتصفية نهاية خدمة جديدة" للبدء.</td></tr>`
+countBadge.textContent = `${rolloverResults.length} موظف نشط`;
+daysLabel.textContent = `${days} يوم`;
+durationLabel.textContent = `${currentResult.serviceYears} سنة، ${currentResult.serviceMonths} شهر، ${currentResult.serviceDays} يوم`;
+export function showConfirmDialog({ title, message, confirmText = 'تأكيد', cancelText = 'إلغاء', onConfirm }) {
+if (!l) { toast.error('يرجى اختيار سلفة'); return; }
+if (!payAmount || payAmount <= 0) { toast.error('يرجى إدخال مبلغ التسديد'); return; }
+if (lblDays) lblDays.textContent = `المدة: ${count} أيام`;
+if (payAmount > l.remainingAmount) { toast.error('المبلغ المدخل أكبر من المتبقي'); return; }
+leaveCashoutLabel.textContent = `${formatCurrency(currentResult.leaveCompensationAmount, settings.currencySymbol)} (${currentResult.unusedLeaveDays} يوم)`;
+message: `هل أنت متأكد من رغبتك في حذف الشركة <strong>${comp.nameAr}</strong> وفروعها بالكامل؟ ${compEmployees.length > 0 ? `<br><span style="color:var(--danger); font-weight:700;">تحذير: يوجد ${compEmployees.length} موظف مسجل تحت هذه الشركة وسيتم حذف ارتباطاتهم.</span>` : ''}`,
+newBasicLabel.textContent = `أساسي: ${formatCurrency(incrementRecord.newBasicSalary, settings.currencySymbol)}`;
+oldBasicLabel.textContent = `أساسي: ${formatCurrency(incrementRecord.previousBasicSalary, settings.currencySymbol)}`;
+placeholder="مثال: مكافأة الأداء المتميز Q2 / خصم جزاء غياب متعمد">
+return `<span class="badge badge-danger">${isEn ? 'Terminated' : 'منتهي الخدمة'}</span>`;
+return `<span class="badge badge-gray">${isEn ? 'Resigned' : 'مستقيل'}</span>`;
+return `<span class="badge badge-info">${isEn ? 'On Leave' : 'في إجازة'}</span>`;
+return `<span class="badge badge-success">${isEn ? 'Active' : 'على رأس العمل'}</span>`;
+return `<span class="badge badge-warning">${isEn ? 'Probation' : 'تحت التجربة'}</span>`;
+serviceBadge.textContent = `${currentResult.serviceYears} سنة و ${currentResult.serviceMonths} شهر`;
+this.langToggleBtn.innerHTML = lang === 'ar' ? `<span>🇺🇸 English</span>` : `<span>🇸🇦 العربية</span>`;
+toast.error('تاريخ نهاية الإجازة يجب أن يكون مساوياً أو بعد تاريخ البداية');
+toast.error('لا توجد سلف نشطة للتسديد حالياً');
+toast.error('يرجى إضافة موظفين أولاً');
+toast.error((isEn ? 'Error reading Excel file: ' : 'خطأ في قراءة ملف Excel: ') + err.message);
+toast.error(`فشل استعادة النسخة: ${res.error}`);
+toast.error(isEn ? 'CSV file is empty' : 'ملف CSV فارغ');
+toast.error(isEn ? 'Could not recognize columns' : 'لم يتم التعرف على أعمدة بيانات الموظفين في الملف');
+toast.error(isEn ? 'Excel parser library loading, please use .CSV or retry in a moment' : 'يرجى استخدام ملف CSV أو الانتظار لحظات لتحميل المكتبة');
+toast.error(isEn ? 'Excel sheet is empty' : 'ملف Excel فارغ');
+toast.info('جاري الاتصال بجهاز البصمة...');
+toast.info('جاري سحب حركات الحضور من جهاز البصمة...');
+toast.info(isEn ? 'Hourly leave rejected' : 'تم رفض طلب الإجازة الزمنية');
+toast.success('تم اعتماد طلب الإجازة واقتطاع الأيام من الرصيد');
+toast.success('تم تحميل النسخة الاحتياطية بنجاح');
+toast.success('تم تسجيل حركة الحضور بنجاح');
+toast.success('تم تفريغ كافة البيانات بنجاح!');
+toast.success('تم حذف المستخدم بنجاح');
+toast.success('تم حذف سجل الإجازة');
+toast.success('تم حذف سجل التصفية');
+toast.success('تم حفظ وتثبيت إعدادات النظام والعملة والبصمة بنجاح');
+toast.success('تمت استعادة النسخة الاحتياطية بنجاح!');
+toast.success(`${isEn ? 'Welcome back' : 'مرحباً بك'}: ${res.user.name}`);
+toast.success(`تم بنجاح ترحيل وتجديد أرصدة الإجازات لسنة ${targetYear} لجميع الموظفين!`);
+toast.success(`تم بنجاح تطبيق زيادة الراتب للموظف ${emp.fullName}`);
+toast.success(`تم بنجاح حفظ واعتماد تصفية نهاية الخدمة للموظف ${currentResult.employeeName}`);
+toast.success(`تم تسجيل ${hours} ساعات إضافية بقيمة ${formatCurrency(currentTotal, settings.currencySymbol)} للموظف ${emp.fullName}`);
+toast.success(`تم تسجيل ${typeLabel} بمبلغ ${formatCurrency(amount, sym)} للموظف ${emp?.fullName}`);
+toast.success(`تم تسجيل إجازة زمنية (${hours} ساعة) للموظف ${emp?.fullName || ''}`);
+toast.success(`تم تسجيل الإجازة بنجاح (${daysCount} يوم)`);
+toast.success(`تم تسجيل السلفة بقيمة ${formatCurrency(totalAmount, settings.currencySymbol)} بنجاح`);
+toast.success(`تم تسجيل دفعة ${formatCurrency(payAmount, sym)} لسلفة ${emp?.fullName || ''}`);
+toast.success(`تم تعديل الإجازة بنجاح (${daysCount} يوم)`);
+toast.success(`تم تعديل العطلة ${newHol.name} بنجاح`);
+toast.success(`تم تعديل بيانات الشركة ${formData.get('nameAr')} بنجاح`);
+toast.success(`تم حذف الشركة ${comp.nameAr} بنجاح`);
+toast.success(`تم حذف الفرع ${branch.nameAr} بنجاح`);
+toast.success(`تم حفظ الفرع بنجاح`);
+toast.success(`تم حفظ المستخدم ${updatedUser.name} وتحديث بيانات الدخول والصلاحيات`);
+toast.success(`تمت إضافة الشركة ${newCompany.nameAr} بنجاح`);
+toast.success(`تمت إضافة العطلة الرسمية ${newHol.name} بنجاح`);
+toast.success(i18n.getLang() === 'en' ? 'Excel template downloaded successfully' : 'تم تنزيل قالب Excel النموذجي بنجاح');
+toast.success(i18n.getLang() === 'en' ? 'Template downloaded successfully (.csv)' : 'تم تنزيل القالب النموذجي بنجاح (.csv)');
+toast.success(isEn ? 'Excel template download started' : 'جاري تحميل نموذج Excel...');
+toast.success(isEn ? 'Exported CSV file successfully' : 'تم تصدير ملف الموظفين بنجاح');
+toast.success(isEn ? 'Exported CSV successfully' : 'تم التصدير بنجاح (.csv)');
+toast.success(isEn ? 'Exported Excel file successfully' : 'تم تصدير ملف الموظفين بنجاح');
+toast.success(isEn ? 'Exported successfully' : 'تم التصدير بنجاح');
+toast.success(isEn ? 'Hourly leave approved' : 'تم اعتماد الإجازة الزمنية بنجاح');
+toast.success(isEn ? 'Request deleted' : 'تم حذف الطلب بنجاح');
+toast.success(isEn ? `Employee ${emp.fullName} archived` : `تم أرشفة الموظف ${emp.fullName} بنجاح`);
+toast.success(isEn ? `Employee ${emp.fullName} deleted` : `تم حذف الموظف ${emp.fullName} بنجاح`);
+toast.success(isEn ? `Employee ${emp.fullName} reactivated` : `تمت إعادة تفعيل الموظف ${emp.fullName} بنجاح`);
+toast.success(isEn ? `Extracted ${parsedEmployees.length} employees` : `تم استخراج ${parsedEmployees.length} سجل موظف بنجاح`);
+toast.success(isEn ? `Extracted ${parsedEmployees.length} records successfully` : `تم استخراج ${parsedEmployees.length} سجل موظف بنجاح`);
+toast.success(isEn ? `🎉 Successfully imported and saved ${parsedEmployees.length} employees` : `🎉 تم استيراد وحفظ ${parsedEmployees.length} موظف بنجاح`);
+toast.warning('تم رفض طلب الإجازة');
