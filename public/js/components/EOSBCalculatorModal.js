@@ -20,6 +20,23 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
   const isEn = i18n.getLang() === 'en';
   const csym = settings.currencySymbol || '$';
 
+  // Declared BEFORE bodyHtml: bodyHtml embeds this note, and const bindings are
+  // in the temporal dead zone until their declaration line runs — referencing
+  // it later used to throw "Cannot access 'workflowNoteHtml' before
+  // initialization", which made the whole EOSB calculator/settlement flow
+  // appear dead in the interface.
+  const workflowNoteHtml = `
+    <div style="padding:10px 14px; border-radius:10px; margin:12px 0 2px; border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.07); font-size:12.5px; color:var(--text-main); line-height:1.7;">
+      ${canApprove
+        ? (isEn
+            ? '💡 This settlement is saved in <strong>Under Financial Audit</strong> status. Approve it from the End of Service screen to finalize it, mark it <strong>Paid</strong>, then issue the clearance certificate.'
+            : '💡 يتم حفظ التسوية بحالة <strong>قيد التدقيق المالي</strong>. اعتمدها من شاشة نهاية الخدمة لتتم تصفيتها، ثم أصرفها مالياً وأصدر المخالصة.')
+        : (isEn
+            ? '💡 This settlement is saved in <strong>Under Financial Audit</strong> status. An approver will review it on the End of Service screen — the certificate is issued only after approval & payment.'
+            : '💡 يتم حفظ التسوية بحالة <strong>قيد التدقيق المالي</strong>. سيقوم المسؤول بالمراجعة من شاشة نهاية الخدمة — تُصدر المخالصة فقط بعد الاعتماد والصرف.')}
+    </div>
+  `;
+
   const bodyHtml = `
     <form id="eosb-form">
       <div class="grid grid-cols-2">
@@ -159,18 +176,6 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
     </button>
   `;
 
-  const workflowNoteHtml = `
-    <div style="padding:10px 14px; border-radius:10px; margin:12px 0 2px; border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.07); font-size:12.5px; color:var(--text-main); line-height:1.7;">
-      ${canApprove
-        ? (isEn
-            ? '💡 This settlement is saved in <strong>Under Financial Audit</strong> status. Approve it from the End of Service screen to finalize it, mark it <strong>Paid</strong>, then issue the clearance certificate.'
-            : '💡 يتم حفظ التسوية بحالة <strong>قيد التدقيق المالي</strong>. اعتمدها من شاشة نهاية الخدمة لتتم تصفيتها، ثم أصرفها مالياً وأصدر المخالصة.')
-        : (isEn
-            ? '💡 This settlement is saved in <strong>Under Financial Audit</strong> status. An approver will review it on the End of Service screen — the certificate is issued only after approval & payment.'
-            : '💡 يتم حفظ التسوية بحالة <strong>قيد التدقيق المالي</strong>. سيقوم المسؤول بالمراجعة من شاشة نهاية الخدمة — تُصدر المخالصة فقط بعد الاعتماد والصرف.')}
-    </div>
-  `;
-
   createModal({
     title: `${isEn ? 'EOSB Calculator & Settlement' : 'حاسبة ومخالصة مكافأة نهاية الخدمة'}`,
     size: 'lg',
@@ -233,6 +238,7 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
           bonusCompensation,
           probationPayout,
           settings,
+          companies,
         });
 
         serviceBadge.textContent = `${currentResult.serviceYears} ${isEn ? 'Y' : 'سنة'} و ${currentResult.serviceMonths} ${isEn ? 'M' : 'شهر'}`;

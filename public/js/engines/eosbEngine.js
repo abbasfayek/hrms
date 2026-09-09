@@ -4,6 +4,7 @@
 
 import { calculateLeaveBalance } from './leaveEngine.js';
 import { getDailyRate } from './wageEngine.js';
+import { resolveEmployeeCurrency } from '../types.js';
 
 export function calculateEOSB(params) {
   const {
@@ -17,6 +18,7 @@ export function calculateEOSB(params) {
     otherDeductions = 0,
     notes = '',
     settings = {},
+    companies = [],
     // Probation-failure payout mode:
     //   'salary_bond'           -> سند راتب: nominal (basic) salary only, no leave
     //                              cashout, no service gratuity, no service years.
@@ -144,9 +146,16 @@ export function calculateEOSB(params) {
   }
 
   // 5. Remaining Loan Deductions
+  // P2.2 loan-currency rule: only outstanding advances in the SAME currency as
+  // the employee's salary are deducted from the settlement. An advance in a
+  // different currency is never mixed into this payout — it stays a separate
+  // obligation and is reported below so the balance is never silently merged.
+  const salaryCurrency = String(resolveEmployeeCurrency(employee, settings, companies).code || settings.currency || 'USD').toUpperCase();
   const activeLoans = (loans || []).filter((l) => l.employeeId === employee.id && l.status === 'active');
+  const matchingCurrencyLoans = activeLoans.filter((l) => !l.currency || String(l.currency).toUpperCase() === salaryCurrency);
+  const skippedCurrencyLoans = activeLoans.filter((l) => l.currency && String(l.currency).toUpperCase() !== salaryCurrency);
   const remainingLoanDeductions = parseFloat(
-    activeLoans.reduce((sum, l) => sum + (Number(l.remainingAmount) || 0), 0).toFixed(2)
+    matchingCurrencyLoans.reduce((sum, l) => sum + (Number(l.remainingAmount) || 0), 0).toFixed(2)
   );
 
   // 6. Net Settlement
@@ -187,6 +196,9 @@ export function calculateEOSB(params) {
     finalMonthSalary,
     bonusCompensation: Number(bonusCompensation),
     remainingLoanDeductions,
+    salaryCurrency,
+    skippedCurrencyLoans,
+    currencyMismatchLoanCount: skippedCurrencyLoans.length,
     otherDeductions: Number(otherDeductions),
     netSettlementAmount,
     settlementType,

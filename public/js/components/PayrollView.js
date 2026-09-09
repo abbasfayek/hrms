@@ -4,7 +4,7 @@
 
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled } from '../types.js';
+import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, clearPayrollAmounts } from '../engines/payrollEngine.js';
 import { openPayslipModal } from './PayslipModal.js';
 import { openBatchPayslipsPrintModal, printIsolatedBatchPayslips } from './BatchPayslipsPrintModal.js';
@@ -1256,6 +1256,7 @@ export function renderPayrollView(container, options = {}) {
               <thead>
                 <tr>
                   <th>${t('payroll.employee')}</th>
+                  <th>${isEn ? 'Currency' : 'العملة'}</th>
                   <th>${t('payroll.loanAmount')}</th>
                   <th>${t('payroll.paidAmount')}</th>
                   <th>${t('payroll.remainingAmount')}</th>
@@ -1268,22 +1269,32 @@ export function renderPayrollView(container, options = {}) {
               <tbody>
                 ${
                   allLoans.length === 0
-                    ? `<tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">${isEn ? 'No loans recorded' : 'لا توجد سلف مسجلة'}</td></tr>`
+                    ? `<tr><td colspan="9" style="text-align:center; padding:30px; color:var(--text-muted);">${isEn ? 'No loans recorded' : 'لا توجد سلف مسجلة'}</td></tr>`
                     : allLoans
                         .map((ln) => {
                           const emp = employees.find((e) => e.id === ln.employeeId);
                           const isSettled = Number(ln.remainingAmount) <= 0 || ln.status === 'settled';
                           const paid = Number(ln.totalAmount || ln.amount) - (Number(ln.remainingAmount) || 0);
+                          // P2.2: every loan prints with ITS OWN currency code
+                          // (never the global settings symbol) so a USD advance
+                          // and an IQD advance can never be read as the same money.
+                          const curCode = String(ln.currency || (emp && resolveEmployeeCurrency(emp, settings, companies).code) || settings.currency || 'USD').trim().toUpperCase();
+                          const fa = (amt) => formatAmountWithCode(amt, curCode);
+                          const salaryCur = emp ? resolveEmployeeCurrency(emp, settings, companies).code : curCode;
                           return `
                       <tr data-loan-id="${ln.id}">
                         <td>
                           <strong>${emp ? emp.fullName : (isEn ? 'Unknown' : 'غير معروف')}</strong>
                           <div style="font-size:11px; color:var(--text-muted);">${emp ? emp.employeeNumber : ''}</div>
                         </td>
-                        <td>${formatCurrency(ln.totalAmount || ln.amount, sym)}</td>
-                        <td><strong style="color:var(--success);">${formatCurrency(paid, sym)}</strong></td>
-                        <td><strong style="color:${isSettled ? 'var(--text-muted)' : 'var(--danger)'};">${formatCurrency(ln.remainingAmount, sym)}</strong></td>
-                        <td>${formatCurrency(ln.installmentAmount || ln.monthlyInstallment, sym)}</td>
+                        <td>
+                          <span class="badge ${curCode === salaryCur ? 'badge-info' : 'badge-warning'}" style="direction:ltr; unicode-bidi:embed;">${curCode}</span>
+                          ${curCode !== salaryCur ? `<div style="font-size:10.5px; color:var(--warning); margin-top:2px;">${isEn ? '≠ salary' : '≠ عملة الراتب'}</div>` : ''}
+                        </td>
+                        <td>${fa(ln.totalAmount || ln.amount)}</td>
+                        <td><strong style="color:var(--success);">${fa(paid)}</strong></td>
+                        <td><strong style="color:${isSettled ? 'var(--text-muted)' : 'var(--danger)'};">${fa(ln.remainingAmount)}</strong></td>
+                        <td>${fa(ln.installmentAmount || ln.monthlyInstallment)}</td>
                         <td>${ln.startMonth || '-'}</td>
                         <td>
                           <span class="badge ${isSettled ? 'badge-success' : 'badge-warning'}">
@@ -1355,7 +1366,8 @@ export function renderPayrollView(container, options = {}) {
           const loan = allLoans.find((l) => l.id === loanId);
           if (!loan) return;
           const emp = employees.find((x) => x.id === loan.employeeId);
-          const label = `${emp ? emp.fullName : (isEn ? 'Unknown employee' : 'موظف غير معروف')} — ${formatCurrency(loan.totalAmount || loan.amount, sym)}`;
+          const curCode = String(loan.currency || (emp && resolveEmployeeCurrency(emp, settings, companies).code) || settings.currency || 'USD').trim().toUpperCase();
+          const label = `${emp ? emp.fullName : (isEn ? 'Unknown employee' : 'موظف غير معروف')} — ${formatAmountWithCode(loan.totalAmount || loan.amount, curCode)}`;
           showConfirmDialog({
             title: isEn ? 'Delete Advance Record' : 'حذف سجل السلفة',
             message: isEn

@@ -16,7 +16,7 @@ import {
   defaultEOSBCalculations,
   defaultCurrencies,
 } from './seedData.js';
-import { getEffectivePermissions, getAllCurrencies } from './types.js';
+import { getEffectivePermissions, getAllCurrencies, resolveEmployeeCurrency } from './types.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -564,7 +564,20 @@ class StorageService {
     const allLeaves = this.get(STORAGE_KEYS.LEAVES, []);
     const allHourlyLeaves = this.get(STORAGE_KEYS.HOURLY_LEAVES, []);
     const allOvertime = this.get(STORAGE_KEYS.OVERTIME, []);
-    const allLoans = this.get(STORAGE_KEYS.LOANS, []);
+    // P2.2 loan-currency rule: a loan may never sit in the system without an
+    // explicit currency — legacy records missing the field are normalized here
+    // to the resolved employee's salary currency (employee > company > settings).
+    const allLoans = (this.get(STORAGE_KEYS.LOANS, []) || []).map((ln) => {
+      if (ln && !ln.currency) {
+        const emp = allEmployees.find((e) => e.id === ln.employeeId);
+        const cur = emp
+          ? resolveEmployeeCurrency(emp, settings, companies)
+          : { code: settings.currency || 'USD', symbol: settings.currencySymbol || '$' };
+        ln.currency = cur.code || 'USD';
+        ln.currencySymbol = cur.symbol || '';
+      }
+      return ln;
+    });
     const allIncrements = this.get(STORAGE_KEYS.INCREMENTS, []);
     const allAttendance = this.get(STORAGE_KEYS.ATTENDANCE, []);
     const allHolidays = this.get(STORAGE_KEYS.HOLIDAYS, []);
@@ -974,7 +987,28 @@ class StorageService {
 
   // Loans Mutators
   saveLoans(loans) { this.set(STORAGE_KEYS.LOANS, loans); }
+  // P2.2: no advance may be registered without an explicit currency. When the
+  // caller omits it, the loan inherits the employee's resolved salary currency
+  // (employee > company > global settings); 'USD' is the final fallback for
+  // records whose employee cannot be resolved.
+  _loanCurrencyOf(loan) {
+    if (loan && loan.currency && String(loan.currency).trim()) return String(loan.currency).trim().toUpperCase();
+    const emp = loan && loan.employeeId ? this._findEmployee(loan.employeeId) : null;
+    const st = this.getState();
+    if (emp) {
+      const cur = resolveEmployeeCurrency(emp, st.settings, st.companies);
+      return cur.code || 'USD';
+    }
+    return st.settings.currency || 'USD';
+  }
+  _loanSymbolOf(currencyCode) {
+    const st = this.getState();
+    const cur = getAllCurrencies(st.settings).find((c) => c.code === currencyCode);
+    return (cur && cur.symbol) || st.settings.currencySymbol || '';
+  }
   addLoan(loan) {
+    loan.currency = this._loanCurrencyOf(loan);
+    loan.currencySymbol = loan.currencySymbol || this._loanSymbolOf(loan.currency);
     this.attachEmployeeScope(loan);
     const list = this.get(STORAGE_KEYS.LOANS, []);
     list.unshift(loan);
@@ -984,6 +1018,8 @@ class StorageService {
     if (!loan || !loan.id) return { ok: false, error: 'invalid_record' };
     const emp = this._findEmployee(loan.employeeId);
     if (!emp) return { ok: false, error: 'employee_not_found' };
+    loan.currency = this._loanCurrencyOf(loan);
+    loan.currencySymbol = loan.currencySymbol || this._loanSymbolOf(loan.currency);
     this.attachEmployeeScope(loan);
     const list = this.get(STORAGE_KEYS.LOANS, []);
     const idx = list.findIndex((l) => l && l.id === loan.id);

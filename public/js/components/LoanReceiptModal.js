@@ -4,15 +4,25 @@
 
 import { storage } from '../storage.js';
 import { createModal } from './Modal.js';
-import { formatCurrency, formatDate, escapeHtml } from '../types.js';
+import { formatDate, escapeHtml, getAllCurrencies, resolveEmployeeCurrency, formatAmountWithCode } from '../types.js';
 import { toast } from './Toast.js';
 import { t, i18n } from '../i18n.js';
 
 export function openLoanReceiptModal(loan = null, onSaved) {
   const state = storage.getState();
-  const { employees, loans, settings } = state;
-  const sym = settings.currencySymbol || '$';
+  const { employees, loans, settings, companies } = state;
   const isEn = i18n.getLang() === 'en';
+
+  // P2.2 loan-currency rule: a receipt always prints with the advance's OWN
+  // currency code, never the global settings symbol.
+  const curCodeOf = (l) => {
+    if (l && l.currency) return String(l.currency).trim().toUpperCase();
+    const emp = l ? employees.find((e) => e.id === l.employeeId) : null;
+    return emp
+      ? (resolveEmployeeCurrency(emp, settings, companies).code || settings.currency || 'USD')
+      : (settings.currency || 'USD');
+  };
+  const symOf = (code) => (getAllCurrencies(settings).find((c) => c.code === code) || {}).symbol || settings.currencySymbol || '';
 
   // If no specific loan passed, show selector
   const activeLoans = loans.filter((l) => (l.remainingAmount || 0) > 0);
@@ -32,8 +42,9 @@ export function openLoanReceiptModal(loan = null, onSaved) {
         <select class="form-select" id="loan-receipt-select">
           ${activeLoans.map((l) => {
             const emp = employees.find((e) => e.id === l.employeeId);
+            const cc = curCodeOf(l);
             return `<option value="${l.id}" ${initialLoan && l.id === initialLoan.id ? 'selected' : ''}>
-              ${emp ? emp.fullName : (isEn ? 'Employee' : 'موظف')} — ${isEn ? 'Total: ' : 'إجمالي: '}${formatCurrency(l.totalAmount, sym)} | ${isEn ? 'Remaining: ' : 'المتبقي: '}${formatCurrency(l.remainingAmount, sym)}
+              ${emp ? emp.fullName : (isEn ? 'Employee' : 'موظف')} — ${isEn ? 'Total: ' : 'إجمالي: '}${formatAmountWithCode(l.totalAmount, cc)} | ${isEn ? 'Remaining: ' : 'المتبقي: '}${formatAmountWithCode(l.remainingAmount, cc)}
             </option>`;
           }).join('')}
         </select>
@@ -95,9 +106,10 @@ export function openLoanReceiptModal(loan = null, onSaved) {
         infoCard.innerHTML = `
           <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
             <div><span style="color:var(--text-muted);">${isEn ? 'Employee:' : 'الموظف:'}</span><br><strong>${escapeHtml(emp ? emp.fullName : '-')}</strong></div>
-            <div><span style="color:var(--text-muted);">${isEn ? 'Total Advance:' : 'إجمالي السلفة:'}</span><br><strong>${formatCurrency(l.totalAmount, sym)}</strong></div>
-            <div><span style="color:var(--text-muted);">${isEn ? 'Remaining:' : 'المبلغ المتبقي:'}</span><br><strong style="color:var(--danger);">${formatCurrency(l.remainingAmount, sym)}</strong></div>
-            <div><span style="color:var(--text-muted);">${isEn ? 'Monthly Installment:' : 'القسط الشهري:'}</span><br><strong>${formatCurrency(l.installmentAmount, sym)}</strong></div>
+            <div><span style="color:var(--text-muted);">${isEn ? 'Total Advance:' : 'إجمالي السلفة:'}</span><br><strong>${formatAmountWithCode(l.totalAmount, curCodeOf(l))}</strong></div>
+            <div><span style="color:var(--text-muted);">${isEn ? 'Remaining:' : 'المبلغ المتبقي:'}</span><br><strong style="color:var(--danger);">${formatAmountWithCode(l.remainingAmount, curCodeOf(l))}</strong></div>
+            <div><span style="color:var(--text-muted);">${isEn ? 'Currency:' : 'العملة:'}</span><br><strong style="direction:ltr; unicode-bidi:embed;">${curCodeOf(l)}</strong></div>
+            <div><span style="color:var(--text-muted);">${isEn ? 'Monthly Installment:' : 'القسط الشهري:'}</span><br><strong>${formatAmountWithCode(l.installmentAmount, curCodeOf(l))}</strong></div>
             <div><span style="color:var(--text-muted);">${isEn ? 'Installments Left:' : 'عدد الأقساط المتبقية:'}</span><br><strong>${l.remainingInstallments || '-'} ${isEn ? 'inst.' : 'قسط'}</strong></div>
             <div><span style="color:var(--text-muted);">${isEn ? 'Reason:' : 'سبب السلفة:'}</span><br><strong>${escapeHtml(l.reason || '-')}</strong></div>
           </div>
@@ -122,7 +134,7 @@ export function openLoanReceiptModal(loan = null, onSaved) {
         const methodText = method.options[method.selectedIndex].text;
         const notes = overlay.querySelector('#loan-pay-notes').value;
 
-        printLoanReceipt({ l, emp, payAmount, payDate, methodText, notes, settings, sym, isEn });
+        printLoanReceipt({ l, emp, payAmount, payDate, methodText, notes, settings, curCode: curCodeOf(l), isEn });
       });
 
       // Save & close
@@ -148,16 +160,17 @@ export function openLoanReceiptModal(loan = null, onSaved) {
         storage.saveLoans(allLoans);
 
         const emp = employees.find((e) => e.id === l.employeeId);
+        const cc = curCodeOf(l);
         toast.success(
           isEn
-            ? `Payment of ${formatCurrency(payAmount, sym)} recorded for ${emp?.fullName || ''}`
-            : `تم تسجيل دفعة ${formatCurrency(payAmount, sym)} لسلفة ${emp?.fullName || ''}`
+            ? `Payment of ${formatAmountWithCode(payAmount, cc)} recorded for ${emp?.fullName || ''}`
+            : `تم تسجيل دفعة ${formatAmountWithCode(payAmount, cc)} لسلفة ${emp?.fullName || ''}`
         );
 
         // Auto-print
         const method = overlay.querySelector('#loan-pay-method');
         const methodText = method.options[method.selectedIndex].text;
-        printLoanReceipt({ l: { ...l, remainingAmount: l.remainingAmount + payAmount }, emp, payAmount, payDate, methodText, notes, settings, sym, isEn });
+        printLoanReceipt({ l: { ...l, remainingAmount: l.remainingAmount + payAmount }, emp, payAmount, payDate, methodText, notes, settings, curCode: cc, isEn });
 
         close();
         if (onSaved) onSaved();
@@ -166,7 +179,8 @@ export function openLoanReceiptModal(loan = null, onSaved) {
   });
 }
 
-function printLoanReceipt({ l, emp, payAmount, payDate, methodText, notes, settings, sym, isEn }) {
+function printLoanReceipt({ l, emp, payAmount, payDate, methodText, notes, settings, curCode, isEn }) {
+  const safeCurCode = escapeHtml(String(curCode || settings.currency || 'USD'));
   const receiptNo = `LOAN-RCP-${Date.now().toString().slice(-6)}`;
   const win = window.open('', '_blank', 'width=680,height=700');
   const safeEmpName = escapeHtml(emp?.fullName || '-');
@@ -215,17 +229,18 @@ function printLoanReceipt({ l, emp, payAmount, payDate, methodText, notes, setti
     <div class="info-row"><span>${t('employeeModal.employeeNumber')}</span><strong>${safeEmpNumber}</strong></div>
     <div class="info-row"><span>${isEn ? 'Receipt No.' : 'رقم الوصل'}</span><strong>${receiptNo}</strong></div>
     <div class="info-row"><span>${isEn ? 'Payment Date' : 'تاريخ الدفع'}</span><strong>${payDate || new Date().toLocaleDateString('en-US')}</strong></div>
-    <div class="info-row"><span>${isEn ? 'Original Advance Total' : 'إجمالي السلفة الأصلية'}</span><strong>${formatCurrency(l.totalAmount, sym)}</strong></div>
+    <div class="info-row"><span>${isEn ? 'Original Advance Total' : 'إجمالي السلفة الأصلية'}</span><strong>${formatAmountWithCode(l.totalAmount, safeCurCode)}</strong></div>
+    <div class="info-row"><span>${isEn ? 'Currency' : 'العملة'}</span><strong>${safeCurCode}</strong></div>
     <div class="info-row"><span>${isEn ? 'Payment Method' : 'طريقة السداد'}</span><strong>${safeMethodText}</strong></div>
   </div>
 
   <div class="amount-box">
     <div class="label">${isEn ? 'PAID IN THIS INSTALLMENT' : 'المبلغ المسدَّد في هذه الدفعة'}</div>
-    <div class="value">${formatCurrency(payAmount, sym)}</div>
+    <div class="value">${formatAmountWithCode(payAmount, safeCurCode)}</div>
   </div>
 
   <div class="remaining">
-    ${isEn ? 'Remaining advance balance after this payment: ' : 'الرصيد المتبقي من السلفة بعد هذه الدفعة: '}${formatCurrency(Math.max(0, (l.remainingAmount || 0) - payAmount), sym)}
+    ${isEn ? 'Remaining advance balance after this payment: ' : 'الرصيد المتبقي من السلفة بعد هذه الدفعة: '}${formatAmountWithCode(Math.max(0, (l.remainingAmount || 0) - payAmount), safeCurCode)}
   </div>
 
   ${safeNotes ? `<div class="notes-box">📝 ${isEn ? 'Notes & Details: ' : 'البيان والملاحظات: '}${safeNotes}</div>` : ''}

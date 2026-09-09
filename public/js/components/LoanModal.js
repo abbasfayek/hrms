@@ -5,12 +5,12 @@
 import { storage } from '../storage.js';
 import { toast } from './Toast.js';
 import { createModal } from './Modal.js';
-import { formatCurrency, getCurrentMonth } from '../types.js';
+import { getCurrentMonth, getAllCurrencies, resolveEmployeeCurrency, formatAmountWithCode } from '../types.js';
 import { i18n, t } from '../i18n.js';
 
 export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = null) {
   const state = storage.getState();
-  const { employees, settings } = state;
+  const { employees, settings, companies } = state;
   const isEn = i18n.getLang() === 'en';
   const isEdit = !!existingLoan;
   const activeEmployees = employees.filter((e) => e.status === 'active' || e.status === 'probation');
@@ -18,6 +18,20 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
     ? existingLoan.employeeId
     : (defaultEmployeeId || (activeEmployees[0]?.id || ''));
   const currentMonth = getCurrentMonth();
+
+  // P2.2 loan-currency rule: an advance must carry an EXPLICIT currency. The
+  // employee's resolved salary currency is the default so installments are
+  // withheld in the same currency as the salary.
+  const currencies = getAllCurrencies(settings);
+  const curOf = (empId) => {
+    const emp = employees.find((e) => e.id === empId);
+    return emp
+      ? resolveEmployeeCurrency(emp, settings, companies)
+      : { code: settings.currency || 'USD', symbol: settings.currencySymbol || '$' };
+  };
+  const initialCurCode = (existingLoan && existingLoan.currency)
+    ? String(existingLoan.currency).trim().toUpperCase()
+    : curOf(selectedEmpId).code;
 
   // A loan that already has recorded payments/deductions is financially locked:
   // only the reason may be edited, never the amount, schedule or start month.
@@ -63,9 +77,25 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
         </div>
 
         <div class="form-group">
-          <label class="form-label">${isEn ? 'Total Advance Amount *' : 'مبلغ السلفة الإجمالي *'} (${settings.currencySymbol})</label>
+          <label class="form-label">${isEn ? 'Total Advance Amount *' : 'مبلغ السلفة الإجمالي *'} (<strong id="loan-cur-code-amount">${initialCurCode}</strong>)</label>
           <input type="number" step="0.01" min="1" class="form-input" name="totalAmount" id="loan-total-amount" value="${prefilled.total}" ${paymentsExist ? 'disabled' : 'required'}>
-          ${paymentsExist ? '' : `<div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${isEn ? 'From 1 and up to any amount — no upper limit.' : 'من دولار واحد فما فوق — لا يوجد حد أقصى.'}</div>`}
+          ${paymentsExist ? '' : `<div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${isEn ? 'From 1 and up to any amount — in the currency selected below.' : 'من واحد فما فوق — بعملة السلفة المحددة أدناه.'}</div>`}
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">${isEn ? 'Currency of the Advance *' : 'عملة السلفة *'}</label>
+          <select class="form-select" name="currency" id="loan-currency-select" ${paymentsExist ? 'disabled' : 'required'}>
+            ${currencies
+              .map(
+                (c) => `
+              <option value="${c.code}" ${(c.code === initialCurCode ? 'selected' : '')}>
+                ${c.code}${c.symbol ? ' (' + c.symbol + ')' : ''} — ${isEn ? c.nameEn : c.nameAr}
+              </option>
+            `
+              )
+              .join('')}
+          </select>
+          <div id="loan-currency-note" style="font-size:11px; color:var(--text-muted); margin-top:4px; line-height:1.6;"></div>
         </div>
 
         <div class="form-group">
@@ -80,7 +110,7 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
 
         <div class="form-group">
           <label class="form-label">${isEn ? 'Calculated Monthly Installment' : 'قيمة القسط الشهري المحسوبة'}</label>
-          <input type="text" class="form-input" id="loan-monthly-installment" readonly style="background:var(--bg-card-hover); font-weight:700;" value="${isEdit ? formatCurrency(((Number(existingLoan.totalAmount) || 0) / (Number(existingLoan.installmentsCount) || (existingLoan.installments || []).length || 1)) , settings.currencySymbol) : ''}">
+          <input type="text" class="form-input" id="loan-monthly-installment" readonly style="background:var(--bg-card-hover); font-weight:700;" value="${isEdit ? formatAmountWithCode(((Number(existingLoan.totalAmount) || 0) / (Number(existingLoan.installmentsCount) || (existingLoan.installments || []).length || 1)), initialCurCode) : ''}">
         </div>
 
         ${paymentsExist ? `<div style="grid-column: span 2;">${lockNote}</div>` : ''}
@@ -109,20 +139,52 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
       const totalInput = overlay.querySelector('#loan-total-amount');
       const countInput = overlay.querySelector('#loan-installments-count');
       const monthlyInput = overlay.querySelector('#loan-monthly-installment');
+      const currencySelect = overlay.querySelector('#loan-currency-select');
+      const currencyNote = overlay.querySelector('#loan-currency-note');
+      const empSelect = overlay.querySelector('select[name="employeeId"]');
+      const curCodeAmountLabel = overlay.querySelector('#loan-cur-code-amount');
       const empName = (id) => employees.find((e) => e.id === id)?.fullName || '';
+
+      function currentCurCode() {
+        return currencySelect ? (currencySelect.value || initialCurCode) : initialCurCode;
+      }
+
+      function updateCurrencyNote() {
+        if (!currencyNote) return;
+        const sel = currentCurCode();
+        const salary = curOf(isEdit ? existingLoan.employeeId : (empSelect ? empSelect.value : selectedEmpId)).code;
+        if (curCodeAmountLabel) curCodeAmountLabel.textContent = sel;
+        if (sel === salary) {
+          currencyNote.innerHTML = isEn
+            ? `✅ ${isEn ? 'Same currency as this employee\'s salary' : 'نفس عملة راتب هذا الموظف'} (<strong>${salary}</strong>) — ${isEn ? 'the installment will be withheld from payroll.' : 'سيتم استقطاع القسط من المسير.'}`
+            : `✅ ${isEn ? 'Same currency as this employee\'s salary' : 'نفس عملة راتب هذا الموظف'} (<strong>${salary}</strong>) — ${isEn ? 'the installment will be withheld from payroll.' : 'سيتم استقطاع القسط من المسير.'}`;
+        } else {
+          currencyNote.innerHTML = `⚠️ <span style="color:var(--warning);">${isEn
+            ? `Different from this employee's salary currency (<strong>${salary}</strong>) — payroll <strong>will NOT</strong> deduct this installment to prevent currency mixing.`
+            : `مختلفة عن عملة راتب هذا الموظف (<strong>${salary}</strong>) — لن يستقطع المسير هذا القسط لمنع خلط العملات.`}</span>`;
+        }
+      }
 
       function updateInstallment() {
         const total = Number(totalInput.value) || 0;
         const count = Number(countInput.value) || 1;
         const monthly = count > 0 ? (total / count).toFixed(2) : 0;
-        monthlyInput.value = formatCurrency(monthly, settings.currencySymbol);
+        monthlyInput.value = formatAmountWithCode(monthly, currentCurCode());
       }
 
       if (!paymentsExist) {
         totalInput.addEventListener('input', updateInstallment);
         countInput.addEventListener('input', updateInstallment);
+        currencySelect.addEventListener('change', () => { updateInstallment(); updateCurrencyNote(); });
+        empSelect?.addEventListener('change', () => {
+          const auto = curOf(empSelect.value).code;
+          if (auto && currencySelect) currencySelect.value = auto;
+          updateInstallment();
+          updateCurrencyNote();
+        });
         updateInstallment();
       }
+      updateCurrencyNote();
 
       overlay.querySelector('.close-modal-btn').addEventListener('click', close);
 
@@ -136,6 +198,14 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
         const formData = new FormData(form);
         const empId = isEdit ? existingLoan.employeeId : formData.get('employeeId');
         const emp = employees.find((e) => e.id === empId);
+
+        // P2.2: the loan currency is explicit and required. Legacy records keep
+        // their stored code; otherwise it is resolved from the employee's
+        // salary currency as the safe default.
+        const currency = paymentsExist
+          ? (String(existingLoan.currency || curOf(empId).code || 'USD').trim().toUpperCase())
+          : (String(formData.get('currency') || curOf(empId).code || 'USD').trim().toUpperCase());
+        const currencyRec = currencies.find((c) => c.code === currency) || curOf(empId);
 
         const totalAmount = paymentsExist
           ? Number(existingLoan.totalAmount || existingLoan.amount || 0)
@@ -159,6 +229,8 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
           createdAt: new Date().toISOString(),
         };
         baseRecord.employeeId = empId;
+        baseRecord.currency = currency;
+        baseRecord.currencySymbol = (currencyRec && currencyRec.symbol) || '';
         baseRecord.totalAmount = totalAmount;
         baseRecord.paidAmount = isEdit ? (Number(existingLoan.paidAmount) || 0) : 0;
         baseRecord.remainingAmount = paymentsExist
@@ -187,15 +259,15 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
             })();
         if (isEdit) baseRecord.updatedAt = new Date().toISOString();
 
-        const label = `${empName(empId)} — ${formatCurrency(totalAmount, settings.currencySymbol)}`;
+        const auditLabel = `${empName(empId)} — ${totalAmount} ${currency}`;
         if (isEdit) {
           storage.updateLoan(baseRecord);
-          storage.addAudit('update', 'loan', label, baseRecord.id);
+          storage.addAudit('update', 'loan', auditLabel, baseRecord.id);
           toast.success(isEn ? 'Advance record updated successfully' : 'تم تحديث سجل السلفة بنجاح');
         } else {
           storage.addLoan(baseRecord);
-          storage.addAudit('add', 'loan', label, baseRecord.id);
-          toast.success(isEn ? `Advance of ${formatCurrency(totalAmount, settings.currencySymbol)} granted successfully` : `تم تسجيل السلفة بقيمة ${formatCurrency(totalAmount, settings.currencySymbol)} بنجاح`);
+          storage.addAudit('add', 'loan', auditLabel, baseRecord.id);
+          toast.success(isEn ? `Advance of ${formatAmountWithCode(totalAmount, currency)} granted successfully` : `تم تسجيل السلفة بقيمة ${formatAmountWithCode(totalAmount, currency)} بنجاح`);
         }
         close();
         if (onSaved) onSaved(baseRecord);

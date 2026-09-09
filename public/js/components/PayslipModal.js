@@ -68,7 +68,20 @@ export function openPayslipModal(employee, targetMonth = null) {
     : 0;
 
   // Loan installment for this month
-  const activeLoans = loans.filter((l) => l.employeeId === employee.id && l.status === "active");
+  // P2.2 loan-currency rule: matches the payroll engine — only advances in the
+  // employee's salary currency are deducted on the payslip; others are listed
+  // separately and never merged into the deduction total.
+  const activeLoans = loans.filter(
+    (l) => l.employeeId === employee.id
+      && l.status === "active"
+      && (!l.currency || String(l.currency).toUpperCase() === String(curCode).toUpperCase())
+  );
+  const mismatchedCurrencyLoans = loans.filter(
+    (l) => l.employeeId === employee.id
+      && l.status === "active"
+      && l.currency
+      && String(l.currency).toUpperCase() !== String(curCode).toUpperCase()
+  );
   const loanInstallment = activeLoans.reduce((s, l) => s + (Number(l.installmentAmount || l.monthlyInstallment) || 0), 0);
 
   // Absence / late deductions
@@ -173,8 +186,15 @@ export function openPayslipModal(employee, targetMonth = null) {
                 <td style="text-align:left; font-weight:700; color:var(--danger);">-${v(gosiDeduction)}</td>
               </tr>` : ""}
               ${loanInstallment > 0 ? `<tr style="border-bottom:1px solid var(--border-color);">
-                <td style="padding:7px 0; color:var(--text-muted);">${isEn ? 'Loan / Advance Installment' : 'قسط السلفة الشهرية'}</td>
+                <td style="padding:7px 0; color:var(--text-muted);">${isEn ? 'Loan / Advance Installment' : 'قسط السلفة الشهرية'} (${curCode})</td>
                 <td style="text-align:left; font-weight:700; color:var(--danger);">-${v(loanInstallment)}</td>
+              </tr>` : ""}
+              ${mismatchedCurrencyLoans.length > 0 ? `<tr style="border-bottom:1px dashed var(--border-color);">
+                <td style="padding:7px 0; color:var(--warning); font-size:11.5px;" colspan="2">
+                  ⚠️ ${isEn
+                    ? `Not deducted — ${mismatchedCurrencyLoans.length} advance(s) in ${[...new Set(mismatchedCurrencyLoans.map((l) => l.currency))].join(', ')} differ from the salary currency (${curCode}).`
+                    : `لا يُقتطع — ${mismatchedCurrencyLoans.length} سلفة بعملة ${[...new Set(mismatchedCurrencyLoans.map((l) => l.currency))].join(', ')} تختلف عن عملة الراتب (${curCode}).`}
+                </td>
               </tr>` : ""}
               ${absenceDeduction > 0 ? `<tr style="border-bottom:1px solid var(--border-color);">
                 <td style="padding:7px 0; color:var(--text-muted);">${isEn ? 'Absence Deduction' : 'خصم غياب'} (${absenceDays} ${isEn ? 'days' : 'يوم'})</td>
@@ -337,7 +357,8 @@ function printIsolatedPayslip(data) {
       <div class="box-title" style="color:#dc2626;">${isEn ? '2. Deductions & Advances' : '2. الاستقطاعات والسلف'}</div>
       <div class="box-body">
         ${gosiDeduction > 0 ? `<div class="item-row"><span>${isEn ? 'Social Security (Employee)' : 'التأمينات الاجتماعية (الموظف)'}</span><strong style="color:#dc2626;">- ${v(gosiDeduction)}</strong></div>` : ''}
-        ${loanInstallment > 0 ? `<div class="item-row"><span>${isEn ? 'Loan / Advance Installment' : 'قسط السلفة / القرض'}</span><strong style="color:#dc2626;">- ${v(loanInstallment)}</strong></div>` : ''}
+        ${loanInstallment > 0 ? `<div class="item-row"><span>${isEn ? 'Loan / Advance Installment' : 'قسط السلفة / القرض'} (${curCode})</span><strong style="color:#dc2626;">- ${v(loanInstallment)}</strong></div>` : ''}
+        ${mismatchedCurrencyLoans.length > 0 ? `<div class="item-row" style="color:#d97706; font-size:11px;"><span>⚠️ ${isEn ? 'Not deducted' : 'لا يُقتطع'}</span><strong style="color:#d97706;">${mismatchedCurrencyLoans.length} ${isEn ? 'advance(s)' : 'سلفة'} ${[...new Set(mismatchedCurrencyLoans.map((l) => l.currency))].join(', ')} ≠ ${curCode}</strong></div>` : ''}
         ${absenceDeduction > 0 ? `<div class="item-row"><span>${isEn ? 'Absence Deduction' : 'خصم غياب'}</span><strong style="color:#dc2626;">- ${v(absenceDeduction)}</strong></div>` : ''}
         ${lateDeduction > 0 ? `<div class="item-row"><span>${isEn ? 'Late Arrival Deduction' : 'خصم تأخير'}</span><strong style="color:#dc2626;">- ${v(lateDeduction)}</strong></div>` : ''}
         <div class="item-row" style="font-weight:900; border-top:1px solid #cbd5e1; margin-top:6px; padding-top:8px;">

@@ -79,11 +79,27 @@ export function generateMonthlyPayroll(
     const lateDeduction = parseFloat((totalLateMinutes * minuteWage).toFixed(2));
 
     // Loans & Advances
+    // P2.2 loan-currency rule: an installment may only be withheld from the
+    // payroll when the advance is in the SAME currency as the employee's
+    // salary. An advance in a different currency is never silently deducted —
+    // it is skipped and reported on the item so no currency is ever mixed.
     const activeLoans = (loans || []).filter(
       (l) => l.employeeId === emp.id && l.status === 'active' && Number(l.remainingAmount) > 0
     );
     let loanInstallment = 0;
+    const currencyMismatchLoans = [];
+    const loanCurrencyOf = (loan) => String(loan.currency || resolveEmployeeCurrency(emp, settings, companies).code || 'USD').trim().toUpperCase();
     activeLoans.forEach((loan) => {
+      const loanCurrency = loanCurrencyOf(loan);
+      if (loanCurrency !== currency) {
+        currencyMismatchLoans.push({
+          loanId: loan.id,
+          loanCurrency,
+          salaryCurrency: currency,
+          installmentAmount: Number(loan.installmentAmount) || (Number(loan.installments?.[0]?.amount) || 0),
+        });
+        return;
+      }
       const schedule = loan.installments || [];
       const matchInst = schedule.find((inst) => inst.month === month && !inst.isPaid);
       if (matchInst) {
@@ -171,6 +187,10 @@ export function generateMonthlyPayroll(
       lateMinutes: totalLateMinutes,
       lateDeduction,
       loanInstallment,
+      currencyMismatchLoans,
+      notes: currencyMismatchLoans.length
+        ? `[Currency guard] ${currencyMismatchLoans.length} advance(s) in ${[...new Set(currencyMismatchLoans.map((m) => m.loanCurrency))].join(', ')} skipped from payroll (salary currency: ${currency}).`
+        : '',
       isSubjectToGosi: emp.isSubjectToGosi !== false,
       gosiRegisteredWage: gosiBase,
       gosiEmployeePercent: gosiEmpRate,

@@ -155,6 +155,7 @@ export function renderEOSBView(container, options = {}) {
                   <td><strong style="color:var(--primary);">${fmtAmt(item, item.leaveCompensationAmount)}</strong></td>
                   <td>
                     <strong style="color:var(--success); font-size:15px;">${fmtAmt(item, item.netSettlementAmount)}</strong>
+                    ${Number(item.currencyMismatchLoanCount) > 0 ? `<div style="font-size:10.5px; color:var(--warning); margin-top:2px; line-height:1.5;">⚠️ ${Number(item.currencyMismatchLoanCount)} ${isEn ? 'advance(s) in a different currency not deducted' : 'سلفة بعملة مختلفة لم تُخصم'} (${item.salaryCurrency || ''})</div>` : ''}
                   </td>
                   <td>
                     <span class="badge ${meta.badge}">${isEn ? meta.en : meta.ar}</span>

@@ -244,6 +244,41 @@ ok('clearPayrollAmounts never mutates the submitted batch', Math.abs(batchMC.tot
 const recalculated = generateMonthlyPayroll([empA, empB], stateMC.overtime, stateMC.loans, stateMC.attendance, { month: '2026-02', issueDate: '2026-02-28', title: 'MC-recalc', companies: defaultCompanies }, stateMC.settings);
 ok('HR recalculation after rejection regenerates live amounts (non-zero)', recalculated.totalNet > 0 && recalculated.items.every((it) => it.netSalary > 0));
 
+console.log('  [P2.2 loan-currency rule (explicit currency, same-currency deduction)]');
+storage.saveLoans([]);
+const loanAUsd = storage.addLoan({ id: 'loan-cu-a-usd', employeeId: empA.id, totalAmount: 1200, paidAmount: 0, remainingAmount: 1200, installmentAmount: 400, installmentsCount: 3, startDate: '2026-02-01', reason: 'housing', status: 'active', currency: 'USD', installments: [{ month: '2026-02', amount: 400, isPaid: false }] });
+ok('addLoan keeps an explicitly declared currency', storage.getState().loans.find((l) => l.id === 'loan-cu-a-usd')?.currency === 'USD');
+const loanAIqd = storage.addLoan({ id: 'loan-cu-a-iqd', employeeId: empA.id, totalAmount: 300000, paidAmount: 0, remainingAmount: 300000, installmentAmount: 100000, installmentsCount: 3, startDate: '2026-02-01', reason: 'car', status: 'active', currency: 'IQD', installments: [{ month: '2026-02', amount: 100000, isPaid: false }] });
+ok('addLoan accepts an IQD advance for a USD-salary employee (recorded, will not be deducted)', storage.getState().loans.some((l) => l.id === 'loan-cu-a-iqd'));
+const loanBImplicit = storage.addLoan({ id: 'loan-cu-b-implicit', employeeId: empB.id, totalAmount: 750000, paidAmount: 0, remainingAmount: 750000, installmentAmount: 250000, installmentsCount: 3, startDate: '2026-02-01', reason: 'furniture', status: 'active', installments: [{ month: '2026-02', amount: 250000, isPaid: false }] });
+ok('addLoan without a currency defaults to the employee resolved salary currency (IQD)', storage.getState().loans.find((l) => l.id === 'loan-cu-b-implicit')?.currency === 'IQD');
+const updKept = storage.updateLoan({ id: 'loan-cu-b-implicit', employeeId: empB.id, totalAmount: 900000, paidAmount: 0, remainingAmount: 900000, installmentAmount: 300000, installmentsCount: 3, startDate: '2026-02-01', reason: 'furniture', status: 'active', installments: [{ month: '2026-02', amount: 300000, isPaid: false }] });
+ok('updateLoan preserved the stamped currency across edits', updKept.ok === true && storage.getState().loans.find((l) => l.id === 'loan-cu-b-implicit')?.currency === 'IQD');
+const stateLC = storage.getState();
+const batchLC = generateMonthlyPayroll([empA, empB], stateLC.overtime, stateLC.loans, stateLC.attendance, { month: '2026-02', issueDate: '2026-02-28', title: 'LoanCurrency', companies: defaultCompanies }, stateLC.settings);
+const itLCa = batchLC.items.find((it) => it.employeeId === empA.id);
+const itLCb = batchLC.items.find((it) => it.employeeId === empB.id);
+ok('USD employee pays ONLY the USD advance installment', itLCa && Math.abs(itLCa.loanInstallment - 400) < 0.01);
+ok('IQD advance is reported as skipped for the USD employee', itLCa.currencyMismatchLoans.length === 1 && itLCa.currencyMismatchLoans[0].loanCurrency === 'IQD' && itLCa.currencyMismatchLoans[0].salaryCurrency === 'USD');
+ok('currency guard note is attached to the item', itLCa.notes.includes('Currency guard') && itLCa.notes.includes('IQD'));
+ok('IQD employee (implicit IQD advance) still deducts its installment', itLCb && Math.abs(itLCb.loanInstallment - 300000) < 0.01 && itLCb.currencyMismatchLoans.length === 0);
+ok('IQD salary never mixes with USD advance money', !batchLC.items.some((it) => it.employeeId === empA.id && Math.abs(it.loanInstallment - 100000) < 0.01));
+ok('mismatched advance money never enters the USD item deductions', Math.abs(itLCa.totalDeductions - (itLCa.gosiEmployeeDeduction + itLCa.loanInstallment + itLCa.absenceDeduction + itLCa.lateDeduction + (itLCa.penaltiesDeduction || 0) + (itLCa.otherDeductions || 0))) < 0.01);
+ok('net salary equals gross minus the same-currency deductions only', Math.abs(itLCa.netSalary - Math.max(0, itLCa.grossSalary - itLCa.totalDeductions)) < 0.01);
+
+console.log('  [P2.2 EOSB advanced settlement & loan-currency rule]');
+const { calculateEOSB } = await import(`${JS}engines/eosbEngine.js`);
+const eosbA = calculateEOSB({ employee: empA, terminationDate: '2026-02-28', reason: 'resignation', loans: [storage.getState().loans.find((l) => l.id === 'loan-cu-a-usd'), storage.getState().loans.find((l) => l.id === 'loan-cu-a-iqd')], settings: defaultSettings, companies: defaultCompanies });
+ok('EOSB salary currency resolved to USD', eosbA.salaryCurrency === 'USD');
+ok('EOSB deducts only the same-currency advance balance (USD)', Math.abs(eosbA.remainingLoanDeductions - 1200) < 0.01);
+ok('EOSB flags the mismatched IQD advance and never deducts it', eosbA.currencyMismatchLoanCount === 1 && eosbA.skippedCurrencyLoans.length === 1 && eosbA.skippedCurrencyLoans[0].currency === 'IQD');
+ok('EOSB financial-clearing clearance item stays unchecked while loans remain', eosbA.clearanceItems.every((c) => c.department.includes('الإدارة المالية') ? c.isHandedOver === false : true));
+const eosbB = calculateEOSB({ employee: empB, terminationDate: '2026-02-28', reason: 'end_of_contract', loans: [storage.getState().loans.find((l) => l.id === 'loan-cu-b-implicit')], settings: defaultSettings, companies: defaultCompanies });
+ok('EOSB for the IQD employee deducts the IQD advance (financial check stays open)', eosbB.salaryCurrency === 'IQD' && Math.abs(eosbB.remainingLoanDeductions - 900000) < 0.01 && eosbB.currencyMismatchLoanCount === 0 && eosbB.clearanceItems.some((c) => c.department.includes('الإدارة المالية') && c.isHandedOver === false));
+const eosbB2 = calculateEOSB({ employee: empB, terminationDate: '2026-02-28', reason: 'end_of_contract', loans: [Object.assign({}, storage.getState().loans.find((l) => l.id === 'loan-cu-b-implicit'), { remainingAmount: 0 })], settings: defaultSettings, companies: defaultCompanies });
+ok('EOSB financial-clearing check flips to cleared once the matching advance is settled', Math.abs(eosbB2.remainingLoanDeductions) < 0.01 && eosbB2.clearanceItems.some((c) => c.department.includes('الإدارة المالية') && c.isHandedOver === true));
+storage.saveLoans([]);
+
 console.log('\n============================================');
 console.log(`P2.2 TEST MATRIX: ${passed} passed, ${failed} failed`);
 if (failures.length) { console.log('Failed:', failures.join(' | ')); }

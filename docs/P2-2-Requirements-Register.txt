@@ -145,8 +145,22 @@ HRMS - سجل متطلبات P2.2 (Requirements Register)
      summarizeCurrencySegmentsHtml في PayrollView و EOSBView.
    - أزرار Edit/Delete للسلف محمية (قفل المبلغ/القسط/المدة عند
      وجود دفعات) + storage.updateLoan/deleteLoan.
-   - قاعدة رفض التدقيق (Reject-and-Return): رفض المدقق يُفرّغ
-     المسير إلى صفر (clearPayrollAmounts) ويعيده لمسؤول الرواتب
-     كمسودة مع تنبيه وزر إعادة الاحتساب للترحيل من البيانات الحية.
-     Enforced في PayrollView.js (نافذة تأكيد + addAudit reject).
+- قاعدة رفض التدقيق (Reject-and-Return): رفض المدقق يُفرّغ
+      المسير إلى صفر (clearPayrollAmounts) ويعيده لمسؤول الرواتب
+      كمسودة مع تنبيه وزر إعادة الاحتساب للترحيل من البيانات الحية.
+      Enforced في PayrollView.js (نافذة تأكيد + addAudit reject).
+   - قاعدة عملة السلفة الإلزامية (ملزمة): يحظر تسجيل/عرض سلفة بلا
+      عملة صريحة — إدخال عملة في LoanModal (قائمة كل العملات، تملأ
+      بعملة راتب الموظف، مُجمَّدة بعد الأقساط)، دمج العملة تلقائيًا
+      في storage (addLoan/updateLoan/تبويب getState)، عمود العملة في
+      جدول السلف ورقم كل سلفة بعملتها في الإيصال والقسيمة، وخصم القسط
+      فقط لعملة راتب الموظف في payrollEngine و eosbEngine مع
+      currencyMismatchLoans/currencyMismatchLoanCount وملاحظة
+      "[Currency guard]". يجري التحقق اليدوي في الواجهة.
+   - تفعيل تبويب استقالات/نهاية الخدمة: إصلاح خطأ TDZ
+      (workflowNoteHtml قبل تعريفه في EOSBCalculatorModal) وتمرير
+      companies إلى calculateEOSB — يعمل الاحتساب/الحفظ/الاعتماد/
+      الدفع/إصدار المخالصة كاملًا. يجري التحقق اليدوي في الواجهة.
+   - الاختبارات بعد التسليم: npm run p22:test: 95/95، p21:test:
+      47/47، release:test: 66/66، والبناء سليم.
 ============================================================
