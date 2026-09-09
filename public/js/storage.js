@@ -980,6 +980,24 @@ class StorageService {
     list.unshift(loan);
     this.set(STORAGE_KEYS.LOANS, list);
   }
+  updateLoan(loan) {
+    if (!loan || !loan.id) return { ok: false, error: 'invalid_record' };
+    const emp = this._findEmployee(loan.employeeId);
+    if (!emp) return { ok: false, error: 'employee_not_found' };
+    this.attachEmployeeScope(loan);
+    const list = this.get(STORAGE_KEYS.LOANS, []);
+    const idx = list.findIndex((l) => l && l.id === loan.id);
+    if (idx === -1) return { ok: false, error: 'not_found' };
+    list[idx] = loan;
+    this.set(STORAGE_KEYS.LOANS, list);
+    return { ok: true, saved: loan };
+  }
+  deleteLoan(loanId) {
+    const list = this.get(STORAGE_KEYS.LOANS, []);
+    const removed = list.filter((l) => l && l.id === loanId);
+    if (removed.length) this.archiveDeletedRecords('loans', removed, 'deleted');
+    this.set(STORAGE_KEYS.LOANS, list.filter((l) => !(l && l.id === loanId)));
+  }
 
   // Increments Mutators
   saveIncrements(inc) { this.set(STORAGE_KEYS.INCREMENTS, inc); }

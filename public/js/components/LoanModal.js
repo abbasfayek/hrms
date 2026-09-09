@@ -8,20 +8,48 @@ import { createModal } from './Modal.js';
 import { formatCurrency, getCurrentMonth } from '../types.js';
 import { i18n, t } from '../i18n.js';
 
-export function openLoanModal(defaultEmployeeId = null, onSaved) {
+export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = null) {
   const state = storage.getState();
   const { employees, settings } = state;
   const isEn = i18n.getLang() === 'en';
+  const isEdit = !!existingLoan;
   const activeEmployees = employees.filter((e) => e.status === 'active' || e.status === 'probation');
-  const selectedEmpId = defaultEmployeeId || (activeEmployees[0]?.id || '');
+  const selectedEmpId = isEdit
+    ? existingLoan.employeeId
+    : (defaultEmployeeId || (activeEmployees[0]?.id || ''));
   const currentMonth = getCurrentMonth();
+
+  // A loan that already has recorded payments/deductions is financially locked:
+  // only the reason may be edited, never the amount, schedule or start month.
+  const paymentsExist = isEdit && (
+    (Number(existingLoan.paidAmount) || 0) > 0 ||
+    (existingLoan.installments || []).some((x) => x.isPaid) ||
+    (Number(existingLoan.remainingAmount) || 0) < Number(existingLoan.totalAmount || existingLoan.amount || 0)
+  );
+
+  const prefilled = {
+    total: isEdit ? (Number(existingLoan.totalAmount) || Number(existingLoan.amount) || 0) : 3000,
+    count: isEdit
+      ? (Number(existingLoan.installmentsCount) || (existingLoan.installments || []).length || 3)
+      : 3,
+    start: isEdit ? (existingLoan.startDate || existingLoan.installments?.[0]?.month || currentMonth) : currentMonth,
+    reason: isEdit ? (existingLoan.reason || '') : '',
+  };
+
+  const lockNote = paymentsExist
+    ? `<div style="font-size:11.5px; color:var(--warning); margin-top:6px; line-height:1.7; padding:8px 10px; background:rgba(245,158,11,0.1); border-radius:8px;">
+        ${isEn
+          ? '🔒 This advance already has recorded payments/deductions, so the amount, installments and start month are locked. Only the reason can be edited to protect financial records.'
+          : '🔒 هذه السلفة تم تسديد مدفوعات / استقطاعات لها مسبقاً، لذلك تم قفل المبلغ وعدد الأقساط وشهر البداية. يمكن تعديل السبب فقط حفاظاً على السجلات المالية.'}
+      </div>`
+    : '';
 
   const bodyHtml = `
     <form id="loan-form">
       <div class="grid grid-cols-2">
         <div class="form-group" style="grid-column: span 2;">
           <label class="form-label">${isEn ? 'Employee *' : 'الموظف *'}</label>
-          <select class="form-select" name="employeeId" required>
+          <select class="form-select" name="employeeId" required ${isEdit ? 'disabled' : ''}>
             ${activeEmployees
               .map(
                 (emp) => `
@@ -36,28 +64,30 @@ export function openLoanModal(defaultEmployeeId = null, onSaved) {
 
         <div class="form-group">
           <label class="form-label">${isEn ? 'Total Advance Amount *' : 'مبلغ السلفة الإجمالي *'} (${settings.currencySymbol})</label>
-          <input type="number" step="0.01" min="1" class="form-input" name="totalAmount" id="loan-total-amount" value="3000" required>
-          <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${isEn ? 'From 1 and up to any amount — no upper limit.' : 'من دولار واحد فما فوق — لا يوجد حد أقصى.'}</div>
+          <input type="number" step="0.01" min="1" class="form-input" name="totalAmount" id="loan-total-amount" value="${prefilled.total}" ${paymentsExist ? 'disabled' : 'required'}>
+          ${paymentsExist ? '' : `<div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${isEn ? 'From 1 and up to any amount — no upper limit.' : 'من دولار واحد فما فوق — لا يوجد حد أقصى.'}</div>`}
         </div>
 
         <div class="form-group">
           <label class="form-label">${isEn ? 'Number of Repayment Months (Installments) *' : 'عدد أشهر السداد (الأقساط) *'}</label>
-          <input type="number" min="1" max="36" class="form-input" name="installmentsCount" id="loan-installments-count" value="3" required>
+          <input type="number" min="1" max="36" class="form-input" name="installmentsCount" id="loan-installments-count" value="${prefilled.count}" ${paymentsExist ? 'disabled' : 'required'}>
         </div>
 
         <div class="form-group">
           <label class="form-label">${isEn ? 'Deduction Start Month (Payroll) *' : 'شهر بداية الخصم من مسير الرواتب *'}</label>
-          <input type="month" class="form-input" name="startDate" value="${currentMonth}" required>
+          <input type="month" class="form-input" name="startDate" value="${prefilled.start}" ${paymentsExist ? 'disabled' : 'required'}>
         </div>
 
         <div class="form-group">
           <label class="form-label">${isEn ? 'Calculated Monthly Installment' : 'قيمة القسط الشهري المحسوبة'}</label>
-          <input type="text" class="form-input" id="loan-monthly-installment" readonly style="background:var(--bg-card-hover); font-weight:700;">
+          <input type="text" class="form-input" id="loan-monthly-installment" readonly style="background:var(--bg-card-hover); font-weight:700;" value="${isEdit ? formatCurrency(((Number(existingLoan.totalAmount) || 0) / (Number(existingLoan.installmentsCount) || (existingLoan.installments || []).length || 1)) , settings.currencySymbol) : ''}">
         </div>
+
+        ${paymentsExist ? `<div style="grid-column: span 2;">${lockNote}</div>` : ''}
 
         <div class="form-group" style="grid-column: span 2;">
           <label class="form-label">${isEn ? 'Reason for Granting Advance *' : 'سبب منح السلفة *'}</label>
-          <textarea class="form-textarea" name="reason" required placeholder="${isEn ? 'e.g. education expenses, urgent personal circumstances...' : 'مثال: سلفة لتغطية مصاريف دراسية، ظروف شخصية طارئة...'}"></textarea>
+          <textarea class="form-textarea" name="reason" required placeholder="${isEn ? 'e.g. education expenses, urgent personal circumstances...' : 'مثال: سلفة لتغطية مصاريف دراسية، ظروف شخصية طارئة...'}">${prefilled.reason}</textarea>
         </div>
       </div>
     </form>
@@ -65,11 +95,13 @@ export function openLoanModal(defaultEmployeeId = null, onSaved) {
 
   const footerHtml = `
     <button type="button" class="btn btn-secondary close-modal-btn">${t('cancel')}</button>
-    <button type="button" class="btn btn-primary submit-loan-btn">${isEn ? 'Record & Approve Advance' : 'تسجيل واعتماد السلفة'}</button>
+    <button type="button" class="btn btn-primary submit-loan-btn">${isEdit ? (isEn ? 'Save Changes' : 'حفظ التعديلات') : (isEn ? 'Record & Approve Advance' : 'تسجيل واعتماد السلفة')}</button>
   `;
 
   createModal({
-    title: isEn ? 'Grant a Financial Advance to an Employee' : 'تسجيل ومنح سلفة مالية للموظف',
+    title: isEdit
+      ? (isEn ? 'Edit Advance Record' : 'تعديل سجل السلفة')
+      : (isEn ? 'Grant a Financial Advance to an Employee' : 'تسجيل ومنح سلفة مالية للموظف'),
     size: 'md',
     bodyHtml,
     footerHtml,
@@ -77,6 +109,7 @@ export function openLoanModal(defaultEmployeeId = null, onSaved) {
       const totalInput = overlay.querySelector('#loan-total-amount');
       const countInput = overlay.querySelector('#loan-installments-count');
       const monthlyInput = overlay.querySelector('#loan-monthly-installment');
+      const empName = (id) => employees.find((e) => e.id === id)?.fullName || '';
 
       function updateInstallment() {
         const total = Number(totalInput.value) || 0;
@@ -85,9 +118,11 @@ export function openLoanModal(defaultEmployeeId = null, onSaved) {
         monthlyInput.value = formatCurrency(monthly, settings.currencySymbol);
       }
 
-      totalInput.addEventListener('input', updateInstallment);
-      countInput.addEventListener('input', updateInstallment);
-      updateInstallment();
+      if (!paymentsExist) {
+        totalInput.addEventListener('input', updateInstallment);
+        countInput.addEventListener('input', updateInstallment);
+        updateInstallment();
+      }
 
       overlay.querySelector('.close-modal-btn').addEventListener('click', close);
 
@@ -99,54 +134,71 @@ export function openLoanModal(defaultEmployeeId = null, onSaved) {
         }
 
         const formData = new FormData(form);
-        const totalAmount = Number(formData.get('totalAmount')) || 0;
-        const installmentsCount = Number(formData.get('installmentsCount')) || 1;
-        const installmentAmount = parseFloat((totalAmount / installmentsCount).toFixed(2));
-        const startDate = formData.get('startDate');
-        const emp = employees.find((e) => e.id === formData.get('employeeId'));
-        if (storage.employeeScopeError(emp)) {
+        const empId = isEdit ? existingLoan.employeeId : formData.get('employeeId');
+        const emp = employees.find((e) => e.id === empId);
+
+        const totalAmount = paymentsExist
+          ? Number(existingLoan.totalAmount || existingLoan.amount || 0)
+          : (Number(formData.get('totalAmount')) || 0);
+        const installmentsCount = paymentsExist
+          ? (Number(existingLoan.installmentsCount) || (existingLoan.installments || []).length || 1)
+          : (Number(formData.get('installmentsCount')) || 1);
+        const startDate = paymentsExist
+          ? (existingLoan.startDate || existingLoan.installments?.[0]?.month)
+          : formData.get('startDate');
+        const installmentAmount = parseFloat((totalAmount / Math.max(1, installmentsCount)).toFixed(2));
+        const reason = formData.get('reason') || existingLoan?.reason || '';
+
+        if (!isEdit && storage.employeeScopeError(emp)) {
           toast.error(isEn ? 'This employee has no Company/Branch assigned — assign both in their profile before saving this record.' : 'هذا الموظف غير مربوط بشركة وفرع — قم بتعيينهما في ملفه قبل حفظ هذا السجل.');
           return;
         }
 
-        // Generate installments array
-        const installments = [];
-        let [startYear, startMonth] = startDate.split('-').map(Number);
-
-        for (let i = 0; i < installmentsCount; i++) {
-          const m = String(startMonth).padStart(2, '0');
-          installments.push({
-            month: `${startYear}-${m}`,
-            amount: installmentAmount,
-            isPaid: false,
-          });
-          startMonth++;
-          if (startMonth > 12) {
-            startMonth = 1;
-            startYear++;
-          }
-        }
-
-        const loanRecord = {
+        const baseRecord = isEdit ? { ...existingLoan } : {
           id: `loan-${Date.now()}`,
-          employeeId: formData.get('employeeId'),
-          totalAmount,
-          paidAmount: 0,
-          remainingAmount: totalAmount,
-          installmentAmount,
-          installmentsCount,
-          startDate,
-          reason: formData.get('reason'),
-          status: 'active',
-          installments,
           createdAt: new Date().toISOString(),
         };
+        baseRecord.employeeId = empId;
+        baseRecord.totalAmount = totalAmount;
+        baseRecord.paidAmount = isEdit ? (Number(existingLoan.paidAmount) || 0) : 0;
+        baseRecord.remainingAmount = paymentsExist
+          ? (Number(existingLoan.remainingAmount) || totalAmount)
+          : totalAmount;
+        baseRecord.installmentAmount = installmentAmount;
+        baseRecord.installmentsCount = installmentsCount;
+        baseRecord.startDate = startDate;
+        baseRecord.reason = reason;
+        baseRecord.status = isEdit ? (existingLoan.status || 'active') : 'active';
+        baseRecord.installments = paymentsExist
+          ? (existingLoan.installments || [])
+          : (() => {
+              const schedule = [];
+              let [startYear, startMonth] = startDate.split('-').map(Number);
+              for (let i = 0; i < installmentsCount; i++) {
+                schedule.push({
+                  month: `${startYear}-${String(startMonth).padStart(2, '0')}`,
+                  amount: installmentAmount,
+                  isPaid: false,
+                });
+                startMonth++;
+                if (startMonth > 12) { startMonth = 1; startYear++; }
+              }
+              return schedule;
+            })();
+        if (isEdit) baseRecord.updatedAt = new Date().toISOString();
 
-        storage.addLoan(loanRecord);
-        storage.addAudit('add', 'loan', `${emp?.fullName || ''} — ${formatCurrency(totalAmount, settings.currencySymbol)}`, loanRecord.id);
-        toast.success(isEn ? `Advance of ${formatCurrency(totalAmount, settings.currencySymbol)} granted successfully` : `تم تسجيل السلفة بقيمة ${formatCurrency(totalAmount, settings.currencySymbol)} بنجاح`);
+        const label = `${empName(empId)} — ${formatCurrency(totalAmount, settings.currencySymbol)}`;
+        if (isEdit) {
+          storage.updateLoan(baseRecord);
+          storage.addAudit('update', 'loan', label, baseRecord.id);
+          toast.success(isEn ? 'Advance record updated successfully' : 'تم تحديث سجل السلفة بنجاح');
+        } else {
+          storage.addLoan(baseRecord);
+          storage.addAudit('add', 'loan', label, baseRecord.id);
+          toast.success(isEn ? `Advance of ${formatCurrency(totalAmount, settings.currencySymbol)} granted successfully` : `تم تسجيل السلفة بقيمة ${formatCurrency(totalAmount, settings.currencySymbol)} بنجاح`);
+        }
         close();
-        if (onSaved) onSaved(loanRecord);
+        if (onSaved) onSaved(baseRecord);
       });
     },
   });

@@ -4,7 +4,7 @@
 
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegments, isPayrollViewEnabled } from '../types.js';
+import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule } from '../engines/payrollEngine.js';
 import { openPayslipModal } from './PayslipModal.js';
 import { openBatchPayslipsPrintModal, printIsolatedBatchPayslips } from './BatchPayslipsPrintModal.js';
@@ -15,6 +15,7 @@ import { openLoanReceiptModal } from './LoanReceiptModal.js';
 import { openDeductionBonusModal, openDeductionsBonusesListModal } from './DeductionBonusModal.js';
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
 import { toast } from './Toast.js';
+import { showConfirmDialog } from './Modal.js';
 import { t, tf, i18n } from '../i18n.js';
 import { can } from '../types.js';
 
@@ -57,6 +58,8 @@ export function renderPayrollView(container, options = {}) {
   const canApprove = can(state.currentUser, 'payroll.approve');
   const canGrantLoan = can(state.currentUser, 'loans.add');
   const canPayLoan = can(state.currentUser, 'loans.pay');
+  const canEditLoan = can(state.currentUser, 'loans.edit');
+  const canDeleteLoan = can(state.currentUser, 'loans.delete');
   const canDeductions = can(state.currentUser, 'deductions.add');
   const canAddIncrement = can(state.currentUser, 'increments.add');
 
@@ -185,9 +188,11 @@ export function renderPayrollView(container, options = {}) {
     const paidBatches = livePayrolls.filter((b) => b.status === 'paid');
 
     // P2.2 multi-currency: never sum different currencies into one figure.
-    const seg = (k) => summarizeCurrencySegments((currentBatch?.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })));
+    // Each currency renders on its own line, with its own decimals and a tinted
+    // code, so mixed-currency totals stay readable (no overflow/overlap).
+    const seg = (k, sign) => summarizeCurrencySegmentsHtml((currentBatch?.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })), { sign });
     const itCur = (it) => it.currency || settings.currency || 'USD';
-    const segCol = (fn) => summarizeCurrencySegments((currentBatch?.items || []).map((it) => ({ code: itCur(it), amount: Number(fn(it)) || 0 })));
+    const segCol = (fn, sign) => summarizeCurrencySegmentsHtml((currentBatch?.items || []).map((it) => ({ code: itCur(it), amount: Number(fn(it)) || 0 })), { sign });
 
     // A month without a batch (not due yet / no employees) must never crash the
     // audit, loans, increments or disbursed tabs. Only the batches-dependant
@@ -567,7 +572,7 @@ export function renderPayrollView(container, options = {}) {
           <div class="card stat-card stat-danger">
             <div>
               <div class="stat-label">${t('payroll.totalDeductions')}</div>
-              <div class="stat-value" style="font-size:15px; line-height:1.6; color:var(--danger);">- ${seg('deductions')}</div>
+              <div class="stat-value" style="font-size:15px; line-height:1.6; color:var(--danger);">${seg('deductions', '-')}</div>
               <div class="stat-sub">${isEn ? 'Advances, Insurance & Absences' : 'السلف، التأمينات والخصومات'}</div>
             </div>
             <div class="stat-icon-wrapper">${Icons.trendingUp(22)}</div>
@@ -711,9 +716,9 @@ export function renderPayrollView(container, options = {}) {
                 <tr style="background:var(--bg-card-hover); font-weight:800;">
                   <td colspan="6">${isEn ? 'Total' : 'المجموع الإجمالي'}</td>
                   <td>${seg('gross')}</td>
-                  <td style="color:var(--danger);">- ${segCol((x) => x.gosiEmployeeDeduction)}</td>
-                  <td style="color:var(--warning);">- ${segCol((x) => x.loanInstallment)}</td>
-                  <td style="color:var(--danger);">- ${segCol((x) => (x.absenceDeduction || 0) + (x.lateDeduction || 0) + (x.otherDeductions || 0) + (x.penaltiesDeduction || 0))}</td>
+                  <td style="color:var(--danger);">${segCol((x) => x.gosiEmployeeDeduction, '-')}</td>
+                  <td style="color:var(--warning);">${segCol((x) => x.loanInstallment, '-')}</td>
+                  <td style="color:var(--danger);">${segCol((x) => (x.absenceDeduction || 0) + (x.lateDeduction || 0) + (x.otherDeductions || 0) + (x.penaltiesDeduction || 0), '-')}</td>
                   <td style="color:var(--success); font-size:15px;">${seg('net')}</td>
                   <td></td>
                 </tr>
@@ -1112,13 +1117,13 @@ export function renderPayrollView(container, options = {}) {
                     ? `<tr><td colspan="8" style="text-align:center; padding:32px; color:var(--text-muted);">${isEn ? 'No disbursed payrolls yet.' : 'لا توجد مسيرات رواتب تم صرفها بعد.'}</td></tr>`
                     : paidBatches
                         .map((b) => {
-                          const segB = (k) => summarizeCurrencySegments((b.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })));
+                          const segB = (k, sign) => summarizeCurrencySegmentsHtml((b.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })), { sign });
                           return `
                       <tr data-batch-month="${b.month}">
                         <td><strong>${b.month}</strong></td>
                         <td>${b.employeesCount} ${isEn ? 'employees' : 'موظف'}</td>
                         <td>${segB('gross')}</td>
-                        <td style="color:var(--danger);">- ${segB('deductions')}</td>
+                        <td style="color:var(--danger);">${segB('deductions', '-')}</td>
                         <td><strong style="color:var(--success); font-size:15px;">${segB('net')}</strong></td>
                         <td>${formatDate(b.releasedAt || b.paidAt || b.issueDate)}</td>
                         <td><span class="badge badge-gray">${b.paidBy || 'HR'}</span></td>
@@ -1240,11 +1245,23 @@ export function renderPayrollView(container, options = {}) {
                             ${isSettled ? (isEn ? '✅ Loan Settled' : '✅ تم تصفية السلفة') : (isEn ? '⏳ Active (Repaying)' : '⏳ سارية (قيد السداد)')}
                           </span>
                         </td>
-                        <td>
-                          <button type="button" class="btn btn-sm btn-outline btn-pay-loan" ${isSettled || !canPayLoan ? 'disabled style="opacity:0.5;"' : ''}>
-                            ${Icons.receipt(14)} ${ isEn ? 'Pay' : 'تسديد'}
-                          </button>
-                        </td>
+<td>
+  <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end; flex-wrap:wrap;">
+    ${canEditLoan ? `
+    <button type="button" class="btn btn-sm btn-outline btn-edit-loan">
+      ${Icons.edit(14)} ${isEn ? 'Edit' : 'تعديل'}
+    </button>
+    ` : ''}
+    <button type="button" class="btn btn-sm btn-outline btn-pay-loan" ${isSettled || !canPayLoan ? 'disabled style="opacity:0.5;"' : ''}>
+      ${Icons.receipt(14)} ${ isEn ? 'Pay' : 'تسديد'}
+    </button>
+    ${canDeleteLoan ? `
+    <button type="button" class="btn btn-sm btn-outline btn-delete-loan" style="color:var(--danger); border-color:rgba(239,68,68,0.35);">
+      ${Icons.trash(14)} ${isEn ? 'Delete' : 'حذف'}
+    </button>
+    ` : ''}
+  </div>
+</td>
                       </tr>
                     `;
                         })
@@ -1272,6 +1289,41 @@ export function renderPayrollView(container, options = {}) {
           const loanId = row?.getAttribute('data-loan-id');
           const loan = allLoans.find((l) => l.id === loanId);
           if (loan) openLoanReceiptModal(loan.employeeId, () => renderTabContent());
+        });
+      });
+
+      contentArea.querySelectorAll('.btn-edit-loan').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          if (!canEditLoan) return;
+          const row = e.target.closest('tr');
+          const loanId = row?.getAttribute('data-loan-id');
+          const loan = allLoans.find((l) => l.id === loanId);
+          if (loan) openLoanModal(loan.employeeId, () => renderTabContent(), loan);
+        });
+      });
+
+      contentArea.querySelectorAll('.btn-delete-loan').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          if (!canDeleteLoan) return;
+          const row = e.target.closest('tr');
+          const loanId = row?.getAttribute('data-loan-id');
+          const loan = allLoans.find((l) => l.id === loanId);
+          if (!loan) return;
+          const emp = employees.find((x) => x.id === loan.employeeId);
+          const label = `${emp ? emp.fullName : (isEn ? 'Unknown employee' : 'موظف غير معروف')} — ${formatCurrency(loan.totalAmount || loan.amount, sym)}`;
+          showConfirmDialog({
+            title: isEn ? 'Delete Advance Record' : 'حذف سجل السلفة',
+            message: isEn
+              ? `Are you sure you want to delete this advance record?<br><strong>${label}</strong><br>It will be archived permanently and removed from the loans statement.`
+              : `هل أنت متأكد من حذف سجل السلفة؟<br><strong>${label}</strong><br>سيتم أرشفة السجل نهائياً وإزالته من كشف السلف.`,
+            confirmText: isEn ? 'Yes, Delete' : 'نعم، حذف',
+            onConfirm: () => {
+              storage.deleteLoan(loan.id);
+              storage.addAudit('delete', 'loan', label.replace(/<[^>]*>/g, ''), loan.id);
+              toast.success(isEn ? 'Advance record deleted and archived.' : 'تم حذف سجل السلفة وأرشفته.');
+              renderTabContent();
+            },
+          });
         });
       });
 

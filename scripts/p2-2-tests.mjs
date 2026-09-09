@@ -37,6 +37,7 @@ const { defaultCompanies, defaultSettings } = await import(`${JS}seedData.js`);
 const {
   formatAmountWithCode,
   summarizeCurrencySegments,
+  summarizeCurrencySegmentsHtml,
   resolveEmployeeCurrency,
   isPayrollViewEnabled,
   listCompanyHolidayDatesInRange,
@@ -203,6 +204,32 @@ const segIqd = batchMC.totalsByCurrency.find((g) => g.code === 'IQD');
 ok('USD segment net equals USD employee net', segUsd && Math.abs(segUsd.net - itA.netSalary) < 0.01);
 ok('IQD segment net equals IQD employee net', segIqd && Math.abs(segIqd.net - itB.netSalary) < 0.01);
 ok('legacy totalNet is kept for backward compatibility', typeof batchMC.totalNet === 'number' && batchMC.totalNet === Math.round((itA.netSalary + itB.netSalary) * 100) / 100);
+
+console.log('  [P2.2 loan uniform Edit/Delete mutators]');
+storage.saveLoans([]);
+let lr = storage.addLoan({ id: 'loan-p22-1', employeeId: empA.id, totalAmount: 6000, paidAmount: 0, remainingAmount: 6000, installmentAmount: 2000, installmentsCount: 3, startDate: '2026-08-01', reason: 'education', status: 'active', installments: [] });
+ok('addLoan created a loan record', storage.getState().loans.some((l) => l.id === 'loan-p22-1'));
+lr = storage.updateLoan({ id: 'loan-p22-1', employeeId: empA.id, totalAmount: 6000, paidAmount: 0, remainingAmount: 6000, installmentAmount: 2000, installmentsCount: 3, startDate: '2026-08-01', reason: 'updated reason', status: 'active', installments: [] });
+ok('updateLoan returns ok on existing record', lr.ok === true);
+ok('updateLoan applied the edit', storage.getState().loans.find((l) => l.id === 'loan-p22-1')?.reason === 'updated reason');
+ok('updateLoan keeps a single record (no duplication)', storage.getState().loans.filter((l) => l.id === 'loan-p22-1').length === 1);
+lr = storage.updateLoan({ id: 'loan-missing', employeeId: empA.id, totalAmount: 100 });
+ok('updateLoan rejects unknown record', lr.ok === false && lr.error === 'not_found');
+storage.deleteLoan('loan-p22-1');
+ok('deleteLoan removes the record', storage.getState().loans.length === 0);
+ok('deleted loan is archived', storage.getDeletedRecords().some((r) => r.data && r.data.id === 'loan-p22-1'));
+storage.saveLoans([]);
+
+console.log('  [P2.2 currency display HTML helper (UI rendering)]');
+const htmlMixed = summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 1500 }, { code: 'IQD', amount: 750000 }]);
+ok('mixed currencies render as separate lines, never one run of text stacked with +', (htmlMixed.match(/<div/g) || []).length === 2 && !htmlMixed.includes(' + '));
+ok('each line keeps 2 decimals (750,000.00)', htmlMixed.includes('750,000.00'));
+ok('currency code renders as a tinted span for colour distinction', htmlMixed.includes('<span style="color:#f59e0b; font-weight:700;">IQD</span>') && htmlMixed.includes('<span style="color:#0ea5e9; font-weight:700;">USD</span>'));
+ok('lines are forced LTR so RTL layout cannot re-flow currency text', htmlMixed.includes('direction:ltr; unicode-bidi:embed'));
+const htmlNeg = summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 100 }], { sign: '-' });
+ok('negative totals prefix every line with a minus', htmlNeg.includes('- 100.00'));
+ok('single-currency total still renders a code line', summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 1500 }]).includes('1,500.00 <span'));
+ok('empty segments render a 0.00 placeholder', summarizeCurrencySegmentsHtml([]).includes('0.00'));
 
 console.log('\n============================================');
 console.log(`P2.2 TEST MATRIX: ${passed} passed, ${failed} failed`);

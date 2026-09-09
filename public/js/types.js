@@ -351,6 +351,48 @@ export function summarizeCurrencySegments(segments = []) {
   }).join(' + ');
 }
 
+// Stable visual color per currency code so mixed-currency boxes are readable.
+const CURRENCY_CODE_COLORS = {
+  USD: '#0ea5e9', IQD: '#f59e0b', EUR: '#8b5cf6', SAR: '#10b981',
+  AED: '#14b8a6', KWD: '#ec4899', EGP: '#f97316', GBP: '#6366f1',
+  TRY: '#ef4444', JOD: '#0d9488', QAR: '#3b82f6',
+};
+
+function currencyCodeColor(code) {
+  if (CURRENCY_CODE_COLORS[code]) return CURRENCY_CODE_COLORS[code];
+  let h = 0;
+  for (let i = 0; i < code.length; i++) h = (h * 31 + code.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 70%, 45%)`;
+}
+
+/**
+ * P2.2 multi-currency display rule (UI): like summarizeCurrencySegments but
+ * returns safe HTML where every currency sits on its OWN line inside the same
+ * cell/box — never "1,500.00 USD + 750,000.00 IQD" packed into one run of text
+ * (that overflows/overlaps in mixed RTL+LTR layouts). Amounts always use en-US
+ * decimals (750,000.00) and the currency code is tinted with a stable per-code
+ * color so IQD/USD are visually distinguishable. Pass { sign: '-' } to prefix
+ * each line (deduction-style totals). Renders "0.00" when empty.
+ */
+export function summarizeCurrencySegmentsHtml(segments = [], opts = {}) {
+  const totals = {};
+  (segments || []).forEach((s) => {
+    if (!s) return;
+    const code = String(s.code || '').trim();
+    if (!code) return;
+    totals[code] = (totals[code] || 0) + (Number(s.amount) || 0);
+  });
+  const prefix = opts.sign === '-' ? '- ' : '';
+  const codes = Object.keys(totals);
+  if (!codes.length) return `<span style="direction:ltr; unicode-bidi:embed; white-space:nowrap;">${prefix}0.00</span>`;
+  return codes.map((code) => {
+    const v = Number(totals[code]) || 0;
+    const formatted = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const color = currencyCodeColor(code);
+    return `<div style="direction:ltr; unicode-bidi:embed; white-space:nowrap;">${prefix}${formatted} <span style="color:${color}; font-weight:700;">${escapeHtml(code)}</span></div>`;
+  }).join('');
+}
+
 /**
  * P2.2 absence-day factor rule: an attendance record with status "absent"
  * counts as the number of deductible days stored on it (deductibleDays).
