@@ -5,7 +5,7 @@
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency } from '../types.js';
-import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, clearPayrollAmounts } from '../engines/payrollEngine.js';
+import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
 import { openPayslipModal } from './PayslipModal.js';
 import { openBatchPayslipsPrintModal, printIsolatedBatchPayslips } from './BatchPayslipsPrintModal.js';
 import { openReleasePayrollModal } from './ReleasePayrollModal.js';
@@ -226,7 +226,15 @@ export function renderPayrollView(container, options = {}) {
     const isPaid = currentBatch ? currentBatch.status === 'paid' : false;
     const isUnderAudit = currentBatch ? currentBatch.status === 'under_audit' : false;
     const isApproved = currentBatch ? currentBatch.status === 'approved' : false;
-    const isDraft = currentBatch ? (!isPaid && !isUnderAudit && !isApproved) : false;
+    const isReturned = currentBatch ? currentBatch.status === 'rejected' : false;
+    const isDraft = currentBatch ? (currentBatch.status === 'draft' || !currentBatch.status) : false;
+    // Logical home per Financial Workflow & Currency Specification v1.0:
+    //   draft        → payroll tab (prep / edit)
+    //   under_audit  → audit tab
+    //   approved     → payment queue point (payroll tab, pay button)
+    //   paid         → archive (disbursed history)
+    //   rejected     → Returned/Needs Correction (payroll tab, edit + resubmit)
+    const isEditable = isDraft || isReturned;
 
     // Payroll release schedule: batches become eligible on the branch payday
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -417,6 +425,11 @@ export function renderPayrollView(container, options = {}) {
                 </p>
               </div>
               <div style="display:flex; align-items:center; gap:8px;">
+                ${isApproved && canDisburse ? `
+                <button type="button" class="btn btn-success btn-sm" id="btn-pay-salary-shortcut">
+                  💰 ${isEn ? 'Pay Salary' : 'صرف الراتب'}
+                </button>
+                ` : ''}
                 <input type="month" class="form-input" id="payroll-month-selector" value="${currentMonth}" style="width:160px; padding:6px 10px;">
                 <button type="button" class="btn btn-info btn-sm" id="btn-go-to-audit">
                   🛡️ ${isEn ? 'Open Financial Audit' : 'فتح شاشة التدقيق المالي'}
@@ -439,6 +452,9 @@ export function renderPayrollView(container, options = {}) {
           activeTab = 'audit';
           updateHeaderTabs();
           renderTabContent();
+        });
+        contentArea.querySelector('#btn-pay-salary-shortcut')?.addEventListener('click', () => {
+          disburseBatch(currentBatch);
         });
         return;
       }
@@ -497,17 +513,38 @@ export function renderPayrollView(container, options = {}) {
         ${currentBatch.isAmountsCleared && isDraft ? `
         <div class="alert-box" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35); padding:14px 18px; border-radius:8px;">
           <div>
-            <strong style="color:#dc2626; font-size:14px;">🧹 ${isEn ? 'Amounts Cleared — this payroll was rejected by Financial Audit.' : 'تم تفريغ المبالغ — رفض قسم التدقيق المالي هذا المسير.'}</strong>
+            <strong style="color:#dc2626; font-size:14px;">🧹 ${isEn ? 'Amounts Cleared (legacy) — this payroll was rejected by an earlier version.' : 'تم تفريغ المبالغ (قديم) — رفضت نسخة سابقة هذا المسير.'}</strong>
             <div style="font-size:12px; color:var(--text-muted); margin-top:2px; line-height:1.6;">
               ${isEn
-                ? `All payroll amounts were reset to zero when the audit was rejected. Press <strong>Recalculate</strong> to regenerate the figures from the current attendance, overtime, loans and absence records, then transfer the batch back to Financial Audit.`
-                : `تم تحويل جميع مبالغ المسير إلى صفر عند رفض التدقيق. اضغط <strong>إعادة الاحتساب</strong> لتوليد الأرقام من سجلات الحضور والإضافي والسلف والغياب الحالية، ثم أعد ترحيل المسير إلى التدقيق المالي.`}
+                ? `Legacy rejection data from before Spec v1.0: amounts were reset to zero. Press <strong>Recalculate</strong> to regenerate the figures, then transfer the batch back to Financial Audit.`
+                : `بيانات رفض قديمة من قبل مواصفة v1.0: صُفّرت المبالغ. اضغط <strong>إعادة الاحتساب</strong> لتوليد الأرقام، ثم أعد ترحيل المسير إلى التدقيق.`}
             </div>
             ${currentBatch.rejectedBy ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">${isEn ? 'Rejected by' : 'رفضه'}: <strong>${currentBatch.rejectedBy}</strong> • ${formatDate(currentBatch.rejectedAt)}</div>` : ''}
           </div>
           ${canManagePayroll ? `
           <button type="button" class="btn btn-sm btn-danger" id="btn-recalc-cleared">
             ${Icons.refresh(14)} ${t('payroll.recalculate')}
+          </button>
+          ` : ''}
+        </div>
+        ` : ''}
+
+        ${isReturned ? `
+        <div class="alert-box" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35); padding:14px 18px; border-radius:8px;">
+          <div>
+            <strong style="color:#dc2626; font-size:14px;">🔁 ${isEn ? 'Returned / Needs Correction — Financial Audit returned this payroll.' : 'عودة / بحاجة تصحيح — أُعيد هذا المسير من التدقيق المالي.'}</strong>
+            <div style="font-size:12px; color:var(--text-muted); margin-top:2px; line-height:1.6;">
+              ${isEn
+                ? `All amounts are PRESERVED (nothing was zeroed). Review the rejection reason below, correct the payroll, then press <strong>Resubmit</strong> to send it back to Financial Audit.`
+                : `جميع المبالغ محفوظة (لم يُصفَّر شيء). راجع سبب الرفض أدناه، صحّح المسير، ثم اضغط <strong>إعادة الإرسال</strong> لإعادته إلى التدقيق المالي.`}
+            </div>
+            ${currentBatch.rejectionReason ? `<div style="font-size:12px; margin-top:4px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); padding:6px 10px; border-radius:6px; color:var(--text-main);">${isEn ? 'Rejection reason' : 'سبب الرفض'}: <strong>${currentBatch.rejectionReason}</strong></div>` : ''}
+            ${currentBatch.rejectedBy ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">${isEn ? 'Returned by' : 'أعاده'}: <strong>${currentBatch.rejectedBy}</strong> • ${formatDate(currentBatch.rejectedAt)}</div>` : ''}
+            ${currentBatch.corrections && currentBatch.corrections.length ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">✏️ ${isEn ? 'Corrections recorded' : 'تصحيحات مسجلة'}: <strong>${currentBatch.corrections.length}</strong> (${formatDate(currentBatch.corrections[currentBatch.corrections.length - 1].at)})</div>` : ''}
+          </div>
+          ${canManagePayroll ? `
+          <button type="button" class="btn btn-sm btn-success" id="btn-resubmit-payroll">
+            ${Icons.upload(14)} ${isEn ? 'Resubmit to Financial Audit' : 'إعادة الإرسال للتدقيق المالي'}
           </button>
           ` : ''}
         </div>
@@ -544,7 +581,7 @@ export function renderPayrollView(container, options = {}) {
         </div>
         ` : ''}
 
-        ${currentBatch.auditNotes && isDraft ? `
+        ${currentBatch.auditNotes && isEditable ? `
         <div class="alert-box alert-warning" style="margin-bottom:20px; padding:12px 16px; border-radius:8px;">
           <strong>⚠️ ${isEn ? 'Auditor Remarks / Return Notes:' : 'توجيهات وملاحظات قسم التدقيق المالي عند الإعادة:'}</strong>
           <div style="font-size:12.5px; margin-top:4px; color:var(--text-main);">${currentBatch.auditNotes}</div>
@@ -618,7 +655,7 @@ export function renderPayrollView(container, options = {}) {
 
         <!-- Detailed Payroll Items Table — shown only for draft (prep) and paid (archive) batches.
              Audited/approved batches live in the Financial Audit tab and are excluded here. -->
-        ${isDraft || isPaid ? `
+        ${isEditable || isPaid ? `
         <div class="card" style="padding:0; overflow:hidden;">
           <div style="padding:14px 20px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
             <div style="font-weight:700; font-size:14px; color:var(--text-main);">
@@ -792,8 +829,20 @@ export function renderPayrollView(container, options = {}) {
             toast.warning(isEn ? `Payroll for ${currentMonth} is not due yet (payday day ${defaultPayDay()}).` : `مسير رواتب ${currentMonth} غير مستحق بعد (يوم الصرف ${defaultPayDay()}).`);
             return;
           }
-          currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
-          computePayrollReleaseSchedule(currentBatch, companies);
+          const prev = currentBatch;
+          const regenerated = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+          computePayrollReleaseSchedule(regenerated, companies);
+          if (prev && prev.status === 'rejected') {
+            // Preserve the Returned state + rejection metadata + record a correction on recalc.
+            const corr = recordPayrollCorrection(prev, regenerated, {
+              by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الرواتب'),
+              reason: isEn ? 'Recalculated after audit return' : 'إعادة احتساب بعد إعادة التدقيق',
+            });
+            if (corr.ok) currentBatch = corr.batch;
+            else currentBatch = regenerated;
+          } else {
+            currentBatch = regenerated;
+          }
           storage.addPayrollBatch(currentBatch);
           toast.success(tf('payroll.recalculatedSuccess', { month: currentMonth }));
           renderTabContent();
@@ -822,18 +871,28 @@ export function renderPayrollView(container, options = {}) {
         toast.success(t('payroll.wpsExported'));
       });
 
-      // Transfer to Audit
-      contentArea.querySelector('#btn-transfer-to-audit')?.addEventListener('click', () => {
+      // Transfer to Audit (draft → under_audit) or Resubmit (rejected → under_audit)
+      const submitToAudit = (rejectionNote) => {
         if (!canManagePayroll) return;
-        currentBatch.status = 'under_audit';
-        currentBatch.transferredToAuditAt = new Date().toISOString();
+        const res = transitionPayroll(currentBatch, 'under_audit', {
+          by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الرواتب'),
+          rejectionReason: rejectionNote,
+        });
+        if (!res.ok) {
+          toast.error(isEn ? `Cannot transfer: ${res.error}` : `تعذر الترحيل: ${res.error}`);
+          return;
+        }
+        currentBatch = res.batch;
         storage.addPayrollBatch(currentBatch);
-        storage.addAudit('generate', 'payroll', `${currentMonth} → ${isEn ? 'Financial Audit' : 'التدقيق المالي'}`, currentBatch.id);
-        toast.success(isEn ? `Payroll for ${currentMonth} transferred to Financial Audit.` : `تم ترحيل مسير رواتب ${currentMonth} إلى قسم التدقيق المالي بنجاح`);
+        const isReturnedNow = res.batch.returnState === 'resubmitted';
+        storage.addAudit(isReturnedNow ? 'resubmit' : 'generate', 'payroll', `${currentMonth} → ${isEn ? (isReturnedNow ? 'Re-submitted to Financial Audit' : 'Financial Audit') : (isReturnedNow ? 'أُعيد إرساله للتدقيق المالي' : 'التدقيق المالي')}`, currentBatch.id);
+        toast.success(isEn ? (isReturnedNow ? `Payroll for ${currentMonth} re-submitted to Financial Audit.` : `Payroll for ${currentMonth} transferred to Financial Audit.`) : (isReturnedNow ? `أُعيد إرسال مسير رواتب ${currentMonth} للتدقيق المالي.` : `تم ترحيل مسير رواتب ${currentMonth} إلى قسم التدقيق المالي بنجاح`));
         activeTab = 'audit';
         updateHeaderTabs();
         renderTabContent();
-      });
+      };
+      contentArea.querySelector('#btn-transfer-to-audit')?.addEventListener('click', () => submitToAudit());
+      contentArea.querySelector('#btn-resubmit-payroll')?.addEventListener('click', () => submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح'));
 
       // Go to audit shortcut
       contentArea.querySelector('#btn-go-to-audit')?.addEventListener('click', () => {
@@ -914,8 +973,8 @@ export function renderPayrollView(container, options = {}) {
 
             <div style="display:flex; align-items:center; gap:10px;">
               <input type="month" class="form-input" id="audit-month-selector" value="${currentMonth}" style="width:150px; padding:6px 10px;">
-              <span class="badge ${selectedAuditBatch.status === 'approved' ? 'badge-success' : selectedAuditBatch.status === 'under_audit' ? 'badge-info' : 'badge-warning'}" style="font-size:13px; padding:6px 12px;">
-                ${selectedAuditBatch.status === 'approved' ? (isEn ? '✅ Audit Approved' : '✅ معتمد من التدقيق') : selectedAuditBatch.status === 'under_audit' ? (isEn ? '⏳ Under Review' : '⏳ قيد مراجعة التدقيق') : (isEn ? '📝 Draft (Returned)' : '📝 مسودة')}
+              <span class="badge ${selectedAuditBatch.status === 'approved' ? 'badge-success' : selectedAuditBatch.status === 'rejected' ? 'badge-warning' : selectedAuditBatch.status === 'paid' ? 'badge-success' : 'badge-info'}" style="font-size:13px; padding:6px 12px;">
+                ${selectedAuditBatch.status === 'approved' ? (isEn ? '✅ Audit Approved' : '✅ معتمد من التدقيق') : selectedAuditBatch.status === 'rejected' ? (isEn ? '🔁 Returned / Needs Correction' : '🔁 عودة / بحاجة تصحيح') : selectedAuditBatch.status === 'paid' ? (isEn ? '✅ Paid & Archived' : '✅ مصروف ومؤرشف') : (isEn ? '⏳ Under Review' : '⏳ قيد مراجعة التدقيق')}
               </span>
             </div>
           </div>
@@ -936,21 +995,24 @@ export function renderPayrollView(container, options = {}) {
           </div>
 
           <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px; flex-wrap:wrap;">
-            ${canApprove && selectedAuditBatch.status === 'approved' ? `
-              <button type="button" class="btn btn-outline" id="btn-revoke-audit" style="color:var(--warning); border-color:rgba(245,158,11,0.4);">
-                ↩️ ${isEn ? 'Revoke Approval & Re-open Audit' : 'إلغاء الاعتماد وإعادة للمراجعة'}
-              </button>
-              ${canDisburse ? `
-              <button type="button" class="btn btn-success" id="btn-audit-disburse">
-                💰 ${isEn ? 'Disburse Salaries Now' : 'صرف الرواتب الآن'}
-              </button>
-              ` : ''}
-            ` : canApprove ? `
+            ${selectedAuditBatch.status === 'under_audit' && canApprove ? `
               <button type="button" class="btn btn-outline" id="btn-reject-audit" style="color:var(--danger); border-color:rgba(239,68,68,0.4);">
-                ${Icons.x(16)} ${isEn ? 'Reject & Return to Draft' : 'رفض وإعادة للتعديل'}
+                ${Icons.x(16)} ${isEn ? 'Reject & Return for Correction' : 'رفض وإعادة للتصحيح'}
               </button>
               <button type="button" class="btn btn-success" id="btn-approve-audit">
-                ${Icons.check(16)} ${isEn ? 'Approve Audit & Authorize Disbursement' : 'موافقة التدقيق واعتماد الصرف'}
+                ${Icons.check(16)} ${isEn ? 'Approve Audit (returns to HR for payment)' : 'موافقة التدقيق (يعود لمسؤول الرواتب للصرف)'}
+              </button>
+            ` : selectedAuditBatch.status === 'rejected' ? `
+              <span style="font-size:12px; color:var(--text-muted); max-width:420px; line-height:1.6;">
+                ${isEn ? '📎 This payroll was returned to HR (Returned / Needs Correction). It must be corrected and re-submitted from the Payroll tab.' : '📎 أُعيد هذا المسير إلى مسؤول الرواتب (حالة عودة / بحاجة تصحيح). يجب تصحيحه وإعادة إرساله من تبويب الرواتب.'}
+              </span>
+            ` : selectedAuditBatch.status === 'paid' ? `
+              <span style="font-size:12px; color:var(--text-muted);">
+                ${isEn ? '✅ Paid & archived — read-only financial history.' : '✅ تم الصرف والأرشفة — سجل مالي للقراءة فقط.'}
+              </span>
+            ` : canDisburse ? `
+              <button type="button" class="btn btn-success" id="btn-audit-disburse">
+                💰 ${isEn ? 'Pay Salaries Now' : 'صرف الرواتب الآن'}
               </button>
             ` : ''}
           </div>
@@ -1058,12 +1120,19 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-approve-audit')?.addEventListener('click', () => {
         if (!canApprove) return;
         saveEmployeeAuditInputs();
-        selectedAuditBatch.status = 'approved';
-        selectedAuditBatch.auditedBy = storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي');
-        selectedAuditBatch.auditedAt = new Date().toISOString();
-        storage.addPayrollBatch(selectedAuditBatch);
-        storage.addAudit('approve', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit approved' : 'اعتماد التدقيق'}`, selectedAuditBatch.id);
-        toast.success(isEn ? 'Audit approved successfully. Payroll is now locked and ready for disbursement.' : 'تم اعتماد التدقيق بنجاح. تم قفل المسير وأصبح جاهزاً للصرف المالي.');
+        if (selectedAuditBatch.status !== 'under_audit') {
+          toast.error(isEn ? 'Only batches under audit can be approved.' : 'لا يمكن اعتماد إلا المسيرات قيد التدقيق.');
+          return;
+        }
+        const auditNote = contentArea.querySelector('#audit-notes-input')?.value || '';
+        const res = transitionPayroll(selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي'), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
+        if (!res.ok) {
+          toast.error(isEn ? `Cannot approve: ${res.error}` : `تعذر الاعتماد: ${res.error}`);
+          return;
+        }
+        storage.addPayrollBatch(res.batch);
+        storage.addAudit('approve', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit approved (returns to HR for payment)' : 'اعتماد التدقيق (يعود لمسؤول الرواتب للصرف)'}`, selectedAuditBatch.id);
+        toast.success(isEn ? 'Audit approved. Payroll returned to HR — press Pay Salary when ready.' : 'تم اعتماد التدقيق. أُعيد المسير لمسؤول الرواتب — اضغط صرف الراتب عند الجاهزية.');
         activeTab = 'payroll';
         updateHeaderTabs();
         renderTabContent();
@@ -1071,33 +1140,34 @@ export function renderPayrollView(container, options = {}) {
 
       contentArea.querySelector('#btn-reject-audit')?.addEventListener('click', () => {
         if (!canApprove) return;
+        if (selectedAuditBatch.status !== 'under_audit') {
+          toast.error(isEn ? 'Only batches under audit can be rejected.' : 'لا يمكن رفض إلا المسيرات قيد التدقيق.');
+          return;
+        }
         showConfirmDialog({
           title: isEn ? 'Reject Audit Approval' : 'رفض اعتماد التدقيق',
           message: isEn
-            ? `<strong>${selectedAuditBatch.month}</strong> — the payroll amounts will be <strong>reset to zero</strong> and the batch returned to HR as a draft. HR must recalculate the payroll before it can be re-submitted to the financial audit.`
-            : `<strong>${selectedAuditBatch.month}</strong> — سيتم <strong>تفريغ جميع مبالغ المسير إلى صفر</strong> وإعادة المسير إلى مسؤول الرواتب (مسودة). يجب على مسؤول الرواتب إعادة الاحتساب قبل إعادة إرساله إلى التدقيق المالي.`,
-          confirmText: isEn ? 'Yes, Reject & Clear Amounts' : 'نعم، رفض وتفريغ المبالغ',
+            ? `<strong>${selectedAuditBatch.month}</strong> — the payroll will be returned to HR as <strong>Returned / Needs Correction</strong>. All financial amounts are PRESERVED (never zeroed); only the rejection reason, auditor and history are attached. HR corrects the report and re-submits it.`
+            : `<strong>${selectedAuditBatch.month}</strong> — سيُعاد المسير إلى مسؤول الرواتب بحالة <strong>عودة / بحاجة تصحيح</strong>. جميع المبالغ المالية محفوظة (لا تُصفّر أبداً)؛ يُرفق سبب الرفض والمدقق وسجل التدقيق فقط. يصحّح مسؤول الرواتب التقرير ثم يعيد إرساله.`,
+          confirmText: isEn ? 'Yes, Return for Correction' : 'نعم، إعادة للتصحيح',
           onConfirm: () => {
             saveEmployeeAuditInputs();
-            const rejector = storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي');
-            const rejectionNote = `[${isEn ? 'Audit rejected' : 'رفض التدقيق'}] ${rejector} — ${isEn ? 'amounts cleared, recalculate before re-submission' : 'تم تفريغ المبالغ، أعد الاحتساب قبل إعادة الإرسال'}`;
-            // P2.2 reject-and-return rule: a rejected payroll must NEVER keep
-            // visible amounts in the statement — every monetary figure is wiped
-            // to zero and the batch is returned to HR (status: draft). HR then
-            // uses the Recalculate button to regenerate from live attendance,
-            // overtime, loans and absences before re-submitting to the audit.
-            const cleared = clearPayrollAmounts(selectedAuditBatch, {
-              rejectedBy: rejector,
-              rejectedAt: new Date().toISOString(),
-              auditNotes: selectedAuditBatch.auditNotes
-                ? `${selectedAuditBatch.auditNotes}\n${rejectionNote}`
-                : rejectionNote,
+            const auditor = storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي');
+            const notes = contentArea.querySelector('#audit-notes-input')?.value || '';
+            const res = transitionPayroll(selectedAuditBatch, 'rejected', {
+              by: auditor,
+              rejectionReason: notes || (isEn ? 'Audit returned the payroll for correction' : 'أعاد التدقيق المسير للتصحيح'),
+              auditNotes: notes,
             });
-            storage.addPayrollBatch(cleared);
-            storage.addAudit('reject', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit rejected, amounts cleared, returned to HR' : 'رفض التدقيق، تفريغ المبالغ، إعادة لمسؤول الرواتب'}`, selectedAuditBatch.id);
+            if (!res.ok) {
+              toast.error(isEn ? `Cannot reject: ${res.error}` : `تعذر الرفض: ${res.error}`);
+              return;
+            }
+            storage.addPayrollBatch(res.batch);
+            storage.addAudit('reject', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit returned for correction (amounts preserved)' : 'إعادة التدقيق للتصحيح (المبالغ محفوظة)'}`, selectedAuditBatch.id);
             toast.warning(isEn
-              ? 'Payroll amounts cleared (zeroed) and the batch returned to HR as a draft. HR must recalculate before re-submission.'
-              : 'تم تفريغ مبالغ المسير إلى صفر وإعادته إلى مسؤول الرواتب (مسودة). يجب إعادة الاحتساب قبل إعادة الإرسال.');
+              ? 'Payroll returned to HR (Returned / Needs Correction). Amounts are preserved; correct and re-submit.'
+              : 'أُعيد المسير إلى مسؤول الرواتب (عودة / بحاجة تصحيح). المبالغ محفوظة؛ يصحّح ثم يعيد الإرسال.');
             activeTab = 'payroll';
             updateHeaderTabs();
             renderTabContent();

@@ -200,5 +200,99 @@ Current -> Proposed -> تنفيذ -> اختبار.
     (استخدام workflowNoteHtml قبل تعريفه) فتُعطّل فتح نموذج الحساب.
     أُصلح بترفيع التعريف، والنموذج يمرر companies إلى calculateEOSB
     فيعمل الاحتساب/الحفظ/الاعتماد/الدفع/إصدار المخالصة كاملًا.
+و) دورة حياة مسير الرواتب (Payroll Workflow) — تسليم معتمد 2026-09-09:
+  - رفع للتدقيق (Transfer to Audit): مسؤول الرواتب يضغط "ترحيل للتدقيق"
+    → المسير يختفي من شاشته (قراءة فقط)، ينتقل بالكامل لقسم التدقيق
+    (status: under_audit، transferredToAuditAt).
+  - رفض التدقيق (Audit Reject): المدقق يرفض → المسير يختفي من شاشة التدقيق
+    (تظهر فارغة)، يعود لمسؤول الرواتب مفتوحاً للتعديل (status: draft).
+    الشرط الحاسم: ملاحظات/أخطاء التدقيق تبقى محفوظة ومثبتة في auditNotes
+    مع rejectedBy/rejectedAt، ولا تُمسح المبالغ (لا تصفير).
+  - موافقة التدقيق (Audit Approve): المدقق يعتمد → المسير يعود لمسؤول الرواتب
+    بحالة "معتمد" (status: approved، auditedBy/auditedAt)، زر "صرف الراتب"
+    يظهر حصرياً لمسؤول الرواتب (صلاحية payroll.disburse). لا يوجد زر صرف
+    في شاشة التدقيق.
+  - بعد الصرف (Paid): المسير يُقفل تماماً. قسم التدقيق فقط له زر
+    "إلغاء الصرف" (Cancel Payment) في شاشتهم للحالة paid → يعيد المسير
+    لـ approved مع مسح paidAt/paidBy، ويسجل في audit trail.
+ز) دورة حياة الاستقالات/Nهاة الخدمة (EOSB Workflow) — تسليم معتمد 2026-09-09:
+  - التصفية تُرسل للتدقيق (Submit for Audit) → قيد المراجعة (under_audit).
+  - التدقيق يعتمد (Approve) → الحالة "معتمد" (approved) + approvedBy/At.
+  - مسؤول الرواتب يصرف (Disburse/Pay) → الحالة "مصروف" (paid) + paidBy/At.
+  - بعد الصرف: المخالصة تصدر (status=paid فقط). قسم التدقيق لديه زر
+    "إلغاء الصرف" للحالة paid → يعيد لـ approved، يمسح paidBy/At، يسجل audit.
 الاختبارات بعد التعديل: p22:test 95/95، p21:test 47/47، release:test 66/66.
+============================================================
+
+// ============================================================
+// تقرير إصدار — المرحلة 1 (Phase 1): آلة حالات مسير الرواتب فقط
+// (Spec v1.0 — 2026-09-10)
+// ============================================================
+
+أ) نطاق المرحلة (حسب مواصفة v1.0 المعتمدة):
+  - مرحلة آلة الحالات فقط: Draft → Audit → Approved → Payment Queue
+    → Paid → Archive، مع مسار الرفض: Audit → Rejected/Returned →
+    Correction → Resubmit → Audit.
+  - لم تُنفَّذ قائمة الصرف ككيان منفصل في هذه المرحلة (نقطة الانتقال
+    approved→paid محفوظة فقط)، ولا صلاحيات/عملات/تقارير المرحلة 2، ولا
+    تغيير أي معادلة مالية.
+
+ب) قواعد آلة الحالات الجديدة (لا تصفير، حالة عودة مميزة):
+  - PAYROLL_STATUSES = draft | under_audit | approved | rejected | paid.
+  - PAYROLL_STATE_TRANSITIONS:
+    draft → under_audit؛ under_audit → approved | rejected؛
+    rejected → under_audit؛ approved → paid؛ paid → (لا شيء).
+  - transitionPayroll(batch, to, opts): دالة نقية (لا تعدّل المدخل)،
+    تصدر البطاقة لـ auditHistory/auditAttempts/versions؛ الرفض يختم
+    rejectedBy/rejectedAt/rejectionReason/returnState='needs_correction'
+    مع isAmountsCleared=false وrejectedSnapshot (نسخة النقض) وكل القيم
+    المالية محفوظة كاملة.
+  - recordPayrollCorrection(prev, next, opts): يقيد التصحيح Old→New
+    (يُفرِّق النسخة المقوضة بالنسخة المصححة حقلياً/موظفياً) مع المستخدم
+    والتوقيت والسبب، ويبقي حالة 'rejected'/returnState='corrected'،
+    ويحافظ على بيانات الرفض.
+  - إعادة الإرسال (resubmit: rejected→under_audit) تجعل
+    returnState='resubmitted' وتختم resubmittedBy/At.
+  - سلسلة الإصدارات توثق: under_audit → rejected → corrected → resubmitted.
+  - clearPayrollAmounts صار مهجوراً (Deprecated) معطَّلاً عن الاستخدام
+    في الواجهة — محفوظ للتوافق فقط؛ الواجهة تستخدم transitionPayroll.
+
+ج) التعديلات المطبقة:
+  - public/js/engines/payrollEngine.js: وحدة آلة الحالات (الثوابت + الانتقالات
+    + canTransitionPayroll + transitionPayroll + recordPayrollCorrection)،
+    وإبقاء clearPayrollAmounts مهجوراً.
+  - public/js/components/PayrollView.js:
+    - رفض التدقيق: transitionPayroll(...,'rejected') مع الحوار "عودة/بحاجة
+      تصحيح — المبالغ محفوظة"؛ لا يصفّر شيئاً.
+    - موافقة التدقيق: transitionPayroll(...,'approved') تعيد المسير
+      لمسؤول الرواتب للصرف (زر "صرف الراتب" في شاشة الرواتب).
+    - الترحيل/إعادة الإرسال: زر واحد يتبنى الحالة (draft أو rejected →
+      under_audit) عبر transitionPayroll.
+    - إعادة الاحتساب على مسير عائد: يسجل تصحيحاً عبر recordPayrollCorrection
+      ويحافظ على حالة العودة.
+    - تنبيه الحالة العائدة (Returned/Needs Correction) يعرض السبب والمُعيد
+      والتصحيحات وزر "إعادة الإرسال للتدقيق المالي" المباشر.
+    - أُزيل زر "إلغاء الاعتماد/التراجع" (approved→under_audit غير قانوني).
+    - شارة حالة التدقيق: returned/paid/approved/under_audit مميزة.
+  - scripts/p2-2-tests.mjs: استُبدلت فقرات الرفض القديمة (تصفير) بـ36+ تأكيداً
+    جديداً تتحقق من: حفظ القيم، حالة العودة، بيانات الرفض، سجل التدقيق والإصدارات،
+    التصحيح Old→New، إعادة الإرسال، ومنع التحويلات غير القانونية.
+
+د) نتائج البوابات (نتائج تشغيل فعلية):
+  - f) التحقق الشكلي: node --check لكل الملفات المعدلة — سليم.
+  - f) p22:test → 123/123 ناجح.
+  - f) p21:test → 47/47 ناجح.
+  - f) release:test (الانحدار 66/66) → 66/66 ناجح.
+  - f) npm run build → ناجح (56 وحدة، 3.07s؛ تحذير حجم chunk فقط).
+  - التحقق من الملفات المطلوبة على 127.0.0.1:5173 (الخادم يخدم public/):
+    PayrollView.js يتضمن transitionPayroll، payrollEngine.js يتضمن
+    recordPayrollCorrection — مؤكد.
+  - تُسقطَّب وصله: لا تغيير في معادلات المرتبات/الحضور/الإجازات.
+
+هـ) ما لم يتغير في هذه المرحلة:
+  - قسم الاستقالات/EOSB يبقى بحالة إلغاء الصرف القديمة (paid→approved)
+    — خارج نطاق المرحلة 1 (مسير الرواتب فقط).
+  - الملف الشارد غير المتعقَّب `-1` (10 بايتات قيمتها -1) لم يُحذف (تجنب
+    حذف عمل دون توثيق) ويُقترح حذفه يدوياً.
+
 ============================================================

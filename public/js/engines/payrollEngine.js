@@ -320,12 +320,220 @@ export function generateBankPayrollFile(batch, settings) {
 export const generateWPSFile = generateBankPayrollFile;
 
 /**
- * P2.2 "reject-and-return" rule: when the Financial Audit rejects a payroll,
- * EVERY monetary figure in the batch is wiped to zero (statement renders as
+ * Phase 1 (Financial Workflow & Currency Spec v1.0): the official state
+ * machine for a payroll batch. Every batch lives in exactly one state and may
+ * ONLY move along the approved transitions below. Payment Queue is a logical
+ * transition point (approved → paid), not a separate entity in this phase.
+ *
+ *   draft        → under_audit   (HR forwards the batch to Financial Audit)
+ *   under_audit  → approved      (Audit approves, back to HR for payment)
+ *   under_audit  → rejected      (Audit returns it; Returned/Needs Correction)
+ *   rejected     → under_audit   (HR corrects then re-submits to Audit)
+ *   approved     → paid          (HR pays salaries; payment queue point)
+ *   paid         → (archived view; no further transition)
+ */
+export const PAYROLL_STATUSES = ['draft', 'under_audit', 'approved', 'rejected', 'paid'];
+export const PAYROLL_ARCHIVE_STATUS = 'paid';
+export const PAYROLL_RETURN_STATE = 'rejected';
+
+const PAYROLL_STATE_TRANSITIONS = {
+  draft: ['under_audit'],
+  under_audit: ['approved', 'rejected'],
+  rejected: ['under_audit'],
+  approved: ['paid'],
+  paid: [],
+};
+
+const MONETARY_FIELDS = [
+  'basicSalary', 'housingAllowance', 'transportAllowance', 'otherAllowances',
+  'overtimeAmount', 'bonuses', 'totalEarnings', 'grossSalary',
+  'gosiEmployeeDeduction', 'gosiCompanyContribution', 'loanInstallment',
+  'absentDays', 'absenceDeduction', 'lateMinutes', 'lateDeduction',
+  'otherDeductions', 'penaltiesDeduction', 'totalDeductions', 'netSalary',
+];
+
+function cloneBatch(batch) {
+  return { ...batch, items: (batch.items || []).map((it) => ({ ...it })) };
+}
+
+function snapshotBatch(batch) {
+  return {
+    status: batch.status,
+    totalGross: batch.totalGross,
+    totalDeductions: batch.totalDeductions,
+    totalNet: batch.totalNet,
+    totalGosi: batch.totalGosi,
+    totalCompanyGosi: batch.totalCompanyGosi,
+    totalEOSB: batch.totalEOSB,
+    totalsByCurrency: (batch.totalsByCurrency || []).map((g) => ({ ...g })),
+    items: (batch.items || []).map((it) => {
+      const snap = { employeeId: it.employeeId, employeeName: it.employeeName };
+      MONETARY_FIELDS.forEach((f) => { snap[f] = it[f]; });
+      return snap;
+    }),
+  };
+}
+
+/**
+ * Pure guard: returns { ok: true } when `batch` may legally transition to
+ * state `to` per PAYROLL_STATE_TRANSITIONS, otherwise { ok: false }.
+ */
+export function canTransitionPayroll(batch, to) {
+  if (!batch) return { ok: false, error: 'no_batch' };
+  const from = batch.status || 'draft';
+  if (!PAYROLL_STATUSES.includes(from)) return { ok: false, error: `unknown_state:${from}` };
+  const allowed = PAYROLL_STATE_TRANSITIONS[from] || [];
+  if (!allowed.includes(to)) return { ok: false, error: `invalid_transition:${from}->${to}` };
+  return { ok: true };
+}
+
+/**
+ * Apply a legal state transition. Pure: returns a NEW batch, never mutates the
+ * input (same contract as clearPayrollAmounts). Rejecting records the rejected
+ * version snapshot, stamps rejection meta, keeps every monetary value intact
+ * and appends to auditHistory/versions. Approving/paying stamp the responsible
+ * user. Resubmitting stamps resubmittedBy/At and records a corrected version.
+ */
+export function transitionPayroll(batch, to, opts = {}) {
+  const guard = canTransitionPayroll(batch, to);
+  if (!guard.ok) return { ok: false, error: guard.error, batch };
+  const now = new Date().toISOString();
+  const actor = opts.by || '';
+  const note = opts.note || `${to} (${now})`;
+  const next = cloneBatch(batch);
+  const from = next.status || 'draft';
+  const revision = (next.revision || 0) + 1;
+
+  if (to === 'under_audit') {
+    if (from === 'draft') {
+      next.transferredToAuditAt = now;
+      next.transferredToAuditBy = actor;
+    } else {
+      next.resubmittedAt = now;
+      next.resubmittedBy = actor;
+      next.returnState = 'resubmitted';
+    }
+  } else if (to === 'approved') {
+    next.auditedBy = actor;
+    next.auditedAt = now;
+    next.returnState = undefined;
+  } else if (to === 'rejected') {
+    next.rejectedBy = actor;
+    next.rejectedAt = now;
+    next.rejectionReason = opts.rejectionReason || note;
+    next.returnState = 'needs_correction';
+    next.isAmountsCleared = false;
+    if (opts.auditNotes) {
+      next.auditNotes = next.auditNotes ? `${next.auditNotes}\n${opts.auditNotes}` : opts.auditNotes;
+    }
+    next.rejectedSnapshot = snapshotBatch(next);
+  } else if (to === 'paid') {
+    next.paidBy = actor;
+    next.paidAt = now;
+    next.releaseStatus = 'released';
+  }
+
+  next.status = to;
+  next.revision = revision;
+  next.updatedAt = now;
+
+  next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
+  next.auditHistory.push({ action: to, from, to, by: actor, at: now, reason: opts.rejectionReason || note, revision });
+  // Audit attempt/history keeps every audit round without ever losing data.
+  next.auditAttempts = Array.isArray(batch.auditAttempts) ? batch.auditAttempts.slice() : [];
+  next.auditAttempts.push({
+    attempt: (batch.auditAttempts ? batch.auditAttempts.length : 0) + 1,
+    result: to === 'rejected' ? 'returned' : to,
+    by: actor,
+    at: now,
+    reason: opts.rejectionReason || '',
+    fromVersion: batch.revision || 0,
+    toVersion: revision,
+  });
+  // Version chain: Rejected Version → Corrected Version → Resubmitted Version.
+  next.versions = Array.isArray(batch.versions) ? batch.versions.slice() : [];
+  next.versions.push({
+    type: to === 'rejected' ? 'rejected' : to === 'under_audit' && from === 'rejected' ? 'resubmitted' : to,
+    version: revision,
+    by: actor,
+    at: now,
+    reason: opts.rejectionReason || note,
+  });
+  return { ok: true, batch: next };
+}
+
+/**
+ * Record an HR correction on a Returned batch: capture values changed since
+ * the rejected snapshot (old value → new value), stamped with user, timestamp
+ * and reason, and append the corrected version to the chain.
+ */
+export function recordPayrollCorrection(prev, next, opts = {}) {
+  if (!prev || !next) return { ok: false, error: 'no_batch', batch: next };
+  if ((prev.status || 'draft') !== 'rejected') {
+    return { ok: false, error: `correction_requires_returned:${prev.status}`, batch: next };
+  }
+  const now = new Date().toISOString();
+  const base = prev.rejectedSnapshot || snapshotBatch(prev);
+  const changes = [];
+  const srcItems = (base.items || []).filter((s) => s.employeeId);
+  const toItems = next.items || [];
+  srcItems.forEach((snap) => {
+    const cur = toItems.find((it) => it.employeeId === snap.employeeId);
+    if (!cur) return;
+    MONETARY_FIELDS.forEach((f) => {
+      const oldV = Number(snap[f]) || 0;
+      const newV = Number(cur[f]) || 0;
+      if (Math.abs(oldV - newV) > 0.0001) {
+        changes.push({ employeeId: snap.employeeId, employeeName: snap.employeeName, field: f, oldValue: oldV, newValue: newV });
+      }
+    });
+  });
+  const revision = (next.revision || 0) + 1;
+  next.status = 'rejected';
+  next.returnState = 'corrected';
+  next.revision = revision;
+  next.updatedAt = now;
+  next.corrections = Array.isArray(prev.corrections) ? prev.corrections.slice() : [];
+  next.corrections.push({
+    by: opts.by || '',
+    at: now,
+    reason: opts.reason || 'correction after audit return',
+    changes,
+    fromVersion: prev.revision || 0,
+    toVersion: revision,
+  });
+  next.versions = Array.isArray(prev.versions) ? prev.versions.slice() : [];
+  next.versions.push({ type: 'corrected', version: revision, by: opts.by || '', at: now, reason: opts.reason || 'correction after audit return' });
+  next.auditHistory = Array.isArray(prev.auditHistory) ? prev.auditHistory.slice() : [];
+  next.auditHistory.push({ action: 'corrected', from: prev.status, to: 'rejected', by: opts.by || '', at: now, reason: opts.reason || '', revision });
+  next.auditAttempts = Array.isArray(prev.auditAttempts) ? prev.auditAttempts.slice() : [];
+  next.auditAttempts.push({
+    attempt: (prev.auditAttempts ? prev.auditAttempts.length : 0) + 1,
+    result: 'corrected',
+    by: opts.by || '',
+    at: now,
+    reason: opts.reason || '',
+    fromVersion: prev.revision || 0,
+    toVersion: revision,
+  });
+  ['rejectedBy', 'rejectedAt', 'rejectionReason', 'auditNotes'].forEach((f) => {
+    if (prev[f] !== undefined) next[f] = prev[f];
+  });
+  return { ok: true, batch: next };
+}
+
+/**
+ * Legacy P2.2 "reject-and-return" rule: when the Financial Audit rejects a
+ * payroll, EVERY monetary figure in the batch is wiped to zero (statement renders as
  * empty/zeros instead of showing the previously submitted amounts) and the
  * batch is returned to HR as a draft. HR uses Recalculate to regenerate the
  * figures from the live attendance, overtime, loans and absence records
  * before re-submitting to the audit.
+ *
+ * DEPRECATED since Phase 1 (Spec v1.0): rejection MUST NOT zero or lose any
+ * financial value and MUST use the distinct Returned/Needs Correction state
+ * (status 'rejected'). Kept exported only for backward compatibility and
+ * legacy test data; the active reject flow uses transitionPayroll(..., 'rejected').
  *
  * Returns a NEW batch object; the input is never mutated.
  */

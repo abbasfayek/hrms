@@ -162,33 +162,38 @@ export function renderEOSBView(container, options = {}) {
                     ${item.approvedBy ? `<div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">${isEn ? 'Approved:' : 'اعتمد:'} ${item.approvedBy} ${item.approvedAt ? '· ' + formatDate(item.approvedAt) : ''}</div>` : ''}
                     ${item.paidBy ? `<div style="font-size:10.5px; color:var(--text-muted);">${isEn ? 'Paid:' : 'صرف:'} ${item.paidBy} ${item.paidAt ? '· ' + formatDate(item.paidAt) : ''}</div>` : ''}
                   </td>
-                  <td>
-                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
-                      ${st === 'under_audit' && canApproveEosb ? `
-                        <button type="button" class="btn btn-sm btn-success btn-eosb-approve" title="${isEn ? 'Approve & finalize settlement' : 'اعتماد التسوية نهائياً'}">
-                          ${Icons.check(14)} ${isEn ? 'Approve' : 'اعتماد'}
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline btn-eosb-reject" style="color:var(--danger);" title="${isEn ? 'Return to draft for revision' : 'إعادة للمراجعة (مسودة)'}">
-                          ${Icons.x(14)} ${isEn ? 'Reject' : 'إرجاع'}
-                        </button>
-                      ` : ''}
-                      ${st === 'approved' && canPayEosb ? `
-                        <button type="button" class="btn btn-sm btn-success btn-eosb-pay" title="${isEn ? 'Disburse settlement payment' : 'صرف قيمة التصفية مالياً'}">
-                          ${Icons.dollar(14)} ${isEn ? 'Disburse' : 'صرف'}
-                        </button>
-                      ` : ''}
-                      ${st === 'draft' && canApproveEosb ? `
-                        <button type="button" class="btn btn-sm btn-outline btn-eosb-resubmit" title="${isEn ? 'Submit for financial audit' : 'إرسال للمراجعة المالية'}">
-                          ${Icons.upload(14)} ${isEn ? 'Submit for Audit' : 'إرسال للمراجعة'}
-                        </button>
-                      ` : ''}
-                      ${(st === 'draft' || st === 'under_audit') && canApproveEosb ? `
-                        <span style="font-size:11px; color:var(--text-muted);">
-                          ${isEn ? (item.rejectedBy ? 'Rejected by: ' : '') : (item.rejectedBy ? 'أعادها: ' : '')}${item.rejectedBy || ''}${item.rejectedAt ? ' · ' + formatDate(item.rejectedAt) : ''}
-                        </span>
-                      ` : ''}
-                    </div>
-                  </td>
+<td>
+                     <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                       ${st === 'under_audit' && canApproveEosb ? `
+                         <button type="button" class="btn btn-sm btn-success btn-eosb-approve" title="${isEn ? 'Approve & finalize settlement' : 'اعتماد التسوية نهائياً'}">
+                           ${Icons.check(14)} ${isEn ? 'Approve' : 'اعتماد'}
+                         </button>
+                         <button type="button" class="btn btn-sm btn-outline btn-eosb-reject" style="color:var(--danger);" title="${isEn ? 'Return to draft for revision' : 'إعادة للمراجعة (مسودة)'}">
+                           ${Icons.x(14)} ${isEn ? 'Reject' : 'إرجاع'}
+                         </button>
+                       ` : ''}
+                       ${st === 'approved' && canPayEosb ? `
+                         <button type="button" class="btn btn-sm btn-success btn-eosb-pay" title="${isEn ? 'Disburse settlement payment' : 'صرف قيمة التصفية مالياً'}">
+                           ${Icons.dollar(14)} ${isEn ? 'Disburse' : 'صرف'}
+                         </button>
+                       ` : ''}
+                       ${st === 'paid' && canApproveEosb ? `
+                         <button type="button" class="btn btn-sm btn-outline btn-eosb-cancel-payment" style="color:var(--danger); border-color:rgba(239,68,68,0.4);" title="${isEn ? 'Cancel payment, return to approved' : 'إلغاء الصرف، إعادة للمعتمد'}">
+                           ${Icons.x(14)} ${isEn ? 'Cancel Payment' : 'إلغاء الصرف'}
+                         </button>
+                       ` : ''}
+                       ${st === 'draft' && canApproveEosb ? `
+                         <button type="button" class="btn btn-sm btn-outline btn-eosb-resubmit" title="${isEn ? 'Submit for financial audit' : 'إرسال للمراجعة المالية'}">
+                           ${Icons.upload(14)} ${isEn ? 'Submit for Audit' : 'إرسال للمراجعة'}
+                         </button>
+                       ` : ''}
+                       ${(st === 'draft' || st === 'under_audit') && canApproveEosb ? `
+                         <span style="font-size:11px; color:var(--text-muted);">
+                           ${isEn ? (item.rejectedBy ? 'Rejected by: ' : '') : (item.rejectedBy ? 'أعادها: ' : '')}${item.rejectedBy || ''}${item.rejectedAt ? ' · ' + formatDate(item.rejectedAt) : ''}
+                         </span>
+                       ` : ''}
+                     </div>
+                   </td>
                   <td>
                     <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;" title="${clearanceLocked ? (isEn ? 'Clearance is issued only after approval & payment' : 'تُصدر المخالصة فقط بعد الاعتماد والصرف') : ''}">
                       <button type="button" class="btn btn-sm btn-outline btn-view-clearance" ${clearanceLocked ? 'disabled' : ''}>
@@ -317,6 +322,29 @@ export function renderEOSBView(container, options = {}) {
       storage.addAudit('generate', 'eosb', `${record.employeeName} — ${isEn ? 're-submitted for audit' : 'أُعيد إرساله للمراجعة'}`, record.id);
       toast.success(isEn ? `Settlement re-submitted for financial audit.` : 'أُعيد إرسال التصفية للمراجعة المالية.');
       renderEOSBView(container);
+    });
+
+    row.querySelector('.btn-eosb-cancel-payment')?.addEventListener('click', () => {
+      if (!canApproveEosb) return;
+      showConfirmDialog({
+        title: isEn ? 'Cancel Payment' : 'إلغاء عملية الصرف',
+        message: isEn
+          ? `Cancel the payment for ${record.employeeName}? This will return the settlement to 'Approved' status (unpaid) and clear the payment record.`
+          : `هل تريد إلغاء صرف ${record.employeeName}؟ سيتم إعادة التصفية إلى حالة "معتمد" (غير مصروف) ومسح سجل الصرف.`,
+        confirmText: isEn ? 'Yes, Cancel Payment' : 'نعم، ألغِ الصرف',
+        onConfirm: () => {
+          const now = new Date().toISOString();
+          const canceler = storage.getActiveUser()?.name || (isEn ? 'Financial Auditor' : 'المدقق المالي');
+          storage.updateEOSB(record.id, {
+            status: 'approved',
+            paidBy: undefined,
+            paidAt: undefined,
+          });
+          storage.addAudit('cancel_payment', 'eosb', `${record.employeeName} — ${isEn ? 'payment cancelled, returned to approved' : 'إلغاء الصرف، أُعيد للمعتمد'}`, record.id);
+          toast.warning(isEn ? 'Payment cancelled. Settlement returned to Approved status.' : 'تم إلغاء الصرف. أُعيدت التصفية لحالة معتمد.');
+          renderEOSBView(container);
+        },
+      });
     });
 
     row.querySelector('.btn-delete-eosb')?.addEventListener('click', () => {

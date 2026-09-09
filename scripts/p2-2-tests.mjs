@@ -43,7 +43,7 @@ const {
   listCompanyHolidayDatesInRange,
   countAbsenceDays,
 } = await import(`${JS}types.js`);
-const { generateMonthlyPayroll, clearPayrollAmounts } = await import(`${JS}engines/payrollEngine.js`);
+const { generateMonthlyPayroll, transitionPayroll, canTransitionPayroll, recordPayrollCorrection } = await import(`${JS}engines/payrollEngine.js`);
 const { getApprovedOvertimeSummary } = await import(`${JS}engines/overtimeEngine.js`);
 
 store.clear();
@@ -231,18 +231,51 @@ ok('negative totals prefix every line with a minus', htmlNeg.includes('- 100.00'
 ok('single-currency total still renders a code line', summarizeCurrencySegmentsHtml([{ code: 'USD', amount: 1500 }]).includes('1,500.00 <span'));
 ok('empty segments render a 0.00 placeholder', summarizeCurrencySegmentsHtml([]).includes('0.00'));
 
-console.log('  [P2.2 reject-and-return (audit rejection clears amounts)]');
-const clearedMC = clearPayrollAmounts(batchMC, { rejectedBy: 'Auditor X', rejectedAt: '2026-02-15T10:00:00.000Z', auditNotes: '[Audit rejected] Auditor X — amounts cleared, recalculate before re-submission' });
-ok('rejection returns the batch to HR (status draft)', clearedMC.status === 'draft' && clearedMC.auditStatus === 'rejected');
-ok('rejection stamps the rejector and timestamp', clearedMC.rejectedBy === 'Auditor X' && clearedMC.rejectedAt === '2026-02-15T10:00:00.000Z');
-ok('rejection appends the auditor note', clearedMC.auditNotes.includes('amounts cleared'));
-ok('rejection zeroes every item netSalary', clearedMC.items.every((it) => it.netSalary === 0 && it.basicSalary === 0 && it.grossSalary === 0 && it.totalDeductions === 0 && it.overtimeAmount === 0));
-ok('rejection zeroes every item auditStatus and flags cleared', clearedMC.items.every((it) => it.auditStatus === 'rejected' && it.isAmountsCleared === true));
-ok('rejection zeroes batch totals (legacy + per-currency)', clearedMC.totalGross === 0 && clearedMC.totalDeductions === 0 && clearedMC.totalNet === 0 && clearedMC.totalGosi === 0 && clearedMC.totalEOSB === 0);
-ok('rejection zeroes all totalsByCurrency segments, keeping codes', clearedMC.totalsByCurrency.length === 2 && clearedMC.totalsByCurrency.every((g) => g.gross === 0 && g.deductions === 0 && g.net === 0 && g.gosi === 0));
-ok('clearPayrollAmounts never mutates the submitted batch', Math.abs(batchMC.totalNet - (itA.netSalary + itB.netSalary)) < 0.01 && batchMC.items.every((it) => it.netSalary > 0) && batchMC.totalsByCurrency.some((g) => g.net > 0));
-const recalculated = generateMonthlyPayroll([empA, empB], stateMC.overtime, stateMC.loans, stateMC.attendance, { month: '2026-02', issueDate: '2026-02-28', title: 'MC-recalc', companies: defaultCompanies }, stateMC.settings);
-ok('HR recalculation after rejection regenerates live amounts (non-zero)', recalculated.totalNet > 0 && recalculated.items.every((it) => it.netSalary > 0));
+console.log('  [P2.2 state machine: reject-and-return (values preserved, Returned/Needs Correction)]');
+ok('draft → under_audit is a legal transition', canTransitionPayroll(batchMC, 'under_audit').ok === true);
+ok('draft → paid is ILLEGAL', canTransitionPayroll(batchMC, 'paid').ok === false);
+ok('draft → rejected is ILLEGAL', canTransitionPayroll(batchMC, 'rejected').ok === false);
+const auditedMC = transitionPayroll(batchMC, 'under_audit', { by: 'HR-Officer' }).batch;
+ok('transition to under_audit stamps transfer info', auditedMC.status === 'under_audit' && !!auditedMC.transferredToAuditAt && auditedMC.auditHistory.some((a) => a.action === 'under_audit'));
+const rejectedRes = transitionPayroll(auditedMC, 'rejected', { by: 'Auditor X', rejectionReason: 'Wrong overtime for Emp 1', auditNotes: 'recheck April overtime' });
+ok('reject returns the batch to HR as Returned (status rejected, NOT draft)', rejectedRes.ok === true && rejectedRes.batch.status === 'rejected' && rejectedRes.batch.status !== 'draft');
+ok('rejection stamps rejectionReason/rejectedBy/rejectedAt', rejectedRes.batch.rejectionReason === 'Wrong overtime for Emp 1' && rejectedRes.batch.rejectedBy === 'Auditor X' && !!rejectedRes.batch.rejectedAt);
+ok('rejection keeps the auditor note', rejectedRes.batch.auditNotes.includes('recheck April overtime'));
+ok('rejection PRESERVES every item financial value (no zeroing)', rejectedRes.batch.items.every((it) => it.netSalary !== 0 && it.basicSalary !== 0 && it.grossSalary !== 0) && Math.abs(rejectedRes.batch.totalNet - auditedMC.totalNet) < 0.01);
+ok('rejection preserves per-currency totals', rejectedRes.batch.totalsByCurrency.length === auditedMC.totalsByCurrency.length && rejectedRes.batch.totalsByCurrency.every((g) => g.net !== 0));
+ok('rejected batch records the Rejected Version snapshot', !!rejectedRes.batch.rejectedSnapshot && rejectedRes.batch.rejectedSnapshot.items.length === rejectedRes.batch.items.length);
+ok('reject appends to audit attempt history', rejectedRes.batch.auditAttempts.length === 2 && rejectedRes.batch.auditAttempts[1].result === 'returned' && rejectedRes.batch.auditAttempts[1].by === 'Auditor X');
+ok('reject appends a rejected version to the version chain', rejectedRes.batch.versions.length === 2 && rejectedRes.batch.versions[1].type === 'rejected');
+ok('rejected batch carries isAmountsCleared=false (no clearing flag)', rejectedRes.batch.isAmountsCleared === false);
+ok('reject never mutates the submitted under-audit batch', auditedMC.status === 'under_audit' && auditedMC.totalNet > 0 && auditedMC.items.every((it) => it.netSalary > 0));
+ok('under_audit → rejected is legal', canTransitionPayroll(auditedMC, 'rejected').ok === true);
+ok('under_audit → paid is ILLEGAL (payment queue point)', canTransitionPayroll(auditedMC, 'paid').ok === false);
+ok('paid → rejected is ILLEGAL', canTransitionPayroll({ ...batchMC, status: 'paid' }, 'rejected').ok === false);
+ok('draft → approved is ILLEGAL (audit must be between)', canTransitionPayroll(batchMC, 'approved').ok === false);
+ok('approved → under_audit is ILLEGAL (no undo after approve)', canTransitionPayroll({ ...batchMC, status: 'approved' }, 'under_audit').ok === false);
+ok('approved → paid is legal (payment queue point)', canTransitionPayroll({ ...batchMC, status: 'approved' }, 'paid').ok === true);
+
+const correctedRes = recordPayrollCorrection(rejectedRes.batch, { ...rejectedRes.batch, items: rejectedRes.batch.items.map((it, i) => (i === 0 ? { ...it, overtimeAmount: 500, netSalary: it.netSalary + 500 } : it)), totalNet: rejectedRes.batch.totalNet + 500 }, { by: 'HR-Officer', reason: 'Fixed April overtime' });
+ok('correction requires a Returned (rejected) batch', recordPayrollCorrection(auditedMC, auditedMC).ok === false);
+ok('correction records old→new value with user/timestamp/reason', correctedRes.ok === true && correctedRes.batch.corrections.length === 1 && correctedRes.batch.corrections[0].by === 'HR-Officer' && correctedRes.batch.corrections[0].reason === 'Fixed April overtime' && correctedRes.batch.corrections[0].changes.length > 0);
+ok('correction records the exact field change (overtimeAmount 0→500)', correctedRes.batch.corrections[0].changes.some((c) => c.field === 'overtimeAmount' && c.oldValue === 0 && c.newValue === 500));
+ok('corrected batch stays in Returned state (still rejected)', correctedRes.batch.status === 'rejected');
+ok('correction appends a Corrected Version to the chain', correctedRes.batch.versions.some((v) => v.type === 'corrected'));
+ok('correction preserves rejection metadata', correctedRes.batch.rejectedBy === 'Auditor X' && correctedRes.batch.rejectionReason === 'Wrong overtime for Emp 1');
+const resubRes = transitionPayroll(correctedRes.batch, 'under_audit', { by: 'HR-Officer', rejectionReason: 'corrected overtime, resubmitting' });
+ok('Returned → under_audit (resubmit) is legal', resubRes.ok === true && resubRes.batch.status === 'under_audit');
+ok('resubmit stamps resubmittedBy/At and marks resubmitted', !!resubRes.batch.resubmittedBy && !!resubRes.batch.resubmittedAt && resubRes.batch.returnState === 'resubmitted');
+ok('version chain tracks Rejected → Corrected → Resubmitted', resubRes.batch.versions.map((v) => v.type).join(',') === 'under_audit,rejected,corrected,resubmitted');
+ok('resubmitted batch keeps the full audit history for re-audit', resubRes.batch.auditHistory.length === 4 && resubRes.batch.auditAttempts.length === 4);
+ok('rejected → paid is ILLEGAL (must resubmit first)', canTransitionPayroll(rejectedRes.batch, 'paid').ok === false);
+ok('rejected → approved is ILLEGAL (must resubmit first)', canTransitionPayroll(rejectedRes.batch, 'approved').ok === false);
+const approveRes = transitionPayroll(resubRes.batch, 'approved', { by: 'Auditor X', rejectionReason: 'approved after correction' });
+ok('under_audit → approved (audit approve) is legal', approveRes.ok === true && approveRes.batch.status === 'approved' && !!approveRes.batch.auditedBy);
+const payRes = transitionPayroll(approveRes.batch, 'paid', { by: 'HR-Officer', rejectionReason: 'pay salaries' });
+ok('approved → paid (disbursement) is legal', payRes.ok === true && payRes.batch.status === 'paid' && !!payRes.batch.paidBy && !!payRes.batch.paidAt);
+ok('paid batch keeps every financial value at final amount', Math.abs(payRes.batch.totalNet - correctedRes.batch.totalNet) < 0.01 && payRes.batch.items.every((it) => it.netSalary > 0));
+ok('invalid transition returns ok:false (never half-applies)', transitionPayroll(batchMC, 'paid').ok === false && transitionPayroll(batchMC, 'under_audit').ok === true);
+ok('HR recalculation after rejection regenerates live amounts (non-zero)', generateMonthlyPayroll([empA, empB], stateMC.overtime, stateMC.loans, stateMC.attendance, { month: '2026-02', issueDate: '2026-02-28', title: 'MC-recalc', companies: defaultCompanies }, stateMC.settings).totalNet > 0);
 
 console.log('  [P2.2 loan-currency rule (explicit currency, same-currency deduction)]');
 storage.saveLoans([]);
