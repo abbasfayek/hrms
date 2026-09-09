@@ -5,7 +5,8 @@
 
 import { storage } from "../storage.js";
 import { createModal } from "./Modal.js";
-import { formatCurrency, formatDate, resolveEmployeeCurrency, formatPayMonth, escapeHtml, formatAmountWithCode } from "../types.js";
+import { formatCurrency, formatDate, resolveEmployeeCurrency, formatPayMonth, 
+escapeHtml, formatAmountWithCode, countAbsenceDays } from "../types.js";
 import { Icons } from "../icons.js";
 import { t, i18n } from '../i18n.js';
 import { getDailyRate, getHourlyRate, getMinuteRate } from '../engines/wageEngine.js';
@@ -72,7 +73,7 @@ export function openPayslipModal(employee, targetMonth = null) {
 
   // Absence / late deductions
   const empAtt = attendance.filter((a) => a.employeeId === employee.id && (a.date || "").startsWith(month));
-  const absenceDays = empAtt.filter((a) => a.status === "absent").length;
+  const absenceDays = countAbsenceDays(empAtt);
   const lateMinutes = empAtt.reduce((s, a) => s + (Number(a.lateMinutes) || 0), 0);
   const absenceDeduction = parseFloat((absenceDays * dailyWage).toFixed(2));
   const lateDeduction = parseFloat((lateMinutes * getMinuteRate(employee, settings, { month, defaultMethod: 'workingDays' })).toFixed(2));

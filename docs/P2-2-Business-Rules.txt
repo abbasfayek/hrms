@@ -119,6 +119,19 @@ Current -> Proposed -> تنفيذ -> اختبار.
     أوفرتايم كل شهر يُحتسب لشهره فقط، تواريخ العطلات لا تتسرب
     لشهر آخر، مع فحص عدم تغيير صيغ الخصم الأساسية.
 
+بند إضافي معتمد كتابيًا (2026-09-09): نصف يوم = 0.5 يوم غياب
+  - المعادلة المعتمدة: عدد أيام الغياب في المحرك/الكشوف/القسائم هو
+    مجموع معامل الخصم (deductibleDays) لسجلات الغياب، حيث 0.5 =
+    نصف يوم، 1 = يوم كامل، 0 = بدون خصم؛ السجلات القديمة (بدون
+    الحقل) تُعامل كيوم كامل.
+  - التنفيذ: countAbsenceDays() في public/js/types.js، مستخدمة في
+    payrollEngine.js (حقل absenceDays والخصم absenceDeduction)،
+    PayslipModal.js و ReportsView.js (تقارير الموظف)، ومكافئ TS في
+    src/services/payrollEngine.ts.
+  - الاختبار: فقرة "half-day absence factor" و "half-day absence in
+    month 8/9 payroll": الغياب النصف يوم في مسير 8 يبقى 0.5 وفي 9
+    يبقى 0.5، ولا يُدارج مع أي يوم كامل (0.5 + 1 = 1.5، لا تمدمج).
+
 البند 4) مفتاح الرواتب: منفَّذ ومختبر.
   - settings.payrollViewEnabled (seedData افتراضي true).
   - SettingsView.js: مفتاح يظهر للمدير العام فقط (Super Admin)؛

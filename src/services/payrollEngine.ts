@@ -52,7 +52,12 @@ export function generateMonthlyPayroll(
       (att) => att.employeeId === emp.id && att.date.startsWith(month)
     );
 
-    const absentDaysCount = empAttendance.filter((att) => att.status === 'absent').length;
+    const absentDaysCount = empAttendance.reduce((sum, att) => {
+      if (att.status !== 'absent') return sum;
+      const raw = att.deductibleDays;
+      const factor = raw === undefined || raw === null ? 1 : Number(raw);
+      return sum + (Number.isFinite(factor) ? Math.max(0, factor) : 1);
+    }, 0);
     const totalLateMinutes = empAttendance.reduce((sum, att) => sum + (att.lateMinutes || 0), 0);
 
     const dailyWage = (basicSalary + housingAllowance + transportAllowance) / (settings.workingDaysPerMonth || 30);

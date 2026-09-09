@@ -4,7 +4,8 @@
 
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, STATUS_LABELS, LEAVE_TYPE_LABELS, getCurrentMonth, can } from '../types.js';
+import { formatCurrency, formatDate, STATUS_LABELS, LEAVE_TYPE_LABELS, 
+getCurrentMonth, can, countAbsenceDays } from '../types.js';
 import { calculateLeaveBalance } from '../engines/leaveEngine.js';
 import { toast } from './Toast.js';
 import { i18n, t, tf } from '../i18n.js';
@@ -203,7 +204,7 @@ export function renderReportsView(container, options = {}) {
 
         // Absences & Penalties
         const empAtt = attendance.filter((a) => a.employeeId === it.employeeId && (a.date || '').startsWith(reportMonth));
-        const absenceDays = empAtt.filter((a) => a.status === 'absent').length;
+        const absenceDays = countAbsenceDays(empAtt);
         const lateMinutes = empAtt.reduce((sum, a) => sum + (Number(a.lateMinutes) || 0), 0);
 
         // Prorated Salary to Date

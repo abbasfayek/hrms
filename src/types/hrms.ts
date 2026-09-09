@@ -129,6 +129,7 @@ export interface AttendanceRecord {
   earlyDepartureMinutes: number;
   status: AttendanceStatus;
   notes?: string;
+  deductibleDays?: number; // absence day factor: 0.5 half-day, 1 full day
 }
 
 export type OvertimeRateMultiplier = 1.5 | 2.0; // 1.5x regular day, 2.0x weekend/holiday

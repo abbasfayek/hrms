@@ -40,6 +40,7 @@ const {
   resolveEmployeeCurrency,
   isPayrollViewEnabled,
   listCompanyHolidayDatesInRange,
+  countAbsenceDays,
 } = await import(`${JS}types.js`);
 const { generateMonthlyPayroll } = await import(`${JS}engines/payrollEngine.js`);
 const { getApprovedOvertimeSummary } = await import(`${JS}engines/overtimeEngine.js`);
@@ -158,6 +159,34 @@ const sepHolidays = listCompanyHolidayDatesInRange(storage.getState().holidays, 
 ok('Aug holiday dates counted in August only', augHolidays.length === 2 && augHolidays.every((d) => d.startsWith('2026-08')));
 ok('Sep holiday counted in September only', sepHolidays.length === 1 && sepHolidays[0] === '2026-09-10');
 ok('August holiday never leaks into September leave counting', !sepHolidays.some((d) => d.startsWith('2026-08')));
+
+console.log('  [P2.2 half-day absence factor (deductibleDays=0.5)]');
+const absentFull = { id: 'att-half-full', employeeId: empA.id, date: '2026-08-01', status: 'absent', deductibleDays: 1 };
+const absentHalf = { id: 'att-half-050', employeeId: empA.id, date: '2026-08-02', status: 'absent', deductibleDays: 0.5 };
+const absentLegacy = { id: 'att-half-legacy', employeeId: empA.id, date: '2026-08-03', status: 'absent' };
+ok('countAbsenceDays: half-day sums to 0.5', countAbsenceDays([absentHalf]) === 0.5);
+ok('countAbsenceDays: legacy absent record defaults to 1 full day', countAbsenceDays([absentLegacy]) === 1);
+ok('countAbsenceDays: full + half = 1.5 (never merged to 2)', countAbsenceDays([absentFull, absentHalf]) === 1.5);
+ok('countAbsenceDays: non-absent records are ignored', countAbsenceDays([{ status: 'present' }, { status: 'late' }]) === 0);
+ok('countAbsenceDays: empty list is zero', countAbsenceDays([]) === 0);
+
+console.log('  [P2.2 half-day absence in month 8/9 payroll]');
+storage.saveAttendance([]);
+storage.addAttendance({ id: 'att-hd-aug', employeeId: empA.id, date: '2026-08-05', status: 'absent', deductibleDays: 0.5 });
+storage.addAttendance({ id: 'att-hd-sep', employeeId: empA.id, date: '2026-09-05', status: 'absent', deductibleDays: 0.5 });
+storage.addAttendance({ id: 'att-coding-sep', employeeId: empA.id, date: '2026-09-06', status: 'absent' });
+const stateHD = storage.getState();
+const batchAugHD = generateMonthlyPayroll([empA], stateHD.overtime, stateHD.loans, stateHD.attendance, { month: '2026-08', issueDate: '2026-08-31', title: 'AugHD' }, stateHD.settings);
+const batchSepHD = generateMonthlyPayroll([empA], stateHD.overtime, stateHD.loans, stateHD.attendance, { month: '2026-09', issueDate: '2026-09-30', title: 'SepHD' }, stateHD.settings);
+const augHDItem = batchAugHD.items.find((it) => it.employeeId === empA.id);
+const sepHDItem = batchSepHD.items.find((it) => it.employeeId === empA.id);
+ok('Aug half-day absence recorded as 0.5 days', Math.abs(augHDItem.absenceDays - 0.5) < 0.0001);
+ok('Sep half-day + full = 1.5 days (half-day never rounded to full)', Math.abs(sepHDItem.absenceDays - 1.5) < 0.0001);
+ok('Aug half-day deduction equals 0.5 * daily wage', Math.abs(augHDItem.absenceDeduction - (dailyAug * 0.5)) < 0.01);
+ok('Sep half-day deduction cut at exactly half', Math.abs(sepHDItem.absenceDeduction - (dailyAug * 1.5)) < 0.01);
+ok('Sep half-day absence never leaks into Aug batch', Math.abs(augHDItem.absenceDays - 0.5) < 0.0001 && augHDItem.absenceDeduction < dailyAug);
+ok('Aug half-day never counted in Sep batch', sepHDItem.absenceDays === 1.5);
+ok('Sep half-day totalsByCurrency deduction is not merged across months', Math.abs(batchSepHD.totalDeductions - sepHDItem.totalDeductions) < 0.01);
 
 console.log('  [P2.2 multi-currency payroll segmented totals]');
 storage.saveAttendance([]);

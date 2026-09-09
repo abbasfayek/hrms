@@ -352,6 +352,23 @@ export function summarizeCurrencySegments(segments = []) {
 }
 
 /**
+ * P2.2 absence-day factor rule: an attendance record with status "absent"
+ * counts as the number of deductible days stored on it (deductibleDays).
+ * Undefined/legacy records default to a full day (1), and the half-day option
+ * (0.5) must be preserved exactly so payroll, payslips and reports never round
+ * a half-day up to a full day. Returns a fractional non-negative number.
+ * e.g. countAbsenceDays([{status:'absent',deductibleDays:0.5},{status:'absent'}]) === 1.5
+ */
+export function countAbsenceDays(attendanceRecords = []) {
+  return (attendanceRecords || []).reduce((sum, att) => {
+    if (!att || att.status !== 'absent') return sum;
+    const raw = att.deductibleDays;
+    const factor = raw === undefined || raw === null || raw === '' ? 1 : Number(raw);
+    return sum + (Number.isFinite(factor) ? Math.max(0, factor) : 1);
+  }, 0);
+}
+
+/**
  * P2.2 Super-Admin payroll lock: the payroll engine/display is enabled unless
  * the database setting was explicitly turned off. Read freshly from the
  * settings object at every display/calculation (never from a time constant).

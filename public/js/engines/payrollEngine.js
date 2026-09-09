@@ -4,7 +4,7 @@
 
 import { getApprovedOvertimeSummary } from './overtimeEngine.js';
 import { getDailyRate, getHourlyRate, getMinuteRate } from './wageEngine.js';
-import { resolveEmployeeCurrency } from '../types.js';
+import { resolveEmployeeCurrency, countAbsenceDays } from '../types.js';
 import { t } from '../i18n.js';
 
 /**
@@ -63,7 +63,10 @@ export function generateMonthlyPayroll(
       (att) => att.employeeId === emp.id && att.date && att.date.startsWith(month)
     );
 
-    const absentDaysCount = empAttendance.filter((att) => att.status === 'absent').length;
+    // P2.2 half-day fix: absence days are the SUM of each absent record's
+    // deductibleDays factor (0.5 = half day, 1 = full day), so a half-day
+    // absence is never rounded up to a full day in payroll.
+    const absentDaysCount = countAbsenceDays(empAttendance);
     const totalLateMinutes = empAttendance.reduce((sum, att) => sum + (Number(att.lateMinutes) || 0), 0);
 
     // Daily/Hourly/Minute wage come from the single source of truth
