@@ -115,7 +115,7 @@ export const ALL_PERMISSIONS = [
   'increments.view', 'increments.add', 'increments.edit', 'increments.delete',
   'deductions.view', 'deductions.add', 'deductions.edit', 'deductions.delete',
   'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.approve', 'payroll.reject', 'payroll.submit', 'payroll.cancelPayment', 'payroll.archive', 'payroll.export', 'payroll.disburse',
-  'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.delete',
+  'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.pay', 'eosb.delete',
   'companies.view', 'companies.manage',
   'reports.view', 'reports.export',
   'audit.view',

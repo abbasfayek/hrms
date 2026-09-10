@@ -10,11 +10,12 @@ import { formatDate, TERMINATION_REASONS, can, formatAmountWithCode, resolveEmpl
 import { calculateEOSB } from '../engines/eosbEngine.js';
 import { t, i18n } from '../i18n.js';
 
-export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
+export function openEOSBCalculatorModal(defaultEmployee = null, onSaved, opts = {}) {
   const state = storage.getState();
   const { employees, leaves, loans, settings, companies } = state;
   const activeEmployees = employees.filter((e) => e.status === 'active' || e.status === 'probation');
   const canApprove = can(storage.getActiveUser(), 'eosb.approve');
+  const previewOnly = !!opts.previewOnly;
   const selectedEmpId = defaultEmployee ? defaultEmployee.id : (activeEmployees[0]?.id || '');
   const todayStr = new Date().toISOString().split('T')[0];
   const isEn = i18n.getLang() === 'en';
@@ -172,7 +173,7 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
   const footerHtml = `
     <button type="button" class="btn btn-secondary close-modal-btn">${t('cancel')}</button>
     <button type="button" class="btn btn-success submit-eosb-btn">
-      ${Icons.check(16)} ${isEn ? 'Save & Submit for Financial Audit' : 'حفظ التسوية وإرسالها للمراجعة المالية'}
+      ${Icons.check(16)} ${previewOnly ? (isEn ? 'Record Correction' : 'تسجيل التصحيح') : (isEn ? 'Save & Submit for Financial Audit' : 'حفظ التسوية وإرسالها للمراجعة المالية')}
     </button>
   `;
 
@@ -299,6 +300,14 @@ export function openEOSBCalculatorModal(defaultEmployee = null, onSaved) {
         currentResult.status = 'under_audit';
         currentResult.createdBy = storage.getActiveUser()?.name || (isEn ? 'HR' : 'الموارد البشرية');
         currentResult.createdAt = currentResult.createdAt || new Date().toISOString();
+
+        if (previewOnly) {
+          // Correction path: hand the computed result to the caller (the EOSB
+          // view records it through the guarded engine); do NOT persist here.
+          close();
+          if (typeof opts.onResult === 'function') opts.onResult(currentResult);
+          return;
+        }
 
         storage.addEOSB(currentResult);
         storage.addAudit('generate', 'eosb', `${currentResult.employeeName} — ${formatAmountWithCode(currentResult.netSettlementAmount, currentResult.currency)} (${isEn ? 'submitted for financial audit' : 'أُرسل للمراجعة المالية'})`, currentResult.id);

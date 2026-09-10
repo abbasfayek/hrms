@@ -10,6 +10,10 @@ import { openClearanceCertificateModal } from './ClearanceCertificateModal.js';
 import { showConfirmDialog } from './Modal.js';
 import { toast } from './Toast.js';
 import { t, i18n } from '../i18n.js';
+// Phase 7: every EOSB workflow action goes through the guarded layer
+// (permission → scope → state) so invalid or unauthorized transitions are
+// impossible and denied attempts are recorded in the central audit trail.
+import { transitionEosbGuarded, recordEosbCorrectionGuarded, deleteEosbGuarded } from '../engines/eosbAccess.js';
 
 const EOSB_STATUS_META = {
   draft: { badge: 'badge-warning', ar: 'مسودة / أعيد للتدقيق', en: 'Draft / Returned' },
@@ -26,6 +30,15 @@ export function renderEOSBView(container, options = {}) {
   const canApproveEosb = can(storage.getActiveUser(), 'eosb.approve');
   const canPayEosb = can(storage.getActiveUser(), 'eosb.pay');
   const canDeleteEosb = can(storage.getActiveUser(), 'eosb.delete');
+  // Phase 7: surface a guarded-layer denial (permission/scope/state).
+  const guardFailed = (res) => {
+    if (res && res.ok === false) {
+      toast.error(isEn ? `Action denied: ${res.error}.` : `تم رفض الإجراء: ${res.error}.`);
+      renderEOSBView(container);
+      return true;
+    }
+    return false;
+  };
   const reasonLabel = (reason) => {
     const label = TERMINATION_REASONS[reason];
     if (!label) return reason;
@@ -187,10 +200,16 @@ export function renderEOSBView(container, options = {}) {
                            ${Icons.upload(14)} ${isEn ? 'Submit for Audit' : 'إرسال للمراجعة'}
                          </button>
                        ` : ''}
+                       ${st === 'draft' && item.rejectedBy && canProcess ? `
+                         <button type="button" class="btn btn-sm btn-outline btn-eosb-correct" style="color:var(--primary); border-color:rgba(59,130,246,0.4);" title="${isEn ? 'Recalculate after audit return and record a correction' : 'إعادة الاحتساب بعد إعادة التسوية للمراجعة وتسجيل التصحيح'}">
+                           ${Icons.refresh(14)} ${isEn ? 'Recalc & Correct' : 'إعادة الاحتساب وتسجيل التصحيح'}
+                         </button>
+                       ` : ''}
                        ${(st === 'draft' || st === 'under_audit') && canApproveEosb ? `
-                         <span style="font-size:11px; color:var(--text-muted);">
-                           ${isEn ? (item.rejectedBy ? 'Rejected by: ' : '') : (item.rejectedBy ? 'أعادها: ' : '')}${item.rejectedBy || ''}${item.rejectedAt ? ' · ' + formatDate(item.rejectedAt) : ''}
-                         </span>
+<span style="font-size:11px; color:var(--text-muted);">
+                             ${isEn ? (item.rejectedBy ? 'Rejected by: ' : '') : (item.rejectedBy ? 'أعادها: ' : '')}${item.rejectedBy || ''}${item.rejectedAt ? ' · ' + formatDate(item.rejectedAt) : ''}
+                           </span>
+                           ${item.rejectedBy && item.rejectionReason ? `<div style="font-size:10.5px; color:var(--warning); margin-top:2px;">${isEn ? 'Reason: ' : 'السبب: '}${item.rejectionReason}</div>` : ''}
                        ` : ''}
                      </div>
                    </td>
@@ -240,22 +259,16 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد اعتماد تصفية ${record.employeeName} نهائياً؟ سيتم تحديث حالة الموظف إلى ${record.reason === 'resignation' ? 'استقال' : 'منهي خدمته'} وتصبح التسوية جاهزة للصرف.`,
         confirmText: isEn ? 'Yes, Approve' : 'نعم، اعتمد',
         onConfirm: () => {
-          const now = new Date().toISOString();
-          const approver = storage.getActiveUser()?.name || (isEn ? 'HR Manager' : 'مدير الموارد البشرية');
-          storage.updateEOSB(record.id, {
-            status: 'approved',
-            approvedBy: approver,
-            approvedAt: now,
-            rejectedBy: undefined,
-            rejectedAt: undefined,
-          });
+          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'approved', { reason: 'approved' });
+          if (guardFailed(res)) return;
+          storage.persistEosb(res.batch);
           // Mark the employee resigned/terminated at approval time (workflow step).
           const emp = storage.getState().employees.find((e) => e.id === record.employeeId);
           if (emp) {
             const newStatus = ['resignation', 'non_renewal_by_employee', 'retirement'].includes(record.reason) ? 'resigned' : 'terminated';
             storage.updateEmployee({ ...emp, status: newStatus });
           }
-          storage.addAudit('approve', 'eosb', `${record.employeeName} — ${fmtAmt(record, record.netSettlementAmount)}`, record.id);
+          storage.addAudit('approve', 'eosb', `${record.employeeName} — ${fmtAmt(record, res.batch.netSettlementAmount)}`, record.id);
           toast.success(isEn ? `Settlement approved for ${record.employeeName}. It is now ready for payment.` : `تم اعتماد تصفية ${record.employeeName}، وهي الآن جاهزة للصرف.`);
           renderEOSBView(container);
         },
@@ -271,15 +284,9 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد إرجاع التصفية الخاصة بـ ${record.employeeName} إلى المسودة للمراجعة والتصحيح؟`,
         confirmText: isEn ? 'Yes, Return' : 'نعم، أعد للمراجعة',
         onConfirm: () => {
-          const now = new Date().toISOString();
-          const rejector = storage.getActiveUser()?.name || (isEn ? 'HR Manager' : 'مدير الموارد البشرية');
-          storage.updateEOSB(record.id, {
-            status: 'draft',
-            rejectedBy: rejector,
-            rejectedAt: now,
-            approvedBy: undefined,
-            approvedAt: undefined,
-          });
+          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'draft', { rejectionReason: isEn ? 'returned for review and correction' : 'أُعيدت للمراجعة والتصحيح' });
+          if (guardFailed(res)) return;
+          storage.persistEosb(res.batch);
           storage.addAudit('reject', 'eosb', `${record.employeeName} — ${isEn ? 'returned to draft' : 'أُعيد للمراجعة'}`, record.id);
           toast.warning(isEn ? `Settlement returned to draft for ${record.employeeName}.` : `تم إرجاع تصفية ${record.employeeName} للمراجعة.`);
           renderEOSBView(container);
@@ -296,15 +303,11 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد صرف مبلغ ${fmtAmt(record, record.netSettlementAmount)} إلى ${record.employeeName}؟ بعد الصرف تُحال التسوية إلى "مصروف" ويمكن إصدار المخالصة.`,
         confirmText: isEn ? 'Yes, Disburse' : 'نعم، اصرف',
         onConfirm: () => {
-          const now = new Date().toISOString();
-          const payer = storage.getActiveUser()?.name || (isEn ? 'Finance Manager' : 'المدير المالي');
-          storage.updateEOSB(record.id, {
-            status: 'paid',
-            paidBy: payer,
-            paidAt: now,
-          });
-          storage.addAudit('settle', 'eosb', `${record.employeeName} — ${fmtAmt(record, record.netSettlementAmount)} ${isEn ? 'paid out' : 'تم صرفها'}`, record.id);
-          toast.success(isEn ? `Settlement of ${fmtAmt(record, record.netSettlementAmount)} disbursed to ${record.employeeName}.` : `تم صرف ${fmtAmt(record, record.netSettlementAmount)} إلى ${record.employeeName}.`);
+          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'paid', { reason: 'disbursed' });
+          if (guardFailed(res)) return;
+          storage.persistEosb(res.batch);
+          storage.addAudit('settle', 'eosb', `${record.employeeName} — ${fmtAmt(record, res.batch.netSettlementAmount)} ${isEn ? 'paid out' : 'تم صرفها'}`, record.id);
+          toast.success(isEn ? `Settlement of ${fmtAmt(record, res.batch.netSettlementAmount)} disbursed to ${record.employeeName}.` : `تم صرف ${fmtAmt(record, res.batch.netSettlementAmount)} إلى ${record.employeeName}.`);
           renderEOSBView(container);
         },
       });
@@ -312,16 +315,31 @@ export function renderEOSBView(container, options = {}) {
 
     row.querySelector('.btn-eosb-resubmit')?.addEventListener('click', () => {
       if (!canApproveEosb) return;
-      const now = new Date().toISOString();
-      const submitter = storage.getActiveUser()?.name || (isEn ? 'HR' : 'الموارد البشرية');
-      storage.updateEOSB(record.id, {
-        status: 'under_audit',
-        submittedBy: submitter,
-        submittedAt: now,
-      });
+      const res = transitionEosbGuarded(storage.getActiveUser(), record, 'under_audit', { reason: 'resubmitted for audit' });
+      if (guardFailed(res)) return;
+      storage.persistEosb(res.batch);
       storage.addAudit('generate', 'eosb', `${record.employeeName} — ${isEn ? 're-submitted for audit' : 'أُعيد إرساله للمراجعة'}`, record.id);
       toast.success(isEn ? `Settlement re-submitted for financial audit.` : 'أُعيد إرسال التصفية للمراجعة المالية.');
       renderEOSBView(container);
+    });
+
+    row.querySelector('.btn-eosb-correct')?.addEventListener('click', () => {
+      if (!canProcess) return;
+      const emp = employees.find((e) => e.id === record.employeeId);
+      openEOSBCalculatorModal(emp, () => renderEOSBView(container), {
+        previewOnly: true,
+        onResult: (fresh) => {
+          // The calculator returns a FRESH, history-less object — re-bind it
+          // to the returned settlement and record the correction through the
+          // guarded layer so no sealed history can ever be lost.
+          const res = recordEosbCorrectionGuarded(storage.getActiveUser(), record, fresh, { reason: isEn ? 'recalculation after audit return' : 'إعادة احتساب بعد إعادة التسوية للمراجعة' });
+          if (guardFailed(res)) return;
+          storage.persistEosb(res.batch);
+          storage.addAudit('correct', 'eosb', `${record.employeeName} — ${isEn ? 'correction recorded after audit return' : 'تم تسجيل التصحيح بعد إعادة التسوية للمراجعة'}`, record.id);
+          toast.success(isEn ? 'Correction recorded. The settlement stays returned until re-submitted.' : 'تم تسجيل التصحيح. تبقى التسوية معادة للمراجعة حتى إعادة الإرسال.');
+          renderEOSBView(container);
+        },
+      });
     });
 
     row.querySelector('.btn-eosb-cancel-payment')?.addEventListener('click', () => {
@@ -333,13 +351,9 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد إلغاء صرف ${record.employeeName}؟ سيتم إعادة التصفية إلى حالة "معتمد" (غير مصروف) ومسح سجل الصرف.`,
         confirmText: isEn ? 'Yes, Cancel Payment' : 'نعم، ألغِ الصرف',
         onConfirm: () => {
-          const now = new Date().toISOString();
-          const canceler = storage.getActiveUser()?.name || (isEn ? 'Financial Auditor' : 'المدقق المالي');
-          storage.updateEOSB(record.id, {
-            status: 'approved',
-            paidBy: undefined,
-            paidAt: undefined,
-          });
+          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'approved', { reason: 'cancel_payment' });
+          if (guardFailed(res)) return;
+          storage.persistEosb(res.batch);
           storage.addAudit('cancel_payment', 'eosb', `${record.employeeName} — ${isEn ? 'payment cancelled, returned to approved' : 'إلغاء الصرف، أُعيد للمعتمد'}`, record.id);
           toast.warning(isEn ? 'Payment cancelled. Settlement returned to Approved status.' : 'تم إلغاء الصرف. أُعيدت التصفية لحالة معتمد.');
           renderEOSBView(container);
@@ -349,7 +363,7 @@ export function renderEOSBView(container, options = {}) {
 
     row.querySelector('.btn-delete-eosb')?.addEventListener('click', () => {
       if (!canDeleteEosb) return;
-      if (recordStatus(record) === 'paid') {
+      if (deleteEosbGuarded(storage.getActiveUser(), record).ok === false) {
         toast.error(isEn ? 'Paid settlements cannot be deleted for audit integrity.' : 'لا يمكن حذف تسوية تم صرفها حفاظاً على سلامة السجلات المالية.');
         return;
       }

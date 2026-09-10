@@ -49,6 +49,9 @@ import {
 } from './engines/auditTrail.js';
 // Security-denial hook: storage registers the audit writer (acyclic).
 import { setAuditDeniedHook } from './engines/payrollAccess.js';
+// Phase 7: EOSB workflow guards + pure engine (deny hook + baseline seal).
+import { setEosbDeniedHook } from './engines/eosbAccess.js';
+import { ensureEosbBaseline } from './engines/eosbWorkflow.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -1303,6 +1306,12 @@ class StorageService {
       const stamped = stampEosbRecord(eosb, this._governanceSettings(), { at: eosb.updatedAt });
       follow = stamped.followCurrencies || [];
     } catch (e) { /* governance must never break an existing financial save */ }
+    // Phase 7: records committed at creation (the calculator saves direct to
+    // under_audit) seal their ORIGINAL financial baseline here — subsequent
+    // transitions/corrections must never reprice or lose this history.
+    try {
+      if (eosb && eosb.status === 'under_audit') ensureEosbBaseline(eosb, { at: eosb.updatedAt });
+    } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.EOSB, []);
     const alreadyStored = list.some((e) => e && (e.id === eosb.id || e.employeeId === eosb.employeeId));
     list.unshift(eosb);
@@ -1342,6 +1351,49 @@ class StorageService {
       reason: mapped.reason || (stored.rejectionReason && mapped.action === AUDIT_ACTIONS.REJECTED ? stored.rejectionReason : undefined),
       rejection: merged.rejectedBy ? { rejectedBy: merged.rejectedBy, rejectedAt: merged.rejectedAt, rejectionReason: merged.rejectionReason || stored.rejectionReason || null, returnState: 'correction' } : null,
       by: merged.approvedBy || merged.paidBy || merged.rejectedBy || merged.submittedBy || '',
+      versionId: versionIdOfBatch(merged) || null,
+      auditAttempt: latestAuditAttempt(merged, mapped.action),
+      corrections: Array.isArray(merged.corrections) ? merged.corrections : null,
+    });
+    return true;
+  }
+
+  /**
+   * Phase 7: persist a workflow transition/correction record produced by the
+   * EOSB engine. Same storage semantics as the payroll persist path:
+   * resolves scope, re-seals a fresh (un-stamped) record idempotently,
+   * writes through the real stored record, and audits the honest event.
+   */
+  persistEosb(record) {
+    if (!record || typeof record !== 'object') return false;
+    this.attachEmployeeScope(record);
+    record.updatedAt = new Date().toISOString();
+    let follow = [];
+    try {
+      const stamped = stampEosbRecord(record, this._governanceSettings(), { at: record.updatedAt });
+      follow = stamped.followCurrencies || [];
+    } catch (e) { /* governance must never break an EOSB save */ }
+    if (follow.length) this._lockRatesForCodes(follow);
+    const list = this.get(STORAGE_KEYS.EOSB, []);
+    const idx = list.findIndex((e) => e && (e.id === record.id || e.employeeId === record.employeeId));
+    const stored = idx === -1 ? null : list[idx];
+    const fromStatus = stored ? (stored.status || 'draft') : null;
+    const toStatus = record.status || 'draft';
+    const mapped = this._eosbEventAction(stored, record);
+    if (idx === -1) list.unshift(record); else list[idx] = record;
+    this.set(STORAGE_KEYS.EOSB, list);
+    const author = record.approvedBy || record.paidBy || record.rejectedBy || record.resubmittedBy || record.submittedBy || record.cancelPaymentBy || record.createdBy || '';
+    this._auditEosb(record, stored ? mapped.action : AUDIT_ACTIONS.CREATED, {
+      fromStatus,
+      toStatus,
+      oldValue: stored ? { status: fromStatus, netSettlementAmount: Number(stored.netSettlementAmount) || 0 } : null,
+      newValue: { status: toStatus, netSettlementAmount: Number(record.netSettlementAmount) || 0 },
+      reason: mapped.reason || (record.rejectionReason || ''),
+      rejection: record.rejectedBy ? rejectionReference(record) : null,
+      corrections: Array.isArray(record.corrections) ? record.corrections : null,
+      versionId: versionIdOfBatch(record) || null,
+      auditAttempt: latestAuditAttempt(record, mapped.action),
+      by: author,
     });
     return true;
   }
@@ -1573,6 +1625,13 @@ class StorageService {
   _auditEosb(record, action, opts = {}) {
     try {
       const author = opts.by || record.approvedBy || record.paidBy || record.rejectedBy || record.submittedBy || record.createdBy || record.by || '';
+      const payRef = opts.paymentReference
+        || (record.paymentReference && action === AUDIT_ACTIONS.PAID ? {
+          referenceId: record.paymentReference.referenceId || null,
+          executedAt: record.paymentReference.executedAt || null,
+          executedBy: record.paymentReference.executedBy || null,
+          netSettlementAmount: record.paymentReference.netSettlementAmount != null ? record.paymentReference.netSettlementAmount : null,
+        } : null);
       const event = {
         recordType: AUDIT_RECORD_TYPES.EOSB,
         recordId: String(record.id || record.employeeId || 'unknown'),
@@ -1584,10 +1643,11 @@ class StorageService {
         oldValue: opts.oldValue != null ? opts.oldValue : null,
         newValue: opts.newValue != null ? opts.newValue : { status: record.status || 'draft', netSettlementAmount: Number(record.netSettlementAmount) || 0 },
         reason: opts.reason || opts.rejectionReason || '',
-        versionId: null,
-        auditAttempt: null,
+        versionId: opts.versionId != null ? opts.versionId : null,
+        auditAttempt: opts.auditAttempt != null ? opts.auditAttempt : null,
         rejection: opts.rejection || rejectionReference(record) || null,
         corrections: opts.corrections || null,
+        paymentReference: payRef,
         financial: financialFieldsOf(record, { defaultCurrency: record.salaryCurrency || record.currency || null }),
       };
       this.appendAuditEvent(event);
@@ -1603,6 +1663,12 @@ class StorageService {
     const to = merged ? (merged.status || 'draft') : 'draft';
     if ((to === 'draft' || to === 'rejected') && merged.rejectedBy && (from === 'under_audit' || from === 'approved')) {
       return { action: AUDIT_ACTIONS.REJECTED, reason: merged.rejectionReason || '' };
+    }
+    // Phase 7: a returned record re-saved with corrections (old->new diff +
+    // marked returnState) is a CORRECTION, never a plain update or a fresh draft.
+    if (merged.returnState === 'corrected' && Array.isArray(merged.corrections) && from === 'draft' && to === 'draft') {
+      const lastCorr = merged.corrections[merged.corrections.length - 1] || {};
+      return { action: AUDIT_ACTIONS.CORRECTED, reason: lastCorr.reason || '' };
     }
     if (to === 'under_audit' && stored && stored.rejectedBy) {
       return { action: AUDIT_ACTIONS.RESUBMITTED, reason: '' };
@@ -1904,5 +1970,11 @@ setAuditDeniedHook((info) => storage.auditDeniedPayroll(info.recordId, info.acti
   error: info.error,
   layer: info.layer,
   reason: info.reason,
+  fromStatus: info.fromStatus,
+}));
+// Phase 7: route EOSB guard denials into the central audit trail.
+setEosbDeniedHook((info) => storage.auditDeniedEosb(info.recordId, info.action, {
+  error: info.error,
+  layer: info.layer,
   fromStatus: info.fromStatus,
 }));
