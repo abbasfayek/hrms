@@ -1,0 +1,193 @@
+================================================================================
+PHASE 8 — CURRENCY + REPORTS (COMMIT HASH: TBD)
+  Release Report — Financial Workflow & Currency Specification v1.0
+================================================================================
+
+--------------------------------------------------------------------------------
+1. SCOPE
+--------------------------------------------------------------------------------
+Phase 8 delivers the Currency + Reports layer on top of closed Phase 1-7 baselines.
+No new Business Policies, no Formula changes, no State Machine changes.
+Only: Reports read from historical Financial Snapshots (Source of Truth),
+Currency mixing guards enforced, Excel/Print outputs match Screen.
+
+--------------------------------------------------------------------------------
+2. FILES MODIFIED (IMPLEMENTATION COMMIT)
+--------------------------------------------------------------------------------
+  M public/js/components/ReportsView.js       All financial reports now:
+                                                - Use formatAmountWithCode (amount + currency code)
+                                                - Use summarizeCurrencySegments for per-currency totals
+                                                - EOSB report: added Currency, Exchange Rate, Exchange Rate Date,
+                                                  Base Currency, Base Amount columns
+                                                - Excel exports: added Currency, Exchange Rate, Exchange Rate Date,
+                                                  Base Currency, Base Amount columns
+                                                - GOSI, Payroll, Audit, Comparison, Overtime: same fixes
+  A scripts/p8-tests.mjs                      NEW comprehensive Currency + Reports E2E suite
+                                                (64 assertions covering 11 test categories)
+
+--------------------------------------------------------------------------------
+3. CURRENCY MODEL (enforced by currencyGovernance.js — Phase 4, unchanged)
+--------------------------------------------------------------------------------
+  * Base Currency: settings.baseCurrency (default USD)
+  * Exchange Rate: manual entry, append-only, locked when referenced by committed record
+  * Transaction-level Snapshot: every committed financial record carries
+    currency, exchangeRate, exchangeRateDate, baseCurrency, baseAmount, governance
+  * Conversion: baseAmount = amount × exchangeRate (multiplicative convention)
+  * Precision: amounts 2 decimals Half-Up, rates 6 decimals
+  * Mixing Guard: sumSameCurrency() groups by currency; assertSameCurrency() fails on mix
+  * Base Aggregation: sumInBase() uses EACH entry's own snapshot (never current rate)
+  * Revaluation: NONE — historical baseAmount never rewritten
+
+--------------------------------------------------------------------------------
+4. SOURCE OF TRUTH — Report Data Pipeline
+--------------------------------------------------------------------------------
+  Report Layer          Source of Truth                          Recalculation?
+  ---------------------------------------------------------------
+  Audit Report          storage.payrolls (stored batches)        NO
+  Comparison Report     storage.payrolls (stored batches)        NO
+  Payroll Report        storage.payrolls (stored batches)        NO
+  GOSI Report           current employee data (known GAP)        YES (recalculates)
+  EOSB Report           storage.eosb (stored settlements)        NO
+  Overtime Report       storage.overtime (stored records)        NO
+  Leaves Report         storage.leaves + calculateLeaveBalance   NO (balance is computed but from stored leaves)
+
+  Key Principle: Financial reports read from STORED committed records with their
+  sealed snapshots. Only GOSI currently recalculates from live employee data
+  (documented as GAP — see §9).
+
+--------------------------------------------------------------------------------
+5. CURRENCY MIXING — Enforcement Verified
+--------------------------------------------------------------------------------
+  * sumSameCurrency() returns per-currency segments, never merged number
+  * assertSameCurrency() returns { ok: false, error: 'currency_mix:USD+IQD', segments: [...] }
+  * sumInBase() converts each entry via its OWN snapshot, then sums baseAmount
+  * summarizeCurrencySegments() produces "1,000.00 USD + 1,500,000.00 IQD" (not 1,501,000)
+  * Reports display: USD Total | IQD Total | Base Total (from baseAmount snapshots)
+  * No report produces a single mixed-currency total
+
+--------------------------------------------------------------------------------
+6. HISTORICAL EXCHANGE RATE — Immutable
+--------------------------------------------------------------------------------
+  * Record created at Rate 1480 → baseAmount = amount × 1480 sealed
+  * Current rate changed to 1500 → historical record keeps Rate 1480, baseAmount unchanged
+  * stampEosbRecord/stampPayrollRecord with force=false preserves existing snapshot
+  * convertWithSnapshot() uses provided snapshot, never consults current settings
+  * Test HER-1 through HER-8 all PASS
+
+--------------------------------------------------------------------------------
+7. REVISION INTEGRITY — EOSB & Payroll
+--------------------------------------------------------------------------------
+  * Draft → Under Audit → Reject → Returned → Correction → Resubmit → Approve → Pay → Archive
+  * Single record in storage (no duplicate settlements)
+  * Versions chain: returned, corrected, resubmitted, approved, paid (linked V1→V2→V3...)
+  * baselineSnapshot (original creation) + rejectedSnapshot (rejection time) preserved
+  * originalEosbFinancialValues() returns baseline values
+  * Exactly ONE PAID audit event per settlement
+  * Audit chain verified after every step (verifyAuditTrail)
+
+--------------------------------------------------------------------------------
+8. EXCEL = SCREEN = PRINT — Verified
+--------------------------------------------------------------------------------
+  Every financial export now includes:
+    Currency | Exchange Rate | Exchange Rate Date | Base Currency | Base Amount
+  Exported values match on-screen display (formatAmountWithCode, summarizeCurrencySegments)
+  Print uses same formatting functions → identical output
+  No mixed-currency totals in Excel or Print
+
+--------------------------------------------------------------------------------
+9. KNOWN GAPS (not fixed in Phase 8 — requires Business Decision)
+--------------------------------------------------------------------------------
+  GOSI Report: Currently recalculates from CURRENT employee data (basicSalary + housingAllowance),
+  not from Payroll Snapshot. This means if employee salary changes after payroll is paid,
+  GOSI report shows different numbers than the paid payroll.
+  Impact: GOSI totals may not match Payroll totals historically.
+  Status: Documented, test GOSI-1 PASS (explicitly asserts the gap).
+  Recommendation: Phase 9+ to add GOSI snapshot to payroll batch or compute GOSI at payroll commit time.
+
+--------------------------------------------------------------------------------
+10. COMPANY / BRANCH SCOPE — Isolation Verified
+--------------------------------------------------------------------------------
+  * eosbRecordInScope() enforces scope on every EOSB action
+  * Payroll scope via permittedEmpIds in getState()
+  * Reports filter by scope automatically via storage.getState()
+  * Test CBS-1/CBS-2 PASS
+
+--------------------------------------------------------------------------------
+11. VALIDATION — Edge Cases
+--------------------------------------------------------------------------------
+  * amount = 0 → handled, baseAmount = 0
+  * missing currency → falls back to base currency (USD)
+  * invalid currency (XYZ) → exchangeRateStatus = 'missing', baseAmount = null
+  * missing exchange rate → exchangeRateStatus = 'missing', baseAmount = null
+  * baseAmount mismatch detection via convertWithSnapshot
+  * All VAL tests PASS
+
+--------------------------------------------------------------------------------
+12. TEST RESULTS
+--------------------------------------------------------------------------------
+  Phase 8 Currency + Reports E2E (scripts/p8-tests.mjs): 64/64 PASS
+    1. Source of Truth — Historical Snapshots Immutable          6/6
+    2. Revision Integrity — Full Workflow                       15/15
+    3. Currency Mixing — No Direct USD+IQD Sum                  9/9
+    4. Historical Exchange Rate — Immutable                     8/8
+    5. Mixed Financial Transactions — Payroll+Loans+EOSB        6/6
+    6. GOSI SSOT — Uses Payroll Snapshot (GAP documented)       1/1
+    7. Excel = Screen — Export matches display                  7/7
+    8. Print = Screen — Print uses same data                    5/5
+    9. Company/Branch Scope — Isolation                         2/2
+    10. Validation — Edge Cases                                 5/5
+    11. Final Gate                                              (manual)
+
+  ALL GATES (unchanged from Phase 7):
+    P8 Currency + Reports E2E           64/64   PASS (NEW)
+    P7 EOSB Workflow E2E                121/121 PASS
+    P6 Payroll Workflow E2E             142/142 PASS
+    P5 Central Audit Trail              61/61   PASS
+    P4 Currency Governance              140/140 PASS
+    P3 Data Model / Versions            66/66   PASS
+    P2.2 Multi-currency + Rules         123/123 PASS
+    P2.2 Roles / Permissions / Scope    92/92   PASS
+    P2.1 State machine / guards         47/47   PASS
+    P2.1 UI automation                  31/31   PASS
+    Release gate                        66/66   PASS
+    Build (vite)                        OK
+
+--------------------------------------------------------------------------------
+13. TEST EVIDENCE TABLE
+--------------------------------------------------------------------------------
+| Test                          | Expected                         | Actual    | Status | Evidence              |
+|-------------------------------|----------------------------------|-----------|--------|-----------------------|
+| USD aggregation               | USD only                         | USD only  | PASS   | CM-2, EXC-1, PRT-1    |
+| IQD aggregation               | IQD only                         | IQD only  | PASS   | CM-3, PRT-2           |
+| Mixed currency (USD+IQD)      | No direct sum                    | Segments  | PASS   | CM-4, CM-8, CM-9      |
+| Base currency aggregation     | Snapshot-based (sumInBase)       | Correct   | PASS   | CM-6, CM-7            |
+| Historical rate immutable     | Rate 1480 preserved              | Preserved | PASS   | HER-3, HER-4          |
+| Revision deduplication        | Single record, one PAID event    | 1 record  | PASS   | RI-13, RI-14          |
+| GOSI SSOT                     | Payroll Snapshot                 | GAP       | GAP    | GOSI-1 (documented)   |
+| Excel = Screen                | All currency fields match        | Match     | PASS   | EXC-1 through EXC-7   |
+| Print = Screen                | Same currency fields             | Match     | PASS   | PRT-1 through PRT-5   |
+| Company scope isolation       | Comp A ≠ Comp B                  | Isolated  | PASS   | CBS-1, CBS-2          |
+| Validation                    | Clear errors, no crash           | Clear     | PASS   | VAL-1 through VAL-5   |
+
+--------------------------------------------------------------------------------
+14. BACKWARD COMPATIBILITY
+--------------------------------------------------------------------------------
+  * No changes to Business Policies, Financial Formulas, State Machine, Roles,
+    Permissions, Scope rules, Exchange Rate Governance
+  * Existing financial records untouched — their sealed snapshots remain valid
+  * Reports now READ more data (currency fields) but do not REWRITE history
+  * All Phase 1-7 gates remain GREEN
+
+--------------------------------------------------------------------------------
+15. DECISIONS / NOTES
+--------------------------------------------------------------------------------
+  * GOSI gap explicitly documented and tested — not silently worked around
+  * No silent fallback to current rates — missing rate = explicit 'missing' status
+  * Multiplicative conversion (baseAmount = amount × rate) confirmed throughout
+  * Reports display "1,500,000.00 IQD + 1,000.00 USD" not "1,501,000"
+  * Excel exports now auditable: every row has Currency, Rate, RateDate, BaseCurrency, BaseAmount
+  * Print output uses same formatters → what you see is what you print
+  * Phase 8 complete — READY TO CLOSE (with documented GOSI gap)
+
+--------------------------------------------------------------------------------
+END OF REPORT
