@@ -1,0 +1,204 @@
+================================================================================
+PHASE 6 — PAYROLL WORKFLOW (COMMIT HASH: 7f34aa4)
+  Release Report — Financial Workflow & Currency Specification v1.0
+================================================================================
+
+--------------------------------------------------------------------------------
+1. SCOPE
+--------------------------------------------------------------------------------
+Phase 6 delivers the FULL official Payroll Workflow end-to-end, on top of the
+closed Phase 1-5 baselines:
+
+  Draft --submit--> Under Audit --approve--> Approved (Payment Queue point)
+                           |                        |
+                        reject                   disburse  (approved -> paid)
+                           |                        |
+                           v                        v
+            Returned / Needs Correction           Paid --archive--> Archived
+
+  Returned --correction--> (corrected, amounts preserved)
+          --resubmit--> Under Audit (NEW audit attempt, SAME record, no new payroll)
+
+Payroll workflow ONLY. No EOSB / Clearance / Dashboard / Reports changes,
+no Phase 7/8 work, no new business policies, no formula changes.
+
+--------------------------------------------------------------------------------
+2. FILES MODIFIED (IMPLEMENTATION COMMIT)
+--------------------------------------------------------------------------------
+  M public/js/components/PayrollView.js       UI: returned-card correction +
+                                              guard-denial bail-out (no silent
+                                              draft overwrite of a Returned record)
+  M public/js/storage.js                      Bug fix (Phase 6): clear the
+                                              in-memory last-known-state payroll
+                                              baselines on clearAllData() and
+                                              resetToDefaults() so a month
+                                              re-created after a wipe is a genuine
+                                              CREATED audit record (never a stale
+                                              'updated'/'paid' transition).
+  M package.json                              added "p6:test" script
+  A scripts/p6-tests.mjs                      NEW Payroll Workflow E2E suite
+                                              (118 assertions, node scripts/p6-tests.mjs)
+  A docs/P6-Payroll-Workflow-Release-Report.txt  this report
+
+--------------------------------------------------------------------------------
+3. WORKFLOW (verified end-to-end through the REAL public surfaces: guard stack
+   + Phase 1 state machine + storage + Phase 5 audit trail + Phase 4 currency
+   snapshots + Phase 3 data model)
+--------------------------------------------------------------------------------
+  Stage                 Engine                            Audit event
+  -------------------   -------------------------------   --------------------
+  create (draft)        generateMonthlyPayroll / manual    created
+  submit                transitionPayrollGuarded(draft->under_audit)   submitted
+  audit notes save      plain re-save (no status change)  (none - no fabrication)
+  reject/return         transitionPayrollGuarded(under_audit->rejected) rejected
+  correction (recalc)   recordPayrollCorrectionGuarded    corrected
+  resubmit              transitionPayrollGuarded(rejected->under_audit) resubmitted
+  approve               transitionPayrollGuarded(under_audit->approved) approved
+  pay / disburse        transitionPayrollGuarded(approved->paid)         paid
+  archive               archivePayrollBatchGuarded(paid)                 archive
+  any forbidden step    reportDenied -> storage hook       denied (outcome 'denied')
+
+Transition table (Phase 1, unchanged): draft->under_audit;
+under_audit->approved|rejected; rejected->under_audit; approved->paid; paid->[] (terminal).
+
+--------------------------------------------------------------------------------
+4. GUARDS (permission → scope → state, always all three)
+--------------------------------------------------------------------------------
+  Payroll Admin (payroll.generate/edit/submit/export):
+    May create/edit/correct/submit/export. May NEVER approve, reject, pay,
+    archive (permission error at layer 'permission').
+  Audit Reviewer (payroll.approve/reject/cancelPayment):
+    May approve or reject/return. May NEVER create/edit/submit/pay/archive.
+  Payments Officer (payroll.disburse):
+    May only disburse an APPROVED payroll (duplicate pay, draft/under_audit/
+    rejected pay all blocked at layer 'state').
+  Super Admin: everything; still bound by the state machine (no modify after
+    approval, no archive before paid, no re-archive).
+  Out-of-scope users: scope_violation at layer 'scope' (e.g. company_hr with
+    assignedCompanyId comp-2 cannot touch a comp-1 batch though permission passes).
+
+--------------------------------------------------------------------------------
+5. REJECT / RETURN BEHAVIOUR
+--------------------------------------------------------------------------------
+  * amounts never zeroed: rejectedSnapshot captured at reject, `isAmountsCleared`
+    forced false, every monetary value preserved (asserted == pre-reject value)
+  * rejectedBy / rejectedAt / rejectionReason / auditNotes attached
+  * returnState = 'needs_correction' -> the record is Returned / Needs Correction,
+    never a fresh unrejected draft
+  * Rejected version linked (V..) + audit attempt marked result 'returned'
+  * REJECTED audit event carries reason + rejection reference incl. sealed
+    rejected snapshot
+
+--------------------------------------------------------------------------------
+6. CORRECTION
+--------------------------------------------------------------------------------
+  recordPayrollCorrectionGuarded (edit+scope guard, engine:
+  recordPayrollCorrection). Old->new change per monetary field is computed
+  against the rejected snapshot (employeeId, field, oldValue, newValue), stamped
+  with user, timestamp, reason; appended to batch.corrections + a 'corrected'
+  version (Rejected -> Corrected -> Resubmitted chain with explicit
+  prevVersionId/nextVersionId); auditAttempt result 'corrected'. Audit event
+  CORRECTED carries the changes array. History is never overwritten; the sealed
+  Phase 3 baselineSnapshot (first submission) stays untouched.
+
+--------------------------------------------------------------------------------
+7. RESUBMIT
+--------------------------------------------------------------------------------
+  same record (id + month preserved; no duplicate payroll ever created),
+  status back to under_audit, returnState='resubmitted', resubmittedBy/At,
+  a NEW audit attempt (result 'under_audit'), RESUBMITTED audit event (never a
+  second SUBMITTED), resubmissionRounds() >= 1.
+
+--------------------------------------------------------------------------------
+8. PAYMENT ELIGIBILITY / PAID
+--------------------------------------------------------------------------------
+  * only approved can be paid: draft / under_audit / rejected / paid all
+    generate disburse_requires_approved (or paid->[] terminal) denials
+  * paid stamps paidBy/paidAt/releaseStatus='released' + paymentReference
+    (status approved->paid queue point only; the full Payment entity stays a
+    later phase - no invented payment business logic)
+  * duplicate payment impossible (paid->paid denied; exactly one PAID event)
+  * PAID event carries paymentReference + actor + frozen financial snapshot
+
+--------------------------------------------------------------------------------
+9. ARCHIVE
+--------------------------------------------------------------------------------
+  * only after Paid (status stays 'paid'; archival flag archived=true + stamps
+    + archiveReference; financial read-only)
+  * re-archive denied at engine level ('already_archived'); archive-before-paid
+    denied at the guard (layer 'state'); ARCHIVE audit event reasonKind 'archive'
+
+--------------------------------------------------------------------------------
+10. AUDIT TRAIL INTEGRATION (Phase 5)
+--------------------------------------------------------------------------------
+  * exactly one honest event per real transition; plain re-saves emit nothing
+  * every denial is audit-recordable as `denied` (never a success event)
+  * append-only chain verified (verifyAuditTrail) after EVERY step
+  * events link versionId (V{revision}) + auditAttempt (attempt/result) +
+    financial snapshot (never re-priced)
+
+--------------------------------------------------------------------------------
+11. CURRENCY SNAPSHOT PRESERVATION (Phase 4)
+--------------------------------------------------------------------------------
+  * per-item currency / exchangeRate / exchangeRateDate / baseAmount /
+    baseCurrency / exchangeRateStatus + totalsByCurrency + governance copied
+    into every event view; committed (non-draft) records are never re-stamped
+  * financial view asserted identical across approve -> paid -> archive
+  * corrected/returned records never repriced: rejectedSnapshot + baseline
+    preserve original values
+
+--------------------------------------------------------------------------------
+12. BACKWARD COMPATIBILITY
+--------------------------------------------------------------------------------
+  * no state-machine, permission or formula changes
+  * the legacy clearPayrollAmounts stays exported (deprecated, unused by the
+    active workflow); Returned is a distinct status, not a zeroed draft
+  * storage clear/reset now also drops the local baseline map (fix below)
+
+--------------------------------------------------------------------------------
+13. BUG FIXED (REAL BUG FOUND DURING PHASE 6)
+--------------------------------------------------------------------------------
+  storage.clearAllData() / resetToDefaults() did not clear the in-memory
+  last-known-state payroll baselines (`this._payrollBaselines`). After a data
+  clear or factory reset, re-creating the SAME month as a new draft was audited
+  as a stale 'updated'/'paid' transition instead of a genuine CREATED record.
+  Fixed by clearing the map in both wipe paths (additive; verified by P6 E2E
+  isolation and all regression gates).
+
+--------------------------------------------------------------------------------
+14. TEST RESULTS
+--------------------------------------------------------------------------------
+  Phase 6 Payroll Workflow E2E (scripts/p6-tests.mjs): 118/118 passed
+    A. Official path on a manual batch incl. reject/correct/resubmit + illegal
+       ops + duplicate pay + re-archive + snapshot preservation   (A1-A81)
+    B. Archive only after Paid                                    (B1-B3)
+    C. Role/permission isolation (13 illegal attempts all denied) (C1-C17)
+    D. Scope enforcement + in-scope allowance                     (D1-D6)
+    E. Official happy path on a genuinely GENERATED batch         (E1-E12)
+
+  GATES (all must pass, run after Phase 6 changes):
+    P5   Central Audit Trail           61/61  PASS
+    P4   Currency Governance          140/140 PASS
+    P3   Data Model / Versions         66/66  PASS
+    P2.2 Multi-currency + rules       123/123 PASS
+    P2.2 Roles / Permissions / Scope   92/92  PASS
+    P2.1 State machine / guards        47/47  PASS
+    P2.1 UI automation                 31/31  PASS
+    Release gate                       66/66  PASS
+    Build (vite)                              OK
+  i18n audit: diagnostic only (not a gate).
+
+--------------------------------------------------------------------------------
+15. DECISIONS / NOTES
+--------------------------------------------------------------------------------
+  * The returned-card "Recalculate & Record Correction" button activates the
+    SOLE correction entry point and records old->new diffs; on a guard denial
+    the UI now ABORTS instead of silently saving a fresh draft over the
+    Returned record (previous dead-code fallback would have bypassed the guard).
+  * Payment Queue: only the approved->paid link is implemented (spec: full
+    Payment entity is a later phase).
+  * Export remains permission-gated in the UI (payroll.export); the state
+    machine does not restrict export.
+  * No new business policies or financial formulas were introduced.
+  * Perform a manual UI smoke test of the returned-card correction button +
+    Resubmit flow in the browser before rollback-window close (recommended).
