@@ -556,11 +556,18 @@ export function renderPayrollView(container, options = {}) {
             ${currentBatch.rejectedBy ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">${isEn ? 'Returned by' : 'أعاده'}: <strong>${currentBatch.rejectedBy}</strong> • ${formatDate(currentBatch.rejectedAt)}</div>` : ''}
             ${currentBatch.corrections && currentBatch.corrections.length ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">✏️ ${isEn ? 'Corrections recorded' : 'تصحيحات مسجلة'}: <strong>${currentBatch.corrections.length}</strong> (${formatDate(currentBatch.corrections[currentBatch.corrections.length - 1].at)})</div>` : ''}
           </div>
-          ${canSubmitAudit ? `
-          <button type="button" class="btn btn-sm btn-success" id="btn-resubmit-payroll">
-            ${Icons.upload(14)} ${isEn ? 'Resubmit to Financial Audit' : 'إعادة الإرسال للتدقيق المالي'}
-          </button>
-          ` : ''}
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            ${canManagePayroll ? `
+            <button type="button" class="btn btn-sm btn-warning" id="btn-recalc-returned">
+              ${Icons.refresh(14)} ${isEn ? 'Recalculate & Record Correction' : 'إعادة الاحتساب وتسجيل التصحيح'}
+            </button>
+            ` : ''}
+            ${canSubmitAudit ? `
+            <button type="button" class="btn btn-sm btn-success" id="btn-resubmit-payroll">
+              ${Icons.upload(14)} ${isEn ? 'Resubmit to Financial Audit' : 'إعادة الإرسال للتدقيق المالي'}
+            </button>
+            ` : ''}
+          </div>
         </div>
         ` : ''}
 
@@ -836,7 +843,7 @@ export function renderPayrollView(container, options = {}) {
         renderTabContent();
       });
 
-      contentArea.querySelectorAll('#btn-recalc-payroll, #btn-recalc-cleared').forEach((btn) => {
+      contentArea.querySelectorAll('#btn-recalc-payroll, #btn-recalc-cleared, #btn-recalc-returned').forEach((btn) => {
         btn.addEventListener('click', () => {
           if (!canManagePayroll) return;
           if (!isMonthAvailable(currentMonth)) {
@@ -853,8 +860,15 @@ export function renderPayrollView(container, options = {}) {
               by: actor,
               reason: isEn ? 'Recalculated after audit return' : 'إعادة احتساب بعد إعادة التدقيق',
             });
-            if (corr.ok) currentBatch = corr.batch;
-            else currentBatch = regenerated;
+            // A denial must NEVER fall back to a plain draft save: that would
+            // overwrite the Returned record, destroy its rejection history and
+            // bypass the permission/scope guard. Abort and alert instead.
+            if (!corr.ok) {
+              toast.error(isEn ? `Cannot record correction: ${corr.error}` : `تعذر تسجيل التصحيح: ${corr.error}`);
+              renderTabContent();
+              return;
+            }
+            currentBatch = corr.batch;
           } else {
             currentBatch = regenerated;
           }

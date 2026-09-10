@@ -449,6 +449,10 @@ class StorageService {
     this.set(STORAGE_KEYS.PAYROLLS, defaultPayrollBatches);
     this.set(STORAGE_KEYS.EOSB, defaultEOSBCalculations);
     this.notify();
+    // Phase 6: the payroll collections were replaced wholesale, so the local
+    // last-known-state baselines must be dropped too (a month re-created after
+    // a factory reset is a genuine CREATED record — never a stale 'updated').
+    this._payrollBaselines.clear();
     // Phase 5: factory reset is a system-level data event. The trail itself is
     // preserved (its key is not among the reset collections) so the history of
     // the data being reset remains traceable.
@@ -501,6 +505,10 @@ class StorageService {
     this.set(STORAGE_KEYS.PAYROLLS, []);
     this.set(STORAGE_KEYS.EOSB, []);
     this.notify();
+    // Phase 6: the payroll collection was wiped, so the local last-known-state
+    // baselines must be dropped too — a month re-created after a data clear is
+    // a genuine CREATED record, never a stale 'updated'/'paid' transition.
+    this._payrollBaselines.clear();
     // Phase 5: record the wipe in the (preserved) audit trail so it can never
     // be mistaken for silent data loss.
     this._auditSystem(AUDIT_ACTIONS.RECORDS_CLEARED, { reason: 'all data cleared', newValue: { clearedAt: now, by: user ? (user.username || user.id) : 'system' } });
