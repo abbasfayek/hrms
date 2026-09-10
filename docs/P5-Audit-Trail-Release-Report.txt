@@ -1,0 +1,132 @@
+====================================================================
+Phase 5 — Central Append-Only Audit Trail  (Spec v1.0)
+Release Report — 2026-09-10
+====================================================================
+
+1. GOAL
+   A central, trusted, append-only, tamper-evident audit trail recording
+   the important FINANCIAL operations mandated by the workflow spec,
+   additive to every closed baseline (P1–P4). No Reports/Dashboard/
+   Payment-Queue/UI work was introduced in this phase.
+
+2. DELIVERY
+   - Engine: public/js/engines/auditTrail.js (new)
+   - Integration: public/js/storage.js (event emission + read/integrity APIs)
+   - Security-denial wiring: public/js/engines/payrollAccess.js
+   - Server whitelist: server.js (collection 'audit_trail' allowed)
+   - Tests: scripts/p5-tests.mjs (61 assertions) + package.json "p5:test"
+   - Report: docs/P5-Audit-Trail-Release-Report.txt
+
+3. DESIGN
+   Single envelope { schema:'p5', seq, chainHead, events[] } under key
+   hrms_audit_trail_v3 / collection 'audit_trail'. Events are never pruned,
+   edited or re-ordered. Each event is sealed with SHA-256 over the
+   canonical (sorted-key) JSON of itself minus the hash field, chained via
+   prevHash; the envelope head is the hash of the last event. Any edit,
+   deletion, reordering or head corruption invalidates the chain and is
+   reported by verifyAuditTrail (first broken index) / storage.auditTrailIntegrity.
+   Appends are pure (return a new envelope; caller state never mutated),
+   mirroring the Phase 4 governance module.
+
+4. EVENT TYPES IMPLEMENTED (payload fields: record/source type, source/record
+   ID, action, actor, timestamp, oldValue, newValue, reason, versionId,
+   auditAttempt reference, rejection reference, corrections, financial snapshot):
+   - payroll  : created, submitted, rejected, corrected, resubmitted,
+                approved, paid, archive (+ updated for honest non-workflow
+                data changes; denied for security denials)
+   - eosb     : created, submitted, rejected, resubmitted, approved, paid,
+                cancel_payment (paid -> approved), updated
+   - loan     : created, updated, paid (installment disbursement diff)
+   - exchange_rate : exchange_rate_set, exchange_rate_updated,
+                exchange_rate_locked
+   - system   : records_cleared, data_reset, backup_restored
+
+5. APPEND-ONLY / ACTUAL-EVENTS RULE
+   Events derive from the REAL stored transition. A plain re-save of the same
+   status emits NOTHING (verified for payroll, loans, rates). The payroll
+   derivation uses a write-time baseline (status, corrections length, archived
+   flag, frozen financial view) because PayrollView mutates and re-saves the
+   SAME object — a naive old-list diff would always see the post-mutation
+   state. Seeded/migrated months (already persisted, first re-save) are
+   baselined WITHOUT fabricating a 'created' event. Corrected = the same-status
+   save where corrections[] grew (HR correction on a Returned batch), with the
+   per-employee old->new changes in the event. Archive = paid batch whose
+   archived flag flipped.
+
+6. SECURITY (Phase 2 integration)
+   transitionPayrollGuarded / recordPayrollCorrectionGuarded /
+   archivePayrollBatchGuarded now report guard failures to a hook that storage
+   registers at module init (acyclic: payrollAccess has no storage import).
+   Forbidden operations produce outcome:'denied' events carrying the requested
+   action and the rejecting layer (permission/scope/state) — a forbidden
+   operation can never become a success event.
+
+7. LINKAGE (Phases 1/4, never replaced)
+   - Rejection events reference rejectedBy/rejectedAt/rejectionReason/
+     rejectedSnapshot via a rejectionReference view (Phase 1 fields intact).
+   - versionId (V<revision>) links the correction/version chain.
+   - auditAttempt references the real auditAttempts entry written by
+     transitionPayroll.
+   - approval/payment references (approvalReference / paymentReference ids)
+     are captured on the approved/paid events.
+
+8. CURRENCY SNAPSHOT PRESERVATION (Phase 4)
+   Every financial event freezes the ALREADY-STAMPED Phase 4 fields: Original
+   Amount, Currency, Exchange Rate, Exchange Rate Date, Base Amount, Base
+   Currency (amount/currency/exchangeRate/exchangeRateDate/baseAmount/
+   baseCurrency). Old values come from the write-time frozen view; new values
+   are copied from the stamped record. Historical amounts are NEVER recomputed
+   against a later rate (verified: adding a newer 1500 rate did not change the
+   1450 rate / 1450000 base amount frozen through the whole chain).
+
+9. BACKWARD COMPATIBILITY
+   - The legacy bounded UI log (addAudit/STORAGE_KEYS.AUDIT, unshift, 2000 cap,
+     consumed by AuditView) is untouched and independent.
+   - No existing record field is modified; events are a separate store.
+   - No financial formula or exchange-rate policy changed; no migration of
+     existing audit/version history.
+   - Server: 'audit_trail' added to ALLOWED_COLLECTIONS and, as a single-object
+     envelope, deliberately NOT in MERGE_COLLECTIONS (whole-replace semantics,
+     same as settings/deleted_records).
+   - clearAllData / resetToDefaults preserve the trail; importBackupJSON keeps
+     the envelope the restore produced and records backup_restored.
+
+10. TESTS (scripts/p5-tests.mjs) — 61/61 PASS
+   A. Engine primitives (NIST SHA-256 vectors, canonical hashing, hash-chain)
+   B. Integrity detection (edit / delete / reorder / corrupt head all DETECTED)
+   C-E. Payroll full lifecycle via the real in-place-mutation flow:
+        created,submitted,rejected,corrected,resubmitted,approved,paid,archive
+        (exactly one event per real change; no fabricated re-saves)
+   F. EOSB lifecycle incl. rejected->resubmitted, paid->cancel_payment
+   G. Loans: created / updated (old->new) / paid disbursement diff, no-op re-saves
+   H. Exchange-rate set/updated/locked events with super_admin actor
+   I. Security: denied events (permission + scope layers), never a success
+   J. System meta events + legacy addAudit untouched + chain integrity
+   K. getState exposes auditTrail + auditTrailMeta (read APIs only)
+   L. Engine pure functions usable outside storage
+
+11. GATE RESULTS (all green, no test weakened or removed)
+   P5 (new)                 61/61
+   P4 Currency Governance  140/140
+   P3 (workflow)            66/66
+   P2.2 Integration        123/123
+   P2.2b Roles/Permissions  92/92
+   P2.1 Core                47/47
+   P2.1 UI Automation       31/31
+   Release gate             66/66
+   npm run build            OK (60 modules)
+
+12. DECISIONS NEEDING APPROVAL / NOTES
+   - Audit Trail is HISTORY, deliberately separate from the Audit UI log; the
+     existing Audit tab (bounded, unshift, 2000-cap) remains the interactive
+     log. A dedicated trail VIEWER is a later-phase concern.
+   - events[] is unbounded by design (append-only). At thousands of entries,
+     a future phase may move the envelope off localStorage; integrity is
+     preserved because the chain is self-verifying.
+   - paid->approved on payroll is NOT a sanctioned workflow transition; such a
+     save is recorded honestly as 'updated' (payroll has no cancel_payment —
+     EOSB has one, and it IS emitted there as cancel_payment).
+   - Cross-device trail sync uses whole-envelope replace (last writer wins);
+     the chain hash detects any stale/hostile overwrite, and the seed re-creates
+     the envelope on a truly fresh device only.
+====================================================================
