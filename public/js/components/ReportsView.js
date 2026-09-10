@@ -5,7 +5,7 @@
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, STATUS_LABELS, LEAVE_TYPE_LABELS, 
-getCurrentMonth, can, countAbsenceDays } from '../types.js';
+getCurrentMonth, can, countAbsenceDays, formatAmountWithCode, summarizeCurrencySegments } from '../types.js';
 import { calculateLeaveBalance } from '../engines/leaveEngine.js';
 import { toast } from './Toast.js';
 import { i18n, t, tf } from '../i18n.js';
@@ -219,20 +219,23 @@ export function renderReportsView(container, options = {}) {
         const payableDays = isCurrentMonth ? new Date().getDate() : daysInReportMonth;
         const proratedSalaryToDate = parseFloat(((totalGross / daysInReportMonth) * payableDays).toFixed(2));
 
-        return {
-          emp,
-          it,
-          leaveBal,
-          monthLeavesTaken,
-          remainingLoanTotal,
-          absenceDays,
-          lateMinutes,
-          proratedSalaryToDate,
-        };
+return {
+           emp,
+           it,
+           leaveBal,
+           monthLeavesTaken,
+           remainingLoanTotal,
+           absenceDays,
+           lateMinutes,
+           proratedSalaryToDate,
+           currency: it.currency || settings.currency || 'USD',
+           currencySymbol: it.currencySymbol || settings.currencySymbol || '$',
+         };
       });
 
       const batchNet = storedBatch ? (Number(storedBatch.totalNet) || auditRows.reduce((s, r) => s + (Number(r.it.netSalary) || 0), 0)) : 0;
       const batchGross = storedBatch ? (Number(storedBatch.totalGross) || auditRows.reduce((s, r) => s + (Number(r.it.grossSalary) || 0), 0)) : 0;
+      const totalsByCurrency = storedBatch ? (storedBatch.totalsByCurrency || []) : [];
 
       reportArea.innerHTML = `
         <div class="card" style="padding:20px; margin-bottom:20px; background:linear-gradient(135deg, rgba(79, 70, 229, 0.05) 0%, rgba(16, 185, 129, 0.05) 100%); border:1px solid var(--border-color);">
@@ -305,17 +308,17 @@ export function renderReportsView(container, options = {}) {
                     <td><strong>${row.emp ? row.emp.employeeNumber : '-'}</strong></td>
                     <td><strong>${row.it.employeeName}</strong></td>
                     <td>${row.it.department}</td>
-                    <td>${formatCurrency(row.it.basicSalary, sym)}</td>
-                    <td>${formatCurrency(row.it.housingAllowance + row.it.transportAllowance + row.it.otherAllowances, sym)}</td>
-                    <td>${row.it.overtimeAmount > 0 ? formatCurrency(row.it.overtimeAmount, sym) : '-'}</td>
-                    <td><strong>${formatCurrency(row.it.grossSalary, sym)}</strong></td>
-                    <td style="color:var(--warning);">${row.it.loanInstallment > 0 ? '- ' + formatCurrency(row.it.loanInstallment, sym) : '-'}</td>
-                    <td style="color:var(--danger);">${row.it.absenceDeduction + row.it.lateDeduction > 0 ? '- ' + formatCurrency(row.it.absenceDeduction + row.it.lateDeduction, sym) : '-'}</td>
-                    <td style="color:var(--danger);">- ${formatCurrency(row.it.gosiEmployeeDeduction, sym)}</td>
-                    <td><strong style="color:var(--success); font-size:13.5px;">${formatCurrency(row.it.netSalary, sym)}</strong></td>
+                    <td>${formatAmountWithCode(row.it.basicSalary, row.currency)}</td>
+                    <td>${formatAmountWithCode(row.it.housingAllowance + row.it.transportAllowance + row.it.otherAllowances, row.currency)}</td>
+                    <td>${row.it.overtimeAmount > 0 ? formatAmountWithCode(row.it.overtimeAmount, row.currency) : '-'}</td>
+                    <td><strong>${formatAmountWithCode(row.it.grossSalary, row.currency)}</strong></td>
+                    <td style="color:var(--warning);">${row.it.loanInstallment > 0 ? '- ' + formatAmountWithCode(row.it.loanInstallment, row.currency) : '-'}</td>
+                    <td style="color:var(--danger);">${row.it.absenceDeduction + row.it.lateDeduction > 0 ? '- ' + formatAmountWithCode(row.it.absenceDeduction + row.it.lateDeduction, row.currency) : '-'}</td>
+                    <td style="color:var(--danger);">- ${formatAmountWithCode(row.it.gosiEmployeeDeduction, row.currency)}</td>
+                    <td><strong style="color:var(--success); font-size:13.5px;">${formatAmountWithCode(row.it.netSalary, row.currency)}</strong></td>
                     <td><span class="badge ${row.monthLeavesTaken > 0 ? 'badge-warning' : 'badge-gray'}">${tf('reports.daysValue', { count: row.monthLeavesTaken })}</span></td>
                     <td><strong style="color:var(--primary);">${tf('reports.daysValue', { count: (row.leaveBal.remainingAnnualBalance !== undefined ? row.leaveBal.remainingAnnualBalance : (row.leaveBal.remainingDays || 0)) })}</strong></td>
-                    <td><strong style="color:${row.remainingLoanTotal > 0 ? 'var(--danger)' : 'var(--text-muted)'};">${formatCurrency(row.remainingLoanTotal, sym)}</strong></td>
+                    <td><strong style="color:${row.remainingLoanTotal > 0 ? 'var(--danger)' : 'var(--text-muted)'};">${formatAmountWithCode(row.remainingLoanTotal, row.currency)}</strong></td>
                   </tr>
                 `
                   )
@@ -324,11 +327,11 @@ export function renderReportsView(container, options = {}) {
               <tfoot>
                 <tr style="background:var(--bg-card-hover); font-weight:800;">
                   <td colspan="6">${t('reports.grandTotal')}</td>
-                  <td>${formatCurrency(batchGross, sym)}</td>
-                  <td style="color:var(--warning);">- ${formatCurrency(auditRows.reduce((s, x) => s + (x.it.loanInstallment || 0), 0), sym)}</td>
-                  <td style="color:var(--danger);">- ${formatCurrency(auditRows.reduce((s, x) => s + (x.it.absenceDeduction + x.it.lateDeduction), 0), sym)}</td>
-                  <td style="color:var(--danger);">- ${formatCurrency(auditRows.reduce((s, x) => s + x.it.gosiEmployeeDeduction, 0), sym)}</td>
-                  <td style="color:var(--success); font-size:15px;">${formatCurrency(batchNet, sym)}</td>
+                  <td>${summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.gross })))}</td>
+                  <td style="color:var(--warning);">- ${summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.deductions })))}</td>
+                  <td style="color:var(--danger);">- ${summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.net })))}</td>
+                  <td style="color:var(--danger);">- ${summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.companyGosi })))}</td>
+                  <td style="color:var(--success); font-size:15px;">${summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.net })))}</td>
                   <td colspan="3"></td>
                 </tr>
               </tfoot>
@@ -356,6 +359,11 @@ export function renderReportsView(container, options = {}) {
           [hd('الرقم الوظيفي', 'Employee ID')]: r.emp ? r.emp.employeeNumber : '-',
           [hd('اسم الموظف', 'Employee Name')]: r.it.employeeName,
           [hd('القسم', 'Department')]: r.it.department,
+          [hd('العملة', 'Currency')]: r.it.currency || settings.currency || 'USD',
+          [hd('سعر الصرف', 'Exchange Rate')]: r.it.exchangeRate !== undefined && r.it.exchangeRate !== null ? Number(r.it.exchangeRate).toFixed(6) : '',
+          [hd('تاريخ سعر الصرف', 'Exchange Rate Date')]: r.it.exchangeRateDate || '',
+          [hd('عملة الأساس', 'Base Currency')]: r.it.baseCurrency || settings.baseCurrency || 'USD',
+          [hd('مبلغ الأساس', 'Base Amount')]: r.it.baseAmount !== undefined && r.it.baseAmount !== null ? Number(r.it.baseAmount).toFixed(2) : '',
           [hd('الراتب الأساسي', 'Basic Salary')]: r.it.basicSalary,
           [hd('بدل السكن', 'Housing Allowance')]: r.it.housingAllowance,
           [hd('بدل النقل', 'Transport Allowance')]: r.it.transportAllowance,
@@ -465,6 +473,8 @@ export function renderReportsView(container, options = {}) {
       const totalNextNet = batchNext ? (Number(batchNext.totalNet) || 0) : 0;
       const totalDiff = totalNextNet - totalPrevNet;
       const canShowTotals = !!batchPrev && !!batchNext;
+      const totalsByCurrencyPrev = batchPrev ? (batchPrev.totalsByCurrency || []) : [];
+      const totalsByCurrencyNext = batchNext ? (batchNext.totalsByCurrency || []) : [];
 
       // GOSI Totals across all employees for comparison
       const totalPrevGosiEmp = compareItemsPrev.reduce((s, x) => s + (x.gosiEmployeeDeduction || 0), 0);
@@ -524,20 +534,20 @@ export function renderReportsView(container, options = {}) {
         <div class="grid grid-cols-4" style="margin-bottom:20px;">
           <div class="card" style="padding:16px;">
             <div style="font-size:12px; color:var(--text-muted);">${tf('reports.previousMonthPayroll', { month: prevMonth })}</div>
-            <div style="font-size:20px; font-weight:900; color:${infoPrev.paid ? 'var(--text-main)' : 'var(--text-muted)'}; margin-top:4px;">${formatCurrency(totalPrevNet, sym)}</div>
-            <div style="font-size:11px; color:var(--text-muted);">${isEn ? 'Gross' : 'الإجمالي'}: ${formatCurrency(totalPrevGross, sym)} · ${infoPrev.badgeText}</div>
+            <div style="font-size:20px; font-weight:900; color:${infoPrev.paid ? 'var(--text-main)' : 'var(--text-muted)'}; margin-top:4px;">${summarizeCurrencySegments(totalsByCurrencyPrev.map(g => ({ code: g.code, amount: g.net })))}</div>
+            <div style="font-size:11px; color:var(--text-muted);">${isEn ? 'Gross' : 'الإجمالي'}: ${summarizeCurrencySegments(totalsByCurrencyPrev.map(g => ({ code: g.code, amount: g.gross })))} · ${infoPrev.badgeText}</div>
           </div>
 
           <div class="card" style="padding:16px;">
             <div style="font-size:12px; color:var(--text-muted);">${tf('reports.comparisonMonthPayroll', { month: nextMonth })}</div>
-            <div style="font-size:20px; font-weight:900; color:${infoNext.paid ? 'var(--primary)' : 'var(--text-muted)'}; margin-top:4px;">${formatCurrency(totalNextNet, sym)}</div>
-            <div style="font-size:11px; color:var(--text-muted);">${isEn ? 'Gross' : 'الإجمالي'}: ${formatCurrency(totalNextGross, sym)} · ${infoNext.badgeText}</div>
+            <div style="font-size:20px; font-weight:900; color:${infoNext.paid ? 'var(--primary)' : 'var(--text-muted)'}; margin-top:4px;">${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.net })))}</div>
+            <div style="font-size:11px; color:var(--text-muted);">${isEn ? 'Gross' : 'الإجمالي'}: ${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.gross })))} · ${infoNext.badgeText}</div>
           </div>
 
           <div class="card" style="padding:16px;">
             <div style="font-size:12px; color:var(--text-muted);">${t('reports.netDifference')}</div>
             <div style="font-size:20px; font-weight:900; color:${canShowTotals ? (totalDiff >= 0 ? 'var(--success)' : 'var(--danger)') : 'var(--text-muted)'}; margin-top:4px;">
-              ${canShowTotals ? (totalDiff >= 0 ? '+' : '') + formatCurrency(totalDiff, sym) : (isEn ? '—' : '—')}
+              ${canShowTotals ? (totalDiff >= 0 ? '+' : '') + summarizeCurrencySegments([{ code: batchNext?.totalsByCurrency?.[0]?.code || 'USD', amount: totalDiff }]) : (isEn ? '—' : '—')}
             </div>
             <div style="font-size:11px; color:var(--text-muted);">${canShowTotals ? (totalDiff >= 0 ? (isEn ? 'Net increase' : 'زيادة في الرواتب') : (isEn ? 'Net decrease' : 'نقصان في الرواتب')) : (isEn ? 'Both months must be stored' : 'يلزم وجود المسيرين')}</div>
           </div>
@@ -545,9 +555,9 @@ export function renderReportsView(container, options = {}) {
           <!-- Total Social Security Summary Card -->
           <div class="card" style="padding:16px; background:linear-gradient(135deg, rgba(6,182,212,0.06) 0%, rgba(79,70,229,0.06) 100%);">
             <div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Total Social Security' : 'إجمالي اشتراك التأمينات الاجتماعية'}</div>
-            <div style="font-size:20px; font-weight:900; color:var(--info); margin-top:4px;">${formatCurrency(totalGrandGosiNext, sym)}</div>
+            <div style="font-size:20px; font-weight:900; color:var(--info); margin-top:4px;">${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.companyGosi })))}</div>
             <div style="font-size:11px; color:var(--text-muted);">
-              ${isEn ? 'Emp' : 'الموظف'}: ${formatCurrency(totalNextGosiEmp, sym)} • ${isEn ? 'Co' : 'الشركة'}: ${formatCurrency(totalNextGosiComp, sym)}
+              ${isEn ? 'Emp' : 'الموظف'}: ${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.companyGosi }))).split('+')[0] || '0.00'} • ${isEn ? 'Co' : 'الشركة'}: ${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.companyGosi }))).split('+')[0] || '0.00'}
             </div>
           </div>
         </div>
@@ -573,6 +583,8 @@ export function renderReportsView(container, options = {}) {
                   .map((row) => {
                     const diffColor = row.diffNet > 0 ? 'var(--success)' : row.diffNet < 0 ? 'var(--danger)' : 'var(--text-muted)';
                     const diffSign = row.diffNet > 0 ? '+' : '';
+                    const prevCurrency = row.itemPrev?.currency || settings.currency || 'USD';
+                    const nextCurrency = row.itemNext?.currency || settings.currency || 'USD';
                     return `
                     <tr>
                       <td>
@@ -580,12 +592,12 @@ export function renderReportsView(container, options = {}) {
                         <div style="font-size:11px; color:var(--text-muted);">${row.emp.employeeNumber}</div>
                       </td>
                       <td>${row.emp.department}</td>
-                      <td><strong>${formatCurrency(row.prevNet, sym)}</strong></td>
-                      <td><strong>${formatCurrency(row.nextNet, sym)}</strong></td>
-                      <td><strong style="color:${diffColor}; font-size:14px;">${diffSign}${formatCurrency(row.diffNet, sym)}</strong></td>
+                      <td><strong>${formatAmountWithCode(row.prevNet, prevCurrency)}</strong></td>
+                      <td><strong>${formatAmountWithCode(row.nextNet, nextCurrency)}</strong></td>
+                      <td><strong style="color:${diffColor}; font-size:14px;">${diffSign}${formatAmountWithCode(row.diffNet, nextCurrency)}</strong></td>
                       <td>
-                        <strong>${formatCurrency(row.nextGosi, sym)}</strong>
-                        <div style="font-size:10.5px; color:var(--text-muted);">${row.itemNext ? `${isEn ? 'Emp' : 'موظف'}: ${formatCurrency(row.itemNext.gosiEmployeeDeduction, sym)} | ${isEn ? 'Co' : 'شركة'}: ${formatCurrency(row.itemNext.gosiCompanyContribution, sym)}` : '-'}</div>
+                        <strong>${formatAmountWithCode(row.nextGosi, nextCurrency)}</strong>
+                        <div style="font-size:10.5px; color:var(--text-muted);">${row.itemNext ? `${isEn ? 'Emp' : 'موظف'}: ${formatAmountWithCode(row.itemNext.gosiEmployeeDeduction, nextCurrency)} | ${isEn ? 'Co' : 'شركة'}: ${formatAmountWithCode(row.itemNext.gosiCompanyContribution, nextCurrency)}` : '-'}</div>
                       </td>
                       <td>
                         <span style="font-size:12px; color:var(--text-main); line-height:1.4;">${row.reasonText}</span>
@@ -598,10 +610,10 @@ export function renderReportsView(container, options = {}) {
               <tfoot>
                 <tr style="background:var(--bg-card-hover); font-weight:800;">
                   <td colspan="2">${t('reports.grandTotal')}</td>
-                  <td>${formatCurrency(totalPrevNet, sym)}</td>
-                  <td>${formatCurrency(totalNextNet, sym)}</td>
-                  <td style="color:${totalDiff >= 0 ? 'var(--success)' : 'var(--danger)'};">${totalDiff >= 0 ? '+' : ''}${formatCurrency(totalDiff, sym)}</td>
-                  <td>${formatCurrency(totalGrandGosiNext, sym)}</td>
+                  <td>${summarizeCurrencySegments(totalsByCurrencyPrev.map(g => ({ code: g.code, amount: g.net })))}</td>
+                  <td>${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.net })))}</td>
+                  <td style="color:${totalDiff >= 0 ? 'var(--success)' : 'var(--danger)'};">${totalDiff >= 0 ? '+' : ''}${summarizeCurrencySegments([{ code: batchNext?.totalsByCurrency?.[0]?.code || 'USD', amount: totalDiff }])}</td>
+                  <td>${summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.companyGosi })))}</td>
                   <td></td>
                 </tr>
               </tfoot>
@@ -630,6 +642,8 @@ export function renderReportsView(container, options = {}) {
           [hd('الرقم الوظيفي', 'Employee ID')]: r.emp.employeeNumber,
           [hd('اسم الموظف', 'Employee Name')]: r.emp.fullName,
           [hd('القسم', 'Department')]: r.emp.department,
+          [hd('العملة الشهر السابق', 'Previous Month Currency')]: r.itemPrev?.currency || settings.currency || 'USD',
+          [hd('العملة شهر المقارنة', 'Comparison Month Currency')]: r.itemNext?.currency || settings.currency || 'USD',
           [hd(`صافي شهر ${prevMonth}`, `Net of ${prevMonth}`)]: r.prevNet,
           [hd(`صافي شهر ${nextMonth}`, `Net of ${nextMonth}`)]: r.nextNet,
           [hd('قيمة الفارق', 'Difference')]: r.diffNet,
@@ -707,15 +721,15 @@ export function renderReportsView(container, options = {}) {
                     (it) => `
                   <tr>
                     <td><strong>${it.employeeName}</strong></td>
-                    <td>${formatCurrency(it.basicSalary, sym)}</td>
-                    <td>${formatCurrency(it.housingAllowance, sym)}</td>
-                    <td>${formatCurrency(it.transportAllowance, sym)}</td>
-                    <td>${it.overtimeAmount > 0 ? formatCurrency(it.overtimeAmount, sym) : '-'}</td>
-                    <td><strong>${formatCurrency(it.grossSalary, sym)}</strong></td>
-                    <td><span style="color:var(--danger);">- ${formatCurrency(it.gosiEmployeeDeduction, sym)}</span></td>
-                    <td style="color:var(--warning);">${it.loanInstallment > 0 ? '- ' + formatCurrency(it.loanInstallment, sym) : '-'}</td>
-                    <td style="color:var(--danger);">${it.absenceDeduction + it.lateDeduction > 0 ? '- ' + formatCurrency(it.absenceDeduction + it.lateDeduction, sym) : '-'}</td>
-                    <td><strong style="color:var(--success); font-size:14px;">${formatCurrency(it.netSalary, sym)}</strong></td>
+                    <td>${formatAmountWithCode(it.basicSalary, it.currency || settings.currency || 'USD')}</td>
+                    <td>${formatAmountWithCode(it.housingAllowance, it.currency || settings.currency || 'USD')}</td>
+                    <td>${formatAmountWithCode(it.transportAllowance, it.currency || settings.currency || 'USD')}</td>
+                    <td>${it.overtimeAmount > 0 ? formatAmountWithCode(it.overtimeAmount, it.currency || settings.currency || 'USD') : '-'}</td>
+                    <td><strong>${formatAmountWithCode(it.grossSalary, it.currency || settings.currency || 'USD')}</strong></td>
+                    <td><span style="color:var(--danger);">- ${formatAmountWithCode(it.gosiEmployeeDeduction, it.currency || settings.currency || 'USD')}</span></td>
+                    <td style="color:var(--warning);">${it.loanInstallment > 0 ? '- ' + formatAmountWithCode(it.loanInstallment, it.currency || settings.currency || 'USD') : '-'}</td>
+                    <td style="color:var(--danger);">${it.absenceDeduction + it.lateDeduction > 0 ? '- ' + formatAmountWithCode(it.absenceDeduction + it.lateDeduction, it.currency || settings.currency || 'USD') : '-'}</td>
+                    <td><strong style="color:var(--success); font-size:14px;">${formatAmountWithCode(it.netSalary, it.currency || settings.currency || 'USD')}</strong></td>
                   </tr>
                 `
                   )
@@ -724,9 +738,9 @@ export function renderReportsView(container, options = {}) {
               <tfoot>
                 <tr style="background:var(--bg-card-hover); font-weight:800;">
                   <td colspan="5">${t('reports.overallTotal')}</td>
-                  <td>${formatCurrency(storedBatch.totalGross, sym)}</td>
-                  <td colspan="3" style="color:var(--danger);">- ${formatCurrency(storedBatch.totalDeductions, sym)}</td>
-                  <td style="color:var(--success); font-size:16px;">${formatCurrency(storedBatch.totalNet, sym)}</td>
+                  <td>${summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map(g => ({ code: g.code, amount: g.gross })))}</td>
+                  <td colspan="3" style="color:var(--danger);">- ${summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map(g => ({ code: g.code, amount: g.deductions })))}</td>
+                  <td style="color:var(--success); font-size:16px;">${summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map(g => ({ code: g.code, amount: g.net })))}</td>
                 </tr>
               </tfoot>
             </table>
@@ -752,6 +766,11 @@ export function renderReportsView(container, options = {}) {
         const exportData = payrollItems.map((it) => ({
           [hd('الموظف', 'Employee')]: it.employeeName,
           [hd('القسم', 'Department')]: it.department,
+          [hd('العملة', 'Currency')]: it.currency || settings.currency || 'USD',
+          [hd('سعر الصرف', 'Exchange Rate')]: it.exchangeRate !== undefined && it.exchangeRate !== null ? Number(it.exchangeRate).toFixed(6) : '',
+          [hd('تاريخ سعر الصرف', 'Exchange Rate Date')]: it.exchangeRateDate || '',
+          [hd('عملة الأساس', 'Base Currency')]: it.baseCurrency || settings.baseCurrency || 'USD',
+          [hd('مبلغ الأساس', 'Base Amount')]: it.baseAmount !== undefined && it.baseAmount !== null ? Number(it.baseAmount).toFixed(2) : '',
           [hd('الأساسي', 'Basic')]: it.basicSalary,
           [hd('بدل السكن', 'Housing')]: it.housingAllowance,
           [hd('بدل النقل', 'Transport')]: it.transportAllowance,
@@ -838,12 +857,12 @@ export function renderReportsView(container, options = {}) {
                   <tr>
                     <td><strong>${r.emp.fullName}</strong></td>
                     <td>${r.emp.department}</td>
-                    <td>${r.isSubject ? formatCurrency(r.regWage, sym) : `<span class="badge badge-gray">${t('reports.notSubject')}</span>`}</td>
+                    <td>${r.isSubject ? formatAmountWithCode(r.regWage, settings.currency || 'USD') : `<span class="badge badge-gray">${t('reports.notSubject')}</span>`}</td>
                     <td>${r.isSubject ? r.empPct + '%' : '-'}</td>
-                    <td><strong style="color:var(--danger);">${r.isSubject ? formatCurrency(r.empDeduction, sym) : '-'}</strong></td>
+                    <td><strong style="color:var(--danger);">${r.isSubject ? formatAmountWithCode(r.empDeduction, settings.currency || 'USD') : '-'}</strong></td>
                     <td>${r.isSubject ? r.compPct + '%' : '-'}</td>
-                    <td><strong style="color:var(--info);">${r.isSubject ? formatCurrency(r.compContribution, sym) : '-'}</strong></td>
-                    <td><strong style="color:var(--primary); font-size:13.5px;">${r.isSubject ? formatCurrency(r.totalContribution, sym) : '-'}</strong></td>
+                    <td><strong style="color:var(--info);">${r.isSubject ? formatAmountWithCode(r.compContribution, settings.currency || 'USD') : '-'}</strong></td>
+                    <td><strong style="color:var(--primary); font-size:13.5px;">${r.isSubject ? formatAmountWithCode(r.totalContribution, settings.currency || 'USD') : '-'}</strong></td>
                   </tr>
                 `
                   )
@@ -852,12 +871,12 @@ export function renderReportsView(container, options = {}) {
               <tfoot>
                 <tr style="background:var(--bg-card-hover); font-weight:800;">
                   <td colspan="2">${t('reports.overallTotal')}</td>
-                  <td>${formatCurrency(totalRegWage, sym)}</td>
+                  <td>${formatAmountWithCode(totalRegWage, settings.currency || 'USD')}</td>
                   <td>-</td>
-                  <td style="color:var(--danger);">${formatCurrency(totalEmpDeduction, sym)}</td>
+                  <td style="color:var(--danger);">${formatAmountWithCode(totalEmpDeduction, settings.currency || 'USD')}</td>
                   <td>-</td>
-                  <td style="color:var(--info);">${formatCurrency(totalCompContribution, sym)}</td>
-                  <td style="color:var(--primary); font-size:15px;">${formatCurrency(grandTotalGosi, sym)}</td>
+                  <td style="color:var(--info);">${formatAmountWithCode(totalCompContribution, settings.currency || 'USD')}</td>
+                  <td style="color:var(--primary); font-size:15px;">${formatAmountWithCode(grandTotalGosi, settings.currency || 'USD')}</td>
                 </tr>
               </tfoot>
             </table>
@@ -869,6 +888,7 @@ export function renderReportsView(container, options = {}) {
         const exportData = gosiRows.map((r) => ({
           [isEn ? 'Employee' : 'الموظف']: r.emp.fullName,
           [isEn ? 'Department' : 'القسم']: r.emp.department,
+          [isEn ? 'Currency' : 'العملة']: settings.currency || 'USD',
           [isEn ? 'Registered Wage' : 'الأجر المسجل']: r.regWage,
           [isEn ? 'Employee %' : 'نسبة الموظف %']: r.empPct,
           [isEn ? 'Employee Deduction' : 'استقطاع الموظف']: r.empDeduction,
@@ -999,13 +1019,14 @@ export function renderReportsView(container, options = {}) {
                     : monthOt
                         .map((ot) => {
                           const emp = employees.find((e) => e.id === ot.employeeId);
+                          const currency = emp?.currency || settings.currency || 'USD';
                           return `
                       <tr>
                         <td><strong>${emp ? emp.fullName : t('reports.unknown')}</strong></td>
                         <td>${formatDate(ot.date)}</td>
                         <td>${ot.hours ?? 0} ${isEn ? 'hrs' : 'ساعة'}</td>
                         <td>${(ot.multiplier ?? ot.rateMultiplier ?? 1.5)}x</td>
-                        <td><strong>${formatCurrency(ot.totalAmount ?? ot.calculatedAmount, sym)}</strong></td>
+                        <td><strong>${formatAmountWithCode(ot.totalAmount ?? ot.calculatedAmount, currency)}</strong></td>
                         <td>${ot.reason || '-'}</td>
                         <td><span class="badge ${ot.status === 'approved' ? 'badge-success' : 'badge-warning'}">${ot.status === 'approved' ? t('reports.approved') : t('reports.pending')}</span></td>
                       </tr>
@@ -1031,12 +1052,14 @@ export function renderReportsView(container, options = {}) {
         }
         const exportData = monthOt.map((ot) => {
           const emp = employees.find((e) => e.id === ot.employeeId);
+          const currency = emp?.currency || settings.currency || 'USD';
           return {
             [isEn ? 'Employee' : 'الموظف']: emp ? emp.fullName : '-',
             [isEn ? 'Date' : 'التاريخ']: ot.date,
             [isEn ? 'Hours' : 'الساعات']: ot.hours ?? 0,
             [isEn ? 'Multiplier' : 'المعامل']: ot.multiplier ?? ot.rateMultiplier ?? 1.5,
             [isEn ? 'Amount' : 'المبلغ']: ot.totalAmount ?? ot.calculatedAmount,
+            [isEn ? 'Currency' : 'العملة']: currency,
             [isEn ? 'Reason' : 'السبب']: ot.reason,
             [isEn ? 'Status' : 'الحالة']: ot.status,
           };
@@ -1071,6 +1094,11 @@ export function renderReportsView(container, options = {}) {
                   <th>${t('reports.hireDate')}</th>
                   <th>${t('reports.terminationDate')}</th>
                   <th>${t('reports.servicePeriod')}</th>
+                  <th>${t('reports.currency')}</th>
+                  <th>${t('reports.exchangeRate')}</th>
+                  <th>${t('reports.exchangeRateDate')}</th>
+                  <th>${t('reports.baseCurrency')}</th>
+                  <th>${t('reports.baseAmount')}</th>
                   <th>${t('reports.eosbAward')}</th>
                   <th>${t('reports.leaveCashout')}</th>
                   <th>${t('reports.netSettlement')}</th>
@@ -1079,22 +1107,33 @@ export function renderReportsView(container, options = {}) {
               <tbody>
                 ${
                   eosb.length === 0
-                    ? `<tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted);">${t('reports.noSettlements')}</td></tr>`
+                    ? `<tr><td colspan="13" style="text-align:center; padding:30px; color:var(--text-muted);">${t('reports.noSettlements')}</td></tr>`
                     : eosb
                         .map(
-                          (item) => `
-                      <tr>
-                        <td><strong>${item.employeeName}</strong></td>
-                        <td>${item.department}</td>
-                        <td>${formatDate(item.hireDate)}</td>
-                        <td>${formatDate(item.terminationDate)}</td>
-                        <td>${tf('reports.serviceDuration', { years: item.serviceYears, months: item.serviceMonths })}</td>
-                        <td>${formatCurrency(item.finalEOSBAmount, sym)}</td>
-                        <td>${formatCurrency(item.leaveCompensationAmount, sym)}</td>
-                        <td><strong style="color:var(--success); font-size:14px;">${formatCurrency(item.netSettlementAmount, sym)}</strong></td>
-                      </tr>
-                    `
-                        )
+                          (item) => {
+                            const currency = item.currency || settings.currency || 'USD';
+                            const exchangeRate = item.exchangeRate ? Number(item.exchangeRate).toFixed(6) : '-';
+                            const exchangeRateDate = item.exchangeRateDate || '-';
+                            const baseCurrency = item.baseCurrency || settings.baseCurrency || 'USD';
+                            const baseAmount = item.baseAmount !== undefined && item.baseAmount !== null ? formatAmountWithCode(item.baseAmount, baseCurrency) : '-';
+                            return `
+                          <tr>
+                            <td><strong>${item.employeeName}</strong></td>
+                            <td>${item.department}</td>
+                            <td>${formatDate(item.hireDate)}</td>
+                            <td>${formatDate(item.terminationDate)}</td>
+                            <td>${tf('reports.serviceDuration', { years: item.serviceYears, months: item.serviceMonths })}</td>
+                            <td><span class="badge badge-primary">${currency}</span></td>
+                            <td>${exchangeRate}</td>
+                            <td>${exchangeRateDate}</td>
+                            <td>${baseCurrency}</td>
+                            <td>${baseAmount}</td>
+                            <td>${formatAmountWithCode(item.finalEOSBAmount, currency)}</td>
+                            <td>${formatAmountWithCode(item.leaveCompensationAmount, currency)}</td>
+                            <td><strong style="color:var(--success); font-size:14px;">${formatAmountWithCode(item.netSettlementAmount, currency)}</strong></td>
+                          </tr>
+                        `;
+                          })
                         .join('')
                 }
               </tbody>
@@ -1114,6 +1153,11 @@ export function renderReportsView(container, options = {}) {
           [hd('تاريخ التعيين', 'Hire Date')]: r.hireDate,
           [hd('تاريخ الإنهاء', 'Termination Date')]: r.terminationDate,
           [hd('مدة الخدمة', 'Service Duration')]: `${r.serviceYears}Y ${r.serviceMonths}M`,
+          [hd('العملة', 'Currency')]: r.currency || settings.currency || 'USD',
+          [hd('سعر الصرف', 'Exchange Rate')]: r.exchangeRate !== undefined && r.exchangeRate !== null ? Number(r.exchangeRate).toFixed(6) : '',
+          [hd('تاريخ سعر الصرف', 'Exchange Rate Date')]: r.exchangeRateDate || '',
+          [hd('عملة الأساس', 'Base Currency')]: r.baseCurrency || settings.baseCurrency || 'USD',
+          [hd('مبلغ الأساس', 'Base Amount')]: r.baseAmount !== undefined && r.baseAmount !== null ? Number(r.baseAmount).toFixed(2) : '',
           [hd('مكافأة نهاية الخدمة', 'EOSB Gratuity')]: r.finalEOSBAmount,
           [hd('بدل رصيد الإجازات', 'Leave Compensation')]: r.leaveCompensationAmount,
           [hd('صافي المخالصة', 'Net Settlement')]: r.netSettlementAmount,
