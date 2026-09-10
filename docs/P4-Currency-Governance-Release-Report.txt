@@ -1,0 +1,141 @@
+================================================================================
+P4 RELEASE REPORT — CURRENCY / EXCHANGE-RATE GOVERNANCE
+Project: HRMS (Vite + vanilla JS + localStorage, Arabic/English)
+Phase: 4 (Financial Workflow & Currency Specification v1.0)
+Commit: 952c87e  — implementation (5 files, +1121/-2)
+Status: RELEASED
+================================================================================
+
+1. SCOPE
+--------------------------------------------------------------------------------
+Every financial record — payroll item, payroll totalsByCurrency row, EOSB
+settlement, loan — now carries the six mandatory fields:
+        amount | currency | exchangeRate | exchangeRateDate
+        | baseCurrency | baseAmount
+plus an exchangeRateStatus marker ('ok' | 'missing').
+
+2. FILES CHANGED (implementation commit 952c87e)
+--------------------------------------------------------------------------------
+  NEW  public/js/engines/currencyGovernance.js   — single governance engine
+  MOD  public/js/storage.js                      — stamp hooks + rate API
+  MOD  public/js/components/SettingsView.js      — super-admin P4 UI card
+  NEW  scripts/p4-tests.mjs                      — 140 assertions
+  MOD  package.json                              — "p4:test" script
+
+Migration impact on older phases:
+  - storage.js hooks are purely additive and wrapped in try/catch, so a
+    governance failure can never break an existing financial save.
+  - Legacy records are left untouched (no re-stamping of committed data);
+    the Phase-3 read-time normalization layer still applies on top.
+
+3. DOCUMENTED POLICY (the 9 approved decisions as applied)
+--------------------------------------------------------------------------------
+  D1  SOURCE OF RATES
+      Manual documented rate entry is the ONLY source. The app is fully
+      offline (localStorage) — no API, no live feeds. A "Rate Date" and an
+      optional Note/Source field document every rate.
+  D2  AUTHORITY
+      Only super_admin may set/edit exchange rates or change the base
+      currency (RBAC gate = canGovern). No new roles introduced.
+  D3  PIN POINT
+      A rate is pinned (snapshotted) at financial-record creation time.
+      The Transaction is: payroll item row, totals row, EOSB settlement,
+      or loan record. exchangeRateDate on a record = the rate's own
+      Rate Date (effective date), not the save clock.
+  D4  IMMUTABILITY / DATA LOCKING
+      A rate becomes locked (immutable, undeletable) as soon as a
+      COMMITTED financial record references it. Subsequent edits are
+      rejected with 'rate_locked' unless the caller explicitly requests a
+      NEW snapshot (newRate:true), which appends a new entry for records
+      created from then on — it never rewrites older committed records.
+  D5  PRE-PIN EDITS + HISTORy
+      Until commit, a rate may still be edited in place: a payroll DRAFT
+      remains refreshable, so a pre-pin edit genuinely applies to the
+      pending record; the commit save seals those provisional stamps with
+      the then-current rate. Every edit is recorded in an append-only
+      history per rate entry: from → to, by, at, reason.
+  D6  NO REVALUATION
+      There is NO revaluation entity. Changing a rate = a new future
+      snapshot, never a historical correction.
+  D7  BASE CURRENCY
+      settings.currency (defaultSettings) acts as the base currency.
+      Changing it affects NEW records only; historical baseAmount values
+      are never recomputed/rewritten. The base currency has an implicit
+      rate of 1 (SAME_CURRENCY_RATE=1).
+  D8  PRECISION
+      Amounts and baseAmount: round 2dp Half-Up. Rates: 6dp. Computed
+      with explicit integer/decimal-safe rounding, not raw floats.
+  D9  SCOPE
+      Governance applies to payroll items + totalsByCurrency + EOSB +
+      loans, exactly the payload specified.
+
+4. MISSING-RATE POLICY
+--------------------------------------------------------------------------------
+A record whose currency is not the base and has no matching rate is STILL
+created and fully stamped as:
+        exchangeRate: null, exchangeRateDate: null,
+        baseAmount: null, exchangeRateStatus: 'missing'
+Conversion and aggregation REFUSE it:
+        'missing_exchange_rate:CODE' ('' tool-level errors)
+A rate that appears LATER does NOT backfill committed missing records
+(they are sealed as 'missing'). Draft working copies DO refresh while
+provisional, which is the only way a missing draft can later resolve.
+
+5. CURRENCY-MIXING PROHIBITION
+--------------------------------------------------------------------------------
+Mixing means a single aggregation / display total that would silently add
+money of different original currencies. Enforcement:
+  - assertSameCurrency — throws 'currency_mix:A+B' when a group is not
+    single-currency (used by sumSameCurrency and downstream aggregation).
+  - sumInBase / toBaseAmount — convert ONLY through an explicit,
+    positively-rated transaction snapshot; a non-positive or missing rate
+    always refuses ('' check: !(Number(snapshot.exchangeRate) > 0)).
+  - governance.mixedCurrencies — a payroll batch whose items span 2+
+    distinct original currencies is flagged true; a compliant UI must
+    render totalsByCurrency segments instead of one blended number.
+  - sumSameCurrency over split currency data returns the table split into
+    grouped single-currency segments, never one blended total.
+
+6. SNAPSHOT SEMANTICS
+--------------------------------------------------------------------------------
+  - Two saves of the same committed record (e.g. re-saving an approved
+    month, or archiving after a re-save) NEVER re-price already-sealed
+    rows — a Nx change in the rate master is invisible to history.
+  - A corrected item appended to an already-committed batch receives its
+    own correction-time snapshot; all pre-existing rows stay untouched.
+  - Draft → commit: provisional stamps are refreshed at the commit save,
+    then sealed and their rates locked.
+  - Rates referenced by a committed non-base currency are automatically
+    locked by storage.addPayrollBatch / addEOSB / addLoan / updateLoan;
+    the lock is idempotent.
+
+7. TEST RESULTS (all green)
+--------------------------------------------------------------------------------
+  P4 (scripts/p4-tests.mjs) .............. 140 / 140
+  P3 (scripts/p3-tests.mjs) ...............  66 /  66
+  P2.2 (scripts/p2-2-tests.mjs) ........... 123 / 123
+  P2.2 Roles (p2-2-roles-tests.mjs) .......  92 /  92
+  P2.1 (scripts/p2-1-tests.mjs) ...........  47 /  47
+  P2.1 UI (scripts/p2-1-ui-tests.mjs) .....  31 /  31
+  Release gate (release-gate-test.mjs) ....  66 /  66
+  Production build .......................  59 modules, OK
+      (pre-existing >500 kB single-chunk warning, unchanged)
+
+8. I18N DELTA (transparency note)
+--------------------------------------------------------------------------------
+The static i18n audit moves from ~773 hard-coded literals (baseline) to
+~790: +17 literals introduced by the new P4 settings card. This audit is
+diagnostic, not a gate — all new literals follow the repository-wide
+convention `isEn ? 'EN' : 'AR'`. No glossary terms were changed.
+
+9. KNOWN SCOPE OUTSIDE PHASE 4 (not implemented, by design)
+--------------------------------------------------------------------------------
+  - No revaluation / historical repricing entity (D6).
+  - No live/API rate sources (D1 — offline manual entry only).
+  - Display-layer rendering of mixed-currency batches is a UI concern for
+    a later phase; storage/governance already guarantee the prohibition.
+  - Role changes (set by policy) are deferred; Phase 4 uses the existing
+    super_admin RBAC only.
+================================================================================
+END — Phase 4 released. Phase 5 NOT started.
+================================================================================
