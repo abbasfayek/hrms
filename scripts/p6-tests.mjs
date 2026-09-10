@@ -476,6 +476,74 @@ const verE = verifyAuditTrail(storage.getAuditTrailMeta().envelope);
 ok('E12 full audit chain integrity', verE.valid === true);
 
 // ===========================================================================
+console.log('F. BUG REGRESSION — real-UI correction path (fresh object must NOT erase history)');
+emptyBase();
+// Real UI path: the draft is GENERATED, stored (CREATED), then submitted.
+let fDraft = generateMonthlyPayroll(
+  storage.getState().employees,
+  storage.getState().overtime,
+  storage.getState().loans,
+  storage.getState().attendance,
+  { month: '2026-08', adjustments: storage.getState().increments, companies: storage.getState().companies },
+  storage.getState().settings,
+);
+ok('F0 freshly generated object carries NO pre-existing history (sealed baseline / versions / revision)', fDraft.baselineSnapshot == null && !Array.isArray(fDraft.versions) && !fDraft.revision);
+storage.addPayrollBatch(fDraft);
+ok('F1 CREATE event for the generated draft', successActions(payrollEventsOf('2026-08')).includes(AUDIT_ACTIONS.CREATED));
+let fb = fDraft;
+r = transitionPayrollGuarded(HR, fb, 'under_audit', { by: HR.name, reason: 'submitted for audit' });
+ok('F2 first submit seals the baseline on the returned record', r.ok === true && r.batch.baselineSnapshot && Array.isArray(r.batch.baselineSnapshot.items));
+fb = r.batch;
+const firstNet = fb.baselineSnapshot.totalNet;
+ok('F3 baseline holds the ORIGINAL salary (6000) and a positive net', Number(firstNet) > 0 && fb.baselineSnapshot.items[0].basicSalary === 6000);
+storage.addPayrollBatch(fb);
+r = transitionPayrollGuarded(AUDIT, fb, 'rejected', { by: AUDIT.name, rejectionReason: 'basic salary must be corrected', auditNotes: 'review requested' });
+fb = r.batch;
+ok('F4 reject stamps reason + rejected financial snapshot (amounts never zeroed)', r.ok === true && fb.rejectedSnapshot && fb.rejectedSnapshot.totalNet === firstNet && fb.rejectionReason === 'basic salary must be corrected' && fb.returnState === 'needs_correction');
+storage.addPayrollBatch(fb);
+// REAL UI recalc: salary edited, then a FRESH regenerate passes a history-less
+// object into the correction engine.
+storage.saveEmployees(storage.getState().employees.map((e) => (e.id === 'emp-1' ? { ...e, basicSalary: 6500 } : e)));
+const freshRegen = generateMonthlyPayroll(
+  storage.getState().employees,
+  storage.getState().overtime,
+  storage.getState().loans,
+  storage.getState().attendance,
+  { month: '2026-08', adjustments: storage.getState().increments, companies: storage.getState().companies },
+  storage.getState().settings,
+);
+ok('F5 the recalc object handed to the UI is history-less (the trap)', freshRegen.id === fDraft.id && freshRegen.baselineSnapshot == null && !Array.isArray(freshRegen.versions));
+r = recordPayrollCorrectionGuarded(HR, fb, freshRegen, { by: HR.name, reason: 'basic salary corrected to 6500' });
+ok('F6 correction accepted on the returned record', r.ok === true);
+fb = r.batch;
+ok('F7 SAME record id preserved through the correction', fb.id === fDraft.id && fb.month === '2026-08');
+ok('F8 baselineSnapshot preserved — ORIGINAL financial values never overwritten', Array.isArray(fb.baselineSnapshot?.items) && fb.baselineSnapshot.totalNet === firstNet && fb.baselineSnapshot.items[0].basicSalary === 6000);
+ok('F9 rejectedSnapshot preserved — reject-time values intact', !!fb.rejectedSnapshot && fb.rejectedSnapshot.totalNet === firstNet);
+ok('F10 version chain intact: under_audit,rejected,corrected', fb.versions.map((v) => v.type).join(',') === 'under_audit,rejected,corrected');
+ok('F11 version ids continuous V1→V2→V3 with prev/next links', fb.versions.map((v) => v.versionId).join(',') === 'V1,V2,V3' && fb.versions[1].prevVersionId === 'V1' && fb.versions[2].prevVersionId === 'V2' && fb.versions[0].nextVersionId === 'V2' && fb.versions[1].nextVersionId === 'V3');
+const origValsF = originalFinancialValues(fb);
+ok('F12 originalFinancialValues() returns the ORIGINAL baseline (not null)', !!origValsF && origValsF.totalNet === firstNet && origValsF.items[0].basicSalary === 6000);
+ok('F13 corrected item now carries the new salary', fb.items.find((i) => i.employeeId === 'emp-1').basicSalary === 6500);
+const corrF = (fb.corrections || []).find((c) => c.toVersion === 3);
+ok('F14 correction logged old 6000 → new 6500 for basicSalary with user/stamp/reason', !!corrF && corrF.by === HR.name && corrF.reason === 'basic salary corrected to 6500' && corrF.changes.some((ch) => ch.field === 'basicSalary' && ch.oldValue === 6000 && ch.newValue === 6500));
+ok('F15 currency segment preserved (USD never re-priced, net reflects the correction)', fb.totalsByCurrency[0].code === 'USD' && fb.totalsByCurrency[0].symbol === '$' && fb.totalsByCurrency[0].net > firstNet);
+ok('F16 audit attempts carried: under_audit,returned,corrected', fb.auditAttempts.map((a) => a.result).join(',') === 'under_audit,returned,corrected');
+storage.addPayrollBatch(fb);
+ok('F17 exactly ONE stored record after correction (no duplicate payroll)', storage.getState().payrolls.filter((p) => p.id === fDraft.id).length === 1);
+// resubmit the corrected record (same record, new audit attempt)
+r = transitionPayrollGuarded(HR, fb, 'under_audit', { by: HR.name, reason: 'correction resubmitted' });
+ok('F18 resubmit returns the SAME record to under_audit', r.ok === true && r.batch.id === fDraft.id && r.batch.status === 'under_audit' && r.batch.returnState === 'resubmitted');
+fb = r.batch;
+ok('F19 final version chain: under_audit,rejected,corrected,resubmitted', fb.versions.map((v) => v.type).join(',') === 'under_audit,rejected,corrected,resubmitted');
+ok('F20 original financial values STILL the original baseline after resubmit', originalFinancialValues(fb)?.totalNet === firstNet);
+storage.addPayrollBatch(fb);
+const fActs = successActions(payrollEventsOf('2026-08'));
+ok('F21 honest audit sequence: created,submitted,rejected,corrected,resubmitted', fActs.join(',') === [AUDIT_ACTIONS.CREATED, AUDIT_ACTIONS.SUBMITTED, AUDIT_ACTIONS.REJECTED, AUDIT_ACTIONS.CORRECTED, AUDIT_ACTIONS.RESUBMITTED].join(','));
+ok('F22 chain valid end-to-end through the fresh-object correction', chainValidAfterEach('fresh-object-correction'));
+const verF = verifyAuditTrail(storage.getAuditTrailMeta().envelope);
+ok('F23 full audit chain integrity', verF.valid === true);
+
+// ===========================================================================
 console.log('SUMMARY');
 console.log(`  passed: ${passed}`);
 console.log(`  failed: ${failed}`);

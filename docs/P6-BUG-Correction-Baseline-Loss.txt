@@ -1,0 +1,145 @@
+================================================================================
+BUG REPORT — PHASE 6 MANUAL BROWSER VERIFICATION (Real UI)
+================================================================================
+STATUS   : OPEN — found by the manual-browser verification of the
+           Returned/Correction flow. NOT FIXED (awaiting decision).
+
+DATE     : 2026-09-10
+FOUND IN : public/js/engines/payrollEngine.js  — recordPayrollCorrection()
+           public/js/components/PayrollView.js — recalc handler (#btn-recalc-*)
+           (the bug triggers through the REAL UI path only)
+
+--------------------------------------------------------------------------------
+1. TITLE
+--------------------------------------------------------------------------------
+Correcting a Returned payroll through the REAL UI (Recalculate & Record
+Correction) drops the sealed baseline + rejected snapshot and truncates the
+append-only version chain (V1 under_audit → V2 rejected are lost).
+`originalFinancialValues()` then returns NULL — the guaranteed "original
+financial values stay sealed forever" invariant is broken on the production path.
+
+--------------------------------------------------------------------------------
+2. HOW IT WAS FOUND
+--------------------------------------------------------------------------------
+Manual-browser verification drove the REAL PayrollView in a jsdom DOM:
+create draft → submit to audit → reviewer rejects with reason → returned card
+verified (reason / auditor / date / amounts preserved) → HR updates salary
+6000→6500 → presses [إعادة الاحتساب وتسجيل التصحيح] → observed on the stored
+record after the click:
+   baselineSnapshot   = MISSING   (was present after SUBMIT and after REJECT)
+   rejectedSnapshot   = MISSING   (was present after REJECT)
+   version chain      = [corrected] only  (was [under_audit, rejected])
+   originalFinancialValues(batch) = NULL
+   auditAttempts      = [under_audit, returned, corrected]  (preserved)
+After RESUBMIT the same fields stay missing; the chain becomes [corrected, resubmitted].
+
+--------------------------------------------------------------------------------
+3. ROOT CAUSE
+--------------------------------------------------------------------------------
+recordPayrollCorrection(prev, next, opts) (payrollEngine.js:488) applies the
+correction ONTO `next` and copies from `prev` ONLY:
+     rejectedBy, rejectedAt, rejectionReason, auditNotes        (line 537)
+It does NOT carry over:
+     prev.baselineSnapshot      (sealed FIRST-submission values)
+     prev.rejectedSnapshot      (sealed values at reject)
+     prev.versions              (V1 under_audit, V2 rejected)
+and it rebuilds the version list with:
+     next.versions = pushVersion(next, { type:'corrected', ... })  (line 524)
+pushVersion() builds from next.versions, i.e. the version chain is APPENDED to
+whatever `next` already contains.
+
+WHO calls it how:
+  * Production UI (PayrollView.js recalc handler) passes `next` = a FRESH
+    object from generateMonthlyPayroll() which contains ONLY:
+    id/month/title/issueDate/status/totals/items/totalsByCurrency/createdAt
+    (payrollEngine.js:244-258) — no baseline, no rejected snapshot, no versions.
+    => those fields are silently lost and the chain restarts at "corrected".
+  * My p6-tests E2E (scripts/p6-tests.mjs) passed `next` = a sealed CLONE of the
+    rejected batch (seal(b)) which already carried all fields => the automated
+    suite passed 118/118 and did NOT detect the regression on the real path.
+
+This is exactly the class of bug the manual-browser verification exists for:
+a behavior that is correct through the test harness but broken through the UI.
+
+--------------------------------------------------------------------------------
+4. REPRODUCTION (minimal, engine-level)
+--------------------------------------------------------------------------------
+Two identical pipelines were compared engine-side (draft→submit→reject→correct→resubmit):
+
+PIPELINE A — correction on a FRESH generated batch (= real UI recalc):
+  after REJECT      : baseline=PRESERVED rejectedSnapshot=PRESERVED
+                      versions=[under_audit,rejected]   original=available
+  after CORRECTION  : baseline=LOST rejectedSnapshot=LOST versions=[corrected]
+                      originalFinancialValues=NULL
+  after RESUBMIT    : baseline=LOST rejectedSnapshot=LOST
+                      versions=[corrected,resubmitted]  original=NULL
+
+PIPELINE B — correction on a CLONE of the rejected batch (= E2E helper):
+  after REJECT      : baseline=PRESERVED rejectedSnapshot=PRESERVED
+                      versions=[under_audit,rejected]
+  after CORRECTION  : baseline=PRESERVED rejectedSnapshot=PRESERVED
+                      versions=[under_audit,rejected,corrected]  original=available
+  after RESUBMIT    : all preserved; versions=[under_audit,rejected,corrected,resubmitted]
+
+Only difference between A and B: what object the correction is applied to.
+
+Simplest engine call to reproduce:
+  const fresh = generateMonthlyPayroll(...same month, updated salary...);
+  const r = recordPayrollCorrectionGuarded(HR, rejectedBatch, fresh, {by:'HR', reason:'x'});
+  r.batch.baselineSnapshot  => undefined   (was on rejectedBatch)
+  r.batch.versions          => [corrected] (was [under_audit, rejected])
+
+--------------------------------------------------------------------------------
+5. IMPACT
+--------------------------------------------------------------------------------
+* Data-model invariant broken: data model guarantees (payrollDataModel.js)
+  "baselineSnapshot — original financial values (first submission)" … "the
+  original values are sealed permanently" and "append-only version chain
+  Rejected → Corrected → Resubmitted … history is NEVER overwritten".
+* originalFinancialValues(batch) returns NULL for any record corrected through
+  the real UI (its legacy fallback to rejectedSnapshot is also gone).
+* versionChain()/resubmissionRounds() and consumers that walk versions
+  (audit event versionId links, later phases) lose V1/V2.
+* Monetary values themselves are NOT lost (items/totals stay), and rejection
+  metadata + auditAttempts + corrections ARE preserved; the damage is limited
+  to the sealed-history layer — but that layer is a Phase 3/5/6 contract.
+* Amounts-preservation claim still holds (nothing was zeroed); the audit trail
+  (chain hash) remains valid. This is a data-model regression, not a
+  state-machine or permission bypass.
+
+--------------------------------------------------------------------------------
+6. SUGGESTED FIX (NOT applied — decision required)
+--------------------------------------------------------------------------------
+Make recordPayrollCorrection(prev, next) converge on prev for the sealed-history
+fields instead of whatever `next` carries:
+  * next.baselineSnapshot = next.baselineSnapshot || prev.baselineSnapshot
+  * next.rejectedSnapshot = next.rejectedSnapshot || prev.rejectedSnapshot
+  * seed next.versions from prev.versions (if next has none / only draft fields)
+    before pushVersion() so the chain stays [under_audit, rejected, corrected]
+  (plus the already-copied rejection metadata).
+Optionally harden the E2E: assert originalFinancialValues() != NULL and the
+full 4-version chain after a correction built on a FRESH generateMonthlyPayroll.
+
+--------------------------------------------------------------------------------
+7. VERIFICATION STANDING (everything else in the scenario PASSED)
+--------------------------------------------------------------------------------
+The remainder of the manual-browser scenario passed through the real UI:
+  create → submit (under_audit, V1, baseline sealed, CREATED event, chain OK)
+  reject   (returnState needs_correction, reason, auditor, timestamp, amounts
+             preserved, rejectedSnapshot captured, REJECTED event, chain OK)
+  returned card displays reason / auditor / date / "amounts preserved" /
+             Recalculate + Resubmit buttons; row still shows 6,000.00 USD
+  salary change 6000→6500 recorded as old=6000/new=6500 with by/timestamp/reason
+  resubmit → SAME record (id PAYROLL-2026-08, single stored record) back to
+             under_audit, returnState=resubmitted, RESUBMITTED event
+  audit trail events: created → rejected → corrected → resubmitted; hash chain
+             valid throughout; currency snapshot meta stable.
+The ONLY defect is the sealed-history loss described above.
+
+--------------------------------------------------------------------------------
+8. REQUIREMENT FOR ACTION
+--------------------------------------------------------------------------------
+Phase 6 must NOT be closed. Bug is documented here and NOT fixed.
+Await decision: approve the suggested fix (then I implement + re-run all gates
++ update the report), or choose another approach. Do not start Phase 7.
+================================================================================

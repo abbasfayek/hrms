@@ -7,7 +7,7 @@ import { getDailyRate, getHourlyRate, getMinuteRate } from './wageEngine.js';
 import { resolveEmployeeCurrency, countAbsenceDays } from '../types.js';
 import { t } from '../i18n.js';
 // Phase 3 additive audit data model (purely additive; no behavior change).
-import { PAYROLL_SCHEMA, pushVersion, ensureBaseline, attachApprovalReference, attachPaymentReference, attachArchiveReference } from './payrollDataModel.js';
+import { PAYROLL_SCHEMA, pushVersion, ensureBaseline, attachApprovalReference, attachPaymentReference, attachArchiveReference, versionIdOf } from './payrollDataModel.js';
 
 /**
  * Generate monthly payroll batch for all active employees.
@@ -492,6 +492,32 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
   }
   const now = new Date().toISOString();
   const base = prev.rejectedSnapshot || snapshotBatch(prev);
+  // ---------------------------------------------------------------
+  // HISTORY PRESERVATION — the real UI "recalc & record correction"
+  // path hands in a FRESH generateMonthlyPayroll() object that carries
+  // NO sealed history. Such a new object must never erase the returned
+  // batch's history (baseline, rejected snapshot, version chain); the
+  // existing history is authoritative, so converge on `prev` here.
+  // ---------------------------------------------------------------
+  next.id = next.id || prev.id;
+  next.month = next.month || prev.month;
+  ['baselineSnapshot', 'rejectedSnapshot'].forEach((field) => {
+    if (next[field] === undefined || next[field] === null) next[field] = prev[field];
+  });
+  // Version chain: a correction may only EXTEND the returned batch's
+  // chain. prev's versions always lead (deduped by versionId); next's
+  // own entries (if any) follow. History can never be replaced.
+  const prevVersions = Array.isArray(prev.versions) ? prev.versions : [];
+  const nextVersions = Array.isArray(next.versions) ? next.versions : [];
+  if (prevVersions.length) {
+    const known = new Set(prevVersions.map((v) => versionIdOf(v)).filter(Boolean));
+    next.versions = prevVersions.concat(nextVersions.filter((v) => !known.has(versionIdOf(v))));
+  } else if (!Array.isArray(next.versions)) {
+    next.versions = [];
+  }
+  // Revision continuity: the corrected version continues the returned
+  // batch's numbering (never restarts at 1, which would collide).
+  next.revision = Math.max(Number(next.revision) || 0, Number(prev.revision) || 0);
   const changes = [];
   const srcItems = (base.items || []).filter((s) => s.employeeId);
   const toItems = next.items || [];
