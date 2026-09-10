@@ -16,6 +16,29 @@
 import { can, getEffectivePermissions } from '../types.js';
 import { transitionPayroll, recordPayrollCorrection, archivePayrollBatch } from './payrollEngine.js';
 
+// Phase 5: security-denial hook. Storage registers itself here (acyclic —
+// payrollAccess has no storage dependency) so a forbidden payroll operation is
+// recorded as a `denied` audit event — it can never become a success event.
+let auditDeniedHook = null;
+export function setAuditDeniedHook(fn) {
+  auditDeniedHook = typeof fn === 'function' ? fn : null;
+}
+
+function reportDenied(action, batch, gate) {
+  try {
+    if (auditDeniedHook) {
+      auditDeniedHook({
+        action,
+        recordId: batch && (batch.month || batch.id),
+        fromStatus: batch ? (batch.status || 'draft') : 'draft',
+        error: gate.error,
+        layer: gate.layer,
+        reason: gate.error,
+      });
+    }
+  } catch (e) { /* a failed audit attempt must never mask the denial itself */ }
+}
+
 /** The permission required to perform each payroll action. */
 export const PAYROLL_ACTION_PERMISSIONS = {
   generate: 'payroll.generate',
@@ -119,7 +142,10 @@ export function transitionPayrollGuarded(user, batch, to, opts = {}) {
     return { ok: false, error: `no_action_for_transition:${to}`, layer: 'permission' };
   }
   const gate = requirePayrollAction(user, action, batch);
-  if (!gate.ok) return { ok: false, error: gate.error, layer: gate.layer, batch };
+  if (!gate.ok) {
+    reportDenied(action, batch, gate);
+    return { ok: false, error: gate.error, layer: gate.layer, batch };
+  }
   const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
   return transitionPayroll(batch, to, { ...opts, by: opts.by || actor });
 }
@@ -130,7 +156,10 @@ export function transitionPayrollGuarded(user, batch, to, opts = {}) {
  */
 export function recordPayrollCorrectionGuarded(user, prev, next, opts = {}) {
   const gate = requirePayrollAction(user, 'edit', prev);
-  if (!gate.ok) return { ok: false, error: gate.error, layer: gate.layer, batch: next };
+  if (!gate.ok) {
+    reportDenied('edit', prev, gate);
+    return { ok: false, error: gate.error, layer: gate.layer, batch: next };
+  }
   const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
   return recordPayrollCorrection(prev, next, { ...opts, by: opts.by || actor });
 }
@@ -141,7 +170,10 @@ export function recordPayrollCorrectionGuarded(user, prev, next, opts = {}) {
  */
 export function archivePayrollBatchGuarded(user, batch, opts = {}) {
   const gate = requirePayrollAction(user, 'archive', batch);
-  if (!gate.ok) return { ok: false, error: gate.error, layer: gate.layer, batch };
+  if (!gate.ok) {
+    reportDenied('archive', batch, gate);
+    return { ok: false, error: gate.error, layer: gate.layer, batch };
+  }
   const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
   return archivePayrollBatch(batch, { ...opts, by: opts.by || actor });
 }

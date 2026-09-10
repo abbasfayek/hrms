@@ -144,7 +144,7 @@ const ALLOWED_COLLECTIONS = [
   'companies', 'users', 'settings', 'employees', 'leaves',
   'overtime', 'loans', 'increments', 'attendance', 'holidays',
   'payrolls', 'eosb', 'hourly_leaves', 'hourly_leave_settings',
-  'audit', 'deleted_records'
+  'audit', 'deleted_records', 'audit_trail'
 ];
 
 function jsonResponse(res, data, status = 200) {

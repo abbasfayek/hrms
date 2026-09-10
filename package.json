@@ -10,6 +10,7 @@
     "i18n:audit": "node scripts/i18n-audit.mjs",
     "migrate": "node scripts/migrate-passwords.mjs",
     "release:test": "node scripts/release-gate-test.mjs",
+    "p5:test": "node scripts/p5-tests.mjs",
     "p21:test": "node scripts/p2-1-tests.mjs",
     "p21:uitest": "node scripts/p2-1-ui-tests.mjs",
     "p22:test": "node scripts/p2-2-tests.mjs",

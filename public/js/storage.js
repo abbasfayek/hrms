@@ -31,6 +31,24 @@ import {
   stampEosbRecord,
   stampLoanRecord,
 } from './engines/currencyGovernance.js';
+// Phase 5 central, append-only, hash-chained audit trail for important
+// financial operations. Additive: the legacy bounded UI log (addAudit /
+// STORAGE_KEYS.AUDIT) and all Phase 1/3 record fields are left untouched.
+import {
+  appendAuditEvent,
+  verifyAuditTrail,
+  newEnvelope,
+  financialFieldsOf,
+  payrollFinancialView,
+  sealForEvent,
+  latestAuditAttempt,
+  rejectionReference,
+  versionIdOfBatch,
+  AUDIT_ACTIONS,
+  AUDIT_RECORD_TYPES,
+} from './engines/auditTrail.js';
+// Security-denial hook: storage registers the audit writer (acyclic).
+import { setAuditDeniedHook } from './engines/payrollAccess.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -51,6 +69,7 @@ const STORAGE_KEYS = {
   EOSB: 'hrms_eosb_v3',
   THEME: 'hrms_theme_v3',
   AUDIT: 'hrms_audit_v3',
+  AUDIT_TRAIL: 'hrms_audit_trail_v3',
   DELETED_RECORDS: 'hrms_deleted_records_v3',
 };
 
@@ -70,6 +89,7 @@ const KEY_TO_COLLECTION = {
   [STORAGE_KEYS.PAYROLLS]: 'payrolls',
   [STORAGE_KEYS.EOSB]: 'eosb',
   [STORAGE_KEYS.AUDIT]: 'audit',
+  [STORAGE_KEYS.AUDIT_TRAIL]: 'audit_trail',
   [STORAGE_KEYS.DELETED_RECORDS]: 'deleted_records',
 };
 
@@ -84,6 +104,13 @@ class StorageService {
     this.tokenRequired = false;
     this.gateChecked = false;
     this._pendingWrites = new Set();
+    // Phase 5: last-known payroll state per month, captured at WRITE time.
+    // PayrollView mutates and re-saves the SAME batch object, so a diff against
+    // the persisted list would always see the post-mutation state. This map
+    // keeps the real previous status/corrections/archive so the audit hook can
+    // derive the true transition. First write of an unknown month = baseline
+    // (seed/migration) and emits NO fabricated event.
+    this._payrollBaselines = new Map();
     this.whenGateChecked = new Promise((resolve) => { this._resolveGateCheck = resolve; });
     this.init();
   }
@@ -212,6 +239,7 @@ class StorageService {
     if (!this.get(STORAGE_KEYS.SELECTED_COMPANY_ID, null)) this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, 'all');
     if (!this.get(STORAGE_KEYS.SELECTED_BRANCH_ID, null)) this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
     ensure(STORAGE_KEYS.DELETED_RECORDS, []);
+    ensure(STORAGE_KEYS.AUDIT_TRAIL, newEnvelope());
     this.notify();
   }
 
@@ -421,6 +449,10 @@ class StorageService {
     this.set(STORAGE_KEYS.PAYROLLS, defaultPayrollBatches);
     this.set(STORAGE_KEYS.EOSB, defaultEOSBCalculations);
     this.notify();
+    // Phase 5: factory reset is a system-level data event. The trail itself is
+    // preserved (its key is not among the reset collections) so the history of
+    // the data being reset remains traceable.
+    this._auditSystem(AUDIT_ACTIONS.DATA_RESET, { reason: 'factory defaults restored', recordId: 'system' });
   }
 
   clearAllData() {
@@ -469,6 +501,9 @@ class StorageService {
     this.set(STORAGE_KEYS.PAYROLLS, []);
     this.set(STORAGE_KEYS.EOSB, []);
     this.notify();
+    // Phase 5: record the wipe in the (preserved) audit trail so it can never
+    // be mistaken for silent data loss.
+    this._auditSystem(AUDIT_ACTIONS.RECORDS_CLEARED, { reason: 'all data cleared', newValue: { clearedAt: now, by: user ? (user.username || user.id) : 'system' } });
   }
 
   get(key, fallback = null) {
@@ -675,6 +710,9 @@ class StorageService {
       eosb: filteredEOSB,
       deletedRecords: filteredDeleted,
       audit: this.get(STORAGE_KEYS.AUDIT, []),
+      // Phase 5 central audit trail (append-only, hash-chained envelope).
+      auditTrail: this._auditEnvelope().events || [],
+      auditTrailMeta: this.getAuditTrailMeta(),
     };
   }
 
@@ -761,7 +799,24 @@ class StorageService {
     const settings = this._governanceSettings();
     const result = setExchangeRate(settings, { ...opts, user: opts.user || this.getActiveUser() });
     if (result.ok && result.rates) {
+      const before = getRates(settings);
       this.saveSettings({ ...settings, exchangeRates: result.rates });
+      const after = getRates({ ...settings, exchangeRates: result.rates });
+      // Phase 5: emit ONE event per real rate-row change (new row, updated
+      // rate, newly locked). No event when nothing actually changed.
+      const oldByPair = new Map(before.map((r) => [`${r.currency}:${r.baseCurrency}`, r]));
+      after.forEach((r) => {
+        const oldEntry = oldByPair.get(`${r.currency}:${r.baseCurrency}`);
+        const isLockedNow = !!r.locked;
+        const wasLocked = !!(oldEntry && oldEntry.locked);
+        if (!oldEntry && isLockedNow) {
+          this._auditExchangeRate(AUDIT_ACTIONS.EXCHANGE_RATE_LOCKED, r.currency, r.baseCurrency, null, r);
+        } else if (isLockedNow && !wasLocked) {
+          this._auditExchangeRate(AUDIT_ACTIONS.EXCHANGE_RATE_LOCKED, r.currency, r.baseCurrency, oldEntry, r);
+        } else if (!isLockedNow && (oldEntry ? String(oldEntry.rate) !== String(r.rate) : true)) {
+          this._auditExchangeRate(oldEntry ? AUDIT_ACTIONS.EXCHANGE_RATE_UPDATED : AUDIT_ACTIONS.EXCHANGE_RATE_SET, r.currency, r.baseCurrency, oldEntry || null, r);
+        }
+      });
     }
     return result;
   }
@@ -780,7 +835,13 @@ class StorageService {
       if (unlockedAfter < unlockedBefore) changed = true;
       settings = { ...settings, exchangeRates: rates };
     });
-    if (changed) this.saveSettings(settings);
+    if (changed) {
+      this.saveSettings(settings);
+      // Phase 5: explicit lock events for the rows that were just locked.
+      getRates(settings).forEach((r) => {
+        if (r.locked) this._auditExchangeRate(AUDIT_ACTIONS.EXCHANGE_RATE_LOCKED, r.currency, r.baseCurrency, null, r);
+      });
+    }
   }
 
   // ==================================================================
@@ -1049,7 +1110,29 @@ class StorageService {
   }
 
   // Loans Mutators
-  saveLoans(loans) { this.set(STORAGE_KEYS.LOANS, loans); }
+  saveLoans(loans) {
+    const beforeById = new Map((this.get(STORAGE_KEYS.LOANS, []) || []).map((l) => [String(l.id), l]));
+    this.set(STORAGE_KEYS.LOANS, loans);
+    // Phase 5: loan-payment disbursements (PayrollView release / Loan receipt).
+    // Emit a `paid` event ONLY when a loan's paid amount actually increased.
+    (loans || []).forEach((loan) => {
+      const before = beforeById.get(String(loan.id));
+      const prevPaid = before ? (Number(before.paidAmount) || 0) : 0;
+      const prevRemaining = before ? (Number(before.remainingAmount) || 0) : 0;
+      const nextPaid = Number(loan.paidAmount) || 0;
+      const nextRemaining = Number(loan.remainingAmount) || (prevRemaining - (nextPaid - prevPaid));
+      if (nextPaid > prevPaid) {
+        const prevStatus = before ? ((before.status) || 'active') : 'draft';
+        this._auditLoan(loan, AUDIT_ACTIONS.PAID, {
+          fromStatus: prevStatus,
+          toStatus: (nextRemaining <= 0.0001) ? 'settled' : (loan.status || 'active'),
+          oldValue: before ? { status: prevStatus, paidAmount: prevPaid, remainingAmount: prevRemaining } : null,
+          newValue: { status: (nextRemaining <= 0.0001) ? 'settled' : (loan.status || 'active'), paidAmount: nextPaid, remainingAmount: nextRemaining },
+          reason: 'loan installment disbursed',
+        });
+      }
+    });
+  }
   // P2.2: no advance may be registered without an explicit currency. When the
   // caller omits it, the loan inherits the employee's resolved salary currency
   // (employee > company > global settings); 'USD' is the final fallback for
@@ -1083,6 +1166,11 @@ class StorageService {
     list.unshift(loan);
     this.set(STORAGE_KEYS.LOANS, list);
     if (follow.length) this._lockRatesForCodes(follow);
+    // Phase 5: a loan entering the system is a real financial event.
+    this._auditLoan(loan, AUDIT_ACTIONS.CREATED, {
+      toStatus: loan.status || 'draft',
+      newValue: { status: loan.status || 'draft', totalAmount: Number(loan.totalAmount) || 0, remainingAmount: Number(loan.remainingAmount) || 0, currency: loan.currency || null },
+    });
   }
   updateLoan(loan) {
     if (!loan || !loan.id) return { ok: false, error: 'invalid_record' };
@@ -1101,9 +1189,30 @@ class StorageService {
     const list = this.get(STORAGE_KEYS.LOANS, []);
     const idx = list.findIndex((l) => l && l.id === loan.id);
     if (idx === -1) return { ok: false, error: 'not_found' };
+    const stored = list[idx];
     list[idx] = loan;
     this.set(STORAGE_KEYS.LOANS, list);
     if (follow.length) this._lockRatesForCodes(follow);
+    // Phase 5: only a REAL change is an event (no fabricated edits).
+    const fields = ['totalAmount', 'paidAmount', 'remainingAmount', 'installmentAmount', 'installmentsCount', 'status', 'currency', 'startDate'];
+    const changed = fields.some((f) => {
+      const a = stored ? stored[f] : undefined;
+      const b = loan[f];
+      if (typeof a === 'number' || typeof b === 'number') {
+        const na = Number(a) || 0;
+        const nb = Number(b) || 0;
+        return Math.abs(na - nb) > 0.0001;
+      }
+      return String(a ?? '') !== String(b ?? '');
+    });
+    if (changed) {
+      this._auditLoan(loan, AUDIT_ACTIONS.UPDATED, {
+        fromStatus: (stored && stored.status) || 'active',
+        toStatus: (loan && loan.status) || 'active',
+        oldValue: stored ? { status: (stored && stored.status) || 'active', totalAmount: Number(stored.totalAmount) || 0, remainingAmount: Number(stored.remainingAmount) || 0, currency: stored.currency || null } : null,
+        newValue: { status: (loan && loan.status) || 'active', totalAmount: Number(loan.totalAmount) || 0, remainingAmount: Number(loan.remainingAmount) || 0, currency: loan.currency || null },
+      });
+    }
     return { ok: true, saved: loan };
   }
   deleteLoan(loanId) {
@@ -1130,6 +1239,10 @@ class StorageService {
     // payroll is never silently reverted to draft/approved by a stale device
     // pushing an older copy of the same month during the next sync.
     if (batch && typeof batch === 'object') batch.updatedAt = new Date().toISOString();
+    // Phase 5: capture the last KNOWN state of this month (captured at the
+    // previous write — the aliased object may already carry the new status).
+    const monthKey = String(batch && batch.month !== undefined ? batch.month : (batch && batch.id));
+    const baseline = monthKey ? (this._payrollBaselines.get(monthKey) || null) : null;
     // Phase 4: stamp transaction-level exchange-rate snapshots (items +
     // totalsByCurrency + governance summary). Purely additive; already-sealed
     // committed records are never re-stamped, missing-rate records are never
@@ -1141,6 +1254,7 @@ class StorageService {
     } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.PAYROLLS, []);
     const idx = list.findIndex((b) => b.month === batch.month);
+    const hadStored = idx !== -1;
     if (idx !== -1) list[idx] = batch;
     else list.unshift(batch);
     this.set(STORAGE_KEYS.PAYROLLS, list);
@@ -1153,6 +1267,17 @@ class StorageService {
         if (it && it.currency && it.exchangeRateStatus === 'ok') lockCandidates.add(String(it.currency));
       });
       if (lockCandidates.size) this._lockRatesForCodes([...lockCandidates]);
+    }
+    // Phase 5: derive the transition against the last-known baseline, then
+    // record THIS write as the new baseline. Plain re-saves emit nothing.
+    if (monthKey) {
+      this._auditPayroll(baseline, batch, { hadStored });
+      this._payrollBaselines.set(monthKey, {
+        status: batch.status || 'draft',
+        correctionsLen: (batch.corrections || []).length || 0,
+        archived: !!batch.archived,
+        view: payrollFinancialView(batch),
+      });
     }
   }
 
@@ -1171,9 +1296,19 @@ class StorageService {
       follow = stamped.followCurrencies || [];
     } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.EOSB, []);
+    const alreadyStored = list.some((e) => e && (e.id === eosb.id || e.employeeId === eosb.employeeId));
     list.unshift(eosb);
     this.set(STORAGE_KEYS.EOSB, list);
     if (follow.length) this._lockRatesForCodes(follow);
+    // Phase 5: created event only when this is genuinely a NEW settlement
+    // (re-adding an existing one is data synchronization, not an event).
+    if (!alreadyStored) {
+      this._auditEosb(eosb, AUDIT_ACTIONS.CREATED, {
+        fromStatus: null,
+        toStatus: eosb.status || 'draft',
+        reason: eosb.notes || '',
+      });
+    }
   }
   deleteEOSB(eosbId) {
     const list = this.get(STORAGE_KEYS.EOSB, []);
@@ -1185,8 +1320,21 @@ class StorageService {
     const list = this.get(STORAGE_KEYS.EOSB, []);
     const idx = list.findIndex((e) => e && (e.id === id || e.employeeId === id));
     if (idx === -1) return false;
-    list[idx] = { ...list[idx], ...patch, updatedAt: new Date().toISOString() };
+    const stored = list[idx];
+    const merged = { ...stored, ...patch, updatedAt: new Date().toISOString() };
+    // Phase 5: map the REAL stored→next transition to an audit event.
+    const mapped = this._eosbEventAction(stored, merged);
+    list[idx] = merged;
     this.set(STORAGE_KEYS.EOSB, list);
+    this._auditEosb(merged, mapped.action, {
+      fromStatus: stored.status || 'draft',
+      toStatus: merged.status || 'draft',
+      oldValue: { status: stored.status || 'draft', netSettlementAmount: Number(stored.netSettlementAmount) || 0 },
+      newValue: { status: merged.status || 'draft', netSettlementAmount: Number(merged.netSettlementAmount) || 0 },
+      reason: mapped.reason || (stored.rejectionReason && mapped.action === AUDIT_ACTIONS.REJECTED ? stored.rejectionReason : undefined),
+      rejection: merged.rejectedBy ? { rejectedBy: merged.rejectedBy, rejectedAt: merged.rejectedAt, rejectionReason: merged.rejectionReason || stored.rejectionReason || null, returnState: 'correction' } : null,
+      by: merged.approvedBy || merged.paidBy || merged.rejectedBy || merged.submittedBy || '',
+    });
     return true;
   }
 
@@ -1244,6 +1392,344 @@ class StorageService {
     entries.unshift(entry);
     this.saveAuditLog(entries.slice(0, 2000));
     return entry;
+  }
+
+  // ==============================================
+  // Phase 5 — Central append-only audit trail
+  // (hash-chained, tamper-evident; additive to the UI log above)
+  // ==============================================
+
+  _auditEnvelope() {
+    const raw = this.get(STORAGE_KEYS.AUDIT_TRAIL, null);
+    if (raw && typeof raw === 'object' && Array.isArray(raw.events)) return raw;
+    return newEnvelope();
+  }
+
+  // Append a Phase 5 event. Never throws — an audit failure must never break
+  // a financial save. Returns the sealed event (or null on failure).
+  appendAuditEvent(payload) {
+    try {
+      const result = appendAuditEvent(this._auditEnvelope(), payload);
+      this.set(STORAGE_KEYS.AUDIT_TRAIL, result.envelope);
+      return result.event;
+    } catch (e) {
+      console.error('Audit trail append failed:', e);
+      return null;
+    }
+  }
+
+  getAuditTrail() {
+    return this._auditEnvelope().events || [];
+  }
+
+  getAuditTrailMeta() {
+    const env = this._auditEnvelope();
+    return { count: (env.events || []).length, chainHead: env.chainHead || null, schema: env.schema || null };
+  }
+
+  // Recompute the full hash chain. Returns { valid, count, brokenAt, head }.
+  auditTrailIntegrity() {
+    return verifyAuditTrail(this._auditEnvelope());
+  }
+
+  _actor(user) {
+    if (!user || typeof user !== 'object') user = this.getActiveUser();
+    if (!user || typeof user !== 'object') return { id: 'system', name: 'System', role: 'system' };
+    return {
+      id: String(user.id || user.username || 'unknown'),
+      name: String(user.name || user.username || user.role || 'unknown'),
+      role: String(user.role || 'unknown'),
+    };
+  }
+
+  // Central "actor" for a record event: prefers the auditable author stamped
+  // on the record (transition actor), falls back to the session user.
+  _recordActor(authorName) {
+    const active = this._actor(this.getActiveUser());
+    if (!authorName) return active;
+    return { ...active, name: String(authorName), id: String(authorName) };
+  }
+
+  // ------------------------------------------------------------------
+  // Payroll event derivation — the single choke point (addPayrollBatch).
+  // `base` is the last-known state captured at the previous write (status +
+  // corrections count + archive flag + frozen financial view). Compares it to
+  // the just-saved batch and emits ONE event per REAL change. A plain re-save
+  // (same status, no new correction, no archive flip) emits nothing, so a
+  // noise draft re-save can never fabricate a workflow event.
+  // ------------------------------------------------------------------
+  _auditPayroll(base, batch, opts = {}) {
+    try {
+      const toStatus = batch.status || 'draft';
+      const hasBase = !!(base && base.status);
+      const hadStored = !!opts.hadStored;
+      const fromStatus = hasBase ? base.status : null;
+      let action = null;
+      let extra = {};
+      let corrections = null;
+
+      if (!hasBase && !hadStored) {
+        // Brand-new month entering the system → a real Creation. Attribute to
+        // the record's own author when present (incl. records merged in from
+        // another device), else the acting user.
+        action = AUDIT_ACTIONS.CREATED;
+        extra.by = batch.createdBy || batch.addedBy || batch.by || '';
+      } else if (!hasBase && hadStored) {
+        // Seeded/migrated month: first save of content we already persisted.
+        // This is a baseline, NOT a fabrication — emit nothing.
+        return;
+      } else if (fromStatus === toStatus) {
+        const prevCorr = base.correctionsLen || 0;
+        const nextCorr = (batch.corrections || []).length || 0;
+        if (nextCorr > prevCorr) {
+          action = AUDIT_ACTIONS.CORRECTED;
+          const corr = (batch.corrections || [])[nextCorr - 1];
+          corrections = corr && Array.isArray(corr.changes) ? corr.changes.map((c) => ({
+            employeeId: c.employeeId,
+            employeeName: c.employeeName,
+            field: c.field,
+            oldValue: Number(c.oldValue) || 0,
+            newValue: Number(c.newValue) || 0,
+          })) : [];
+          extra.by = (corr && corr.by) || '';
+          extra.reason = (corr && corr.reason) || '';
+          extra.revision = corr ? corr.toVersion : batch.revision;
+        } else if (!base.archived && batch.archived) {
+          action = AUDIT_ACTIONS.ARCHIVE;
+          extra.by = batch.archivedBy || '';
+          extra.reason = (batch.archiveReference && batch.archiveReference.reason) || 'salary archive';
+        }
+        // else: no real change → NO event.
+      } else if (fromStatus === 'rejected' && toStatus === 'under_audit') {
+        action = AUDIT_ACTIONS.RESUBMITTED;
+        extra.by = batch.resubmittedBy || '';
+      } else if (fromStatus === 'draft' && toStatus === 'under_audit') {
+        action = AUDIT_ACTIONS.SUBMITTED;
+        extra.by = batch.transferredToAuditBy || '';
+      } else if (fromStatus === 'under_audit' && toStatus === 'approved') {
+        action = AUDIT_ACTIONS.APPROVED;
+        extra.by = batch.auditedBy || '';
+      } else if (fromStatus === 'under_audit' && toStatus === 'rejected') {
+        action = AUDIT_ACTIONS.REJECTED;
+        extra.by = batch.rejectedBy || '';
+        extra.reason = batch.rejectionReason || '';
+        extra.rejection = rejectionReference(batch);
+        extra.auditNotes = batch.auditNotes ? String(batch.auditNotes) : null;
+      } else if (fromStatus === 'approved' && toStatus === 'paid') {
+        action = AUDIT_ACTIONS.PAID;
+        extra.by = batch.paidBy || batch.releasedBy || '';
+        extra.reason = (batch.paymentReference && batch.paymentReference.status) || '';
+        extra.paymentReference = batch.paymentReference ? {
+          referenceId: batch.paymentReference.referenceId || null,
+          executedAt: batch.paymentReference.executedAt || null,
+          executedBy: batch.paymentReference.executedBy || null,
+        } : null;
+      } else if (fromStatus === 'paid' && toStatus === 'approved') {
+        // A paid→approved save would normally be cancelled payment; payroll
+        // has no such workflow (EOSB does) — record it honestly as data.
+        action = AUDIT_ACTIONS.UPDATED;
+      } else {
+        action = AUDIT_ACTIONS.UPDATED;
+      }
+
+      if (!action) return; // no change → nothing appended (actual events only)
+
+      const actor = this._recordActor(extra.by || undefined);
+      const attempt = latestAuditAttempt(batch, action);
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.PAYROLL,
+        recordId: String(batch.month !== undefined ? batch.month : (batch.id || 'unknown')),
+        action,
+        outcome: 'success',
+        actor,
+        fromStatus,
+        toStatus,
+        oldValue: base && base.view ? base.view : null,
+        newValue: payrollFinancialView(batch),
+        reason: extra.reason || '',
+        versionId: versionIdOfBatch(batch),
+        auditAttempt: attempt,
+        rejection: extra.rejection || null,
+        corrections,
+        reasonKind: action === AUDIT_ACTIONS.REJECTED ? 'rejection' : action === AUDIT_ACTIONS.CORRECTED ? 'correction' : action === AUDIT_ACTIONS.ARCHIVE ? 'archive' : action === AUDIT_ACTIONS.PAID ? 'payment' : null,
+        financial: payrollFinancialView(batch),
+        paymentReference: extra.paymentReference || null,
+        auditNotes: extra.auditNotes || null,
+      };
+      this.appendAuditEvent(event);
+    } catch (e) {
+      console.error('Payroll audit failed:', e);
+    }
+  }
+
+  _auditEosb(record, action, opts = {}) {
+    try {
+      const author = opts.by || record.approvedBy || record.paidBy || record.rejectedBy || record.submittedBy || record.createdBy || record.by || '';
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.EOSB,
+        recordId: String(record.id || record.employeeId || 'unknown'),
+        action,
+        outcome: 'success',
+        actor: this._recordActor(author),
+        fromStatus: opts.fromStatus != null ? opts.fromStatus : null,
+        toStatus: opts.toStatus != null ? opts.toStatus : (record.status || 'draft'),
+        oldValue: opts.oldValue != null ? opts.oldValue : null,
+        newValue: opts.newValue != null ? opts.newValue : { status: record.status || 'draft', netSettlementAmount: Number(record.netSettlementAmount) || 0 },
+        reason: opts.reason || opts.rejectionReason || '',
+        versionId: null,
+        auditAttempt: null,
+        rejection: opts.rejection || rejectionReference(record) || null,
+        corrections: opts.corrections || null,
+        financial: financialFieldsOf(record, { defaultCurrency: record.salaryCurrency || record.currency || null }),
+      };
+      this.appendAuditEvent(event);
+    } catch (e) {
+      console.error('EOSB audit failed:', e);
+    }
+  }
+
+  // Canonical action for an EOSB status change (EOSBView drives the workflow
+  // with direct patches, so this maps the REAL stored->next transition).
+  _eosbEventAction(stored, merged) {
+    const from = stored ? (stored.status || 'draft') : null;
+    const to = merged ? (merged.status || 'draft') : 'draft';
+    if ((to === 'draft' || to === 'rejected') && merged.rejectedBy && (from === 'under_audit' || from === 'approved')) {
+      return { action: AUDIT_ACTIONS.REJECTED, reason: merged.rejectionReason || '' };
+    }
+    if (to === 'under_audit' && stored && stored.rejectedBy) {
+      return { action: AUDIT_ACTIONS.RESUBMITTED, reason: '' };
+    }
+    if (from === 'draft' && to === 'under_audit') {
+      return { action: AUDIT_ACTIONS.SUBMITTED, reason: '' };
+    }
+    if (from === 'paid' && to === 'approved') {
+      return { action: AUDIT_ACTIONS.CANCEL_PAYMENT, reason: '' };
+    }
+    if (to === 'approved') {
+      return { action: AUDIT_ACTIONS.APPROVED, reason: '' };
+    }
+    if (from === 'approved' && to === 'paid') {
+      return { action: AUDIT_ACTIONS.PAID, reason: '' };
+    }
+    if (!stored) {
+      return { action: AUDIT_ACTIONS.CREATED, reason: '' };
+    }
+    return { action: AUDIT_ACTIONS.UPDATED, reason: '' };
+  }
+
+  _auditLoan(record, action, opts = {}) {
+    try {
+      const author = (action === AUDIT_ACTIONS.CREATED && record && (record.createdBy || record.by)) || opts.by || '';
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.LOAN,
+        recordId: String((record && record.id) || 'unknown'),
+        action,
+        outcome: 'success',
+        actor: author ? this._recordActor(String(author)) : this._actor(this.getActiveUser()),
+        fromStatus: opts.fromStatus != null ? opts.fromStatus : null,
+        toStatus: opts.toStatus != null ? opts.toStatus : (record && record.status ? record.status : null),
+        oldValue: opts.oldValue != null ? opts.oldValue : null,
+        newValue: opts.newValue != null ? opts.newValue : null,
+        reason: (opts.reason || '').slice(0, 500),
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        financial: financialFieldsOf(record, { defaultCurrency: (record && record.currency) || null }),
+      };
+      this.appendAuditEvent(event);
+    } catch (e) {
+      console.error('Loan audit failed:', e);
+    }
+  }
+
+  _auditExchangeRate(action, currency, baseCurrency, oldEntry, newEntry) {
+    try {
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.EXCHANGE_RATE,
+        recordId: `${currency}:${baseCurrency}`,
+        action,
+        outcome: 'success',
+        actor: this._actor(this.getActiveUser()),
+        fromStatus: null,
+        toStatus: newEntry && newEntry.locked ? 'locked' : 'active',
+        oldValue: oldEntry ? sealForEvent(oldEntry) : null,
+        newValue: sealForEvent(newEntry),
+        reason: (newEntry && newEntry.note) ? String(newEntry.note).slice(0, 500) : '',
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        financial: financialFieldsOf({
+          currency,
+          exchangeRate: newEntry ? newEntry.rate : null,
+          exchangeRateDate: newEntry ? newEntry.rateDate : null,
+          baseCurrency,
+        }),
+      };
+      this.appendAuditEvent(event);
+    } catch (e) {
+      console.error('Exchange-rate audit failed:', e);
+    }
+  }
+
+  _auditDenied(recordType, recordId, action, opts = {}) {
+    try {
+      const event = {
+        recordType,
+        recordId: String(recordId || 'unknown'),
+        action: AUDIT_ACTIONS.DENIED,
+        outcome: 'denied',
+        actor: this._actor(this.getActiveUser()),
+        fromStatus: opts.fromStatus != null ? opts.fromStatus : null,
+        toStatus: opts.toStatus != null ? opts.toStatus : null,
+        oldValue: null,
+        newValue: {
+          requestedAction: action,
+          error: opts.error || 'forbidden',
+          layer: opts.layer || 'permission',
+          reason: opts.reason || '',
+        },
+        reason: opts.reason || (opts.error || 'forbidden'),
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        financial: null,
+      };
+      this.appendAuditEvent(event);
+    } catch (e) { /* never break the caller */ }
+  }
+
+  // Accessors used by the payroll guarded layer (security-denied attempts).
+  auditDeniedPayroll(recordId, action, opts = {}) {
+    this._auditDenied(AUDIT_RECORD_TYPES.PAYROLL, recordId, action, opts);
+  }
+  auditDeniedEosb(recordId, action, opts = {}) {
+    this._auditDenied(AUDIT_RECORD_TYPES.EOSB, recordId, action, opts);
+  }
+
+  _auditSystem(action, opts = {}) {
+    try {
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.SYSTEM,
+        recordId: opts.recordId || action,
+        action,
+        outcome: 'success',
+        actor: this._actor(this.getActiveUser()),
+        fromStatus: null,
+        toStatus: null,
+        oldValue: opts.oldValue != null ? opts.oldValue : null,
+        newValue: opts.newValue != null ? opts.newValue : null,
+        reason: opts.reason || '',
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        financial: null,
+      };
+      this.appendAuditEvent(event);
+    } catch (e) { /* never break the caller */ }
   }
 
   // ==============================================
@@ -1393,6 +1879,9 @@ class StorageService {
       }
       await this.syncFromServer();
       this.notify();
+      // Phase 5: a backup restore is a system-level data event recorded in the
+      // trail that the restore produced (the whole store was replaced).
+      this._auditSystem(AUDIT_ACTIONS.BACKUP_RESTORED, { reason: 'backup file restored', oldValue: null, newValue: { imported: Object.keys(payload) } });
       return { success: true };
     } catch (e) {
       return { success: false, error: String(e.message || e) };
@@ -1401,3 +1890,11 @@ class StorageService {
 }
 
 export const storage = new StorageService();
+
+// Phase 5: route payroll guard denials into the central audit trail.
+setAuditDeniedHook((info) => storage.auditDeniedPayroll(info.recordId, info.action, {
+  error: info.error,
+  layer: info.layer,
+  reason: info.reason,
+  fromStatus: info.fromStatus,
+}));
