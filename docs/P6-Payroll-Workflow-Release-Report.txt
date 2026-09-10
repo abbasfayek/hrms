@@ -1,6 +1,7 @@
 ================================================================================
 PHASE 6 — PAYROLL WORKFLOW (COMMIT HASH: 7f34aa4)
   Release Report — Financial Workflow & Currency Specification v1.0
+  Follow-up fix commit: d6a90b3 (correction baseline-loss bug, see §13b)
 ================================================================================
 
 --------------------------------------------------------------------------------
@@ -39,6 +40,16 @@ no Phase 7/8 work, no new business policies, no formula changes.
   A scripts/p6-tests.mjs                      NEW Payroll Workflow E2E suite
                                               (118 assertions, node scripts/p6-tests.mjs)
   A docs/P6-Payroll-Workflow-Release-Report.txt  this report
+
+  FIX COMMIT d6a90b3 (separate, see §13b):
+  M public/js/engines/payrollEngine.js       recordPayrollCorrection preserves
+                                             sealed history when the UI passes a
+                                             freshly regenerated (history-less)
+                                             batch object
+  M scripts/p6-tests.mjs                     NEW section F — real-UI Pipeline A
+                                             regression (24 assertions)
+  A docs/P6-BUG-Correction-Baseline-Loss.txt bug report (kept) - root cause,
+                                             impact, repro, fix, regression test
 
 --------------------------------------------------------------------------------
 3. WORKFLOW (verified end-to-end through the REAL public surfaces: guard stack
@@ -156,27 +167,67 @@ under_audit->approved|rejected; rejected->under_audit; approved->paid; paid->[] 
   * storage clear/reset now also drops the local baseline map (fix below)
 
 --------------------------------------------------------------------------------
-13. BUG FIXED (REAL BUG FOUND DURING PHASE 6)
+13. BUGS FOUND & FIXED DURING PHASE 6 (REAL BUGS, REAL UI SURFACES)
 --------------------------------------------------------------------------------
+  Bug #1 — stale last-known-state baselines after data wipe:
   storage.clearAllData() / resetToDefaults() did not clear the in-memory
   last-known-state payroll baselines (`this._payrollBaselines`). After a data
   clear or factory reset, re-creating the SAME month as a new draft was audited
   as a stale 'updated'/'paid' transition instead of a genuine CREATED record.
-  Fixed by clearing the map in both wipe paths (additive; verified by P6 E2E
-  isolation and all regression gates).
+Fixed by clearing the map in both wipe paths (additive; verified by P6 E2E
+   isolation and all regression gates).
 
 --------------------------------------------------------------------------------
-14. TEST RESULTS
+13b. BUG FIXED #2 — CORRECTION ERASED SEALED HISTORY (found by manual-browser
+     verification of the returned-card flow; fix commit d6a90b3)
 --------------------------------------------------------------------------------
-  Phase 6 Payroll Workflow E2E (scripts/p6-tests.mjs): 118/118 passed
+  SYMPTOM: pressing "Recalculate & Record Correction" on a Returned card then
+  Resubmitting silently dropped the record's `baselineSnapshot`,
+  `rejectedSnapshot` and version chain; `originalFinancialValues()` returned
+  NULL and the chain was truncated to [corrected] instead of
+  [under_audit, rejected, corrected]. Historical financial snapshots were lost.
+  ROOT CAUSE: recordPayrollCorrection(prev, next) copied only the rejection
+  metadata from prev (rejectedBy/At, rejectionReason, auditNotes). The real UI
+  hands `next` = a FRESH generateMonthlyPayroll() object (id/month/totals/
+  items/totalsByCurrency/createdAt only) — no baselineSnapshot, no
+  rejectedSnapshot, no versions, revision 0 — so the old code wrote over the
+  stored history instead of extending it.
+  WHY UNDETECTED EARLIER: the original E2E corrected a CLONE of the rejected
+  batch (carried all fields), so every attempt/version/baseline assertion
+  passed (118/118). Only the jsdom browser-level driver that fed the REAL
+  PayrollView recalc path exposed the regression; a minimal two-pipeline probe
+  (PIPELINE A = fresh object, PIPELINE B = clone) reproduced it deterministically.
+  FIX (engine data-model layer, NOT a UI-only patch): the existing history is
+  authoritative. recordPayrollCorrection now (a) converges on `prev` for
+  baselineSnapshot / rejectedSnapshot whenever `next` carries none,
+  (b) seeds `next.versions` from prev's chain and only EXTENDS it (dedup by
+  versionId), (c) continues revision numbering from prev (never restarts at 1).
+  Any history-less new object can now only append to a Returned record — it can
+  never erase existing history. No formula / policy / state-machine /
+  permission / currency changes.
+  REGRESSION TEST: p6-tests.mjs section F reproduces the EXACT real-UI path
+  (CREATE -> SUBMIT -> REJECT -> salary edit 6000 -> 6500 -> FRESH
+  generateMonthlyPayroll() correction -> RESUBMIT) and FAILS if any of
+  baselineSnapshot / rejectedSnapshot / versions / auditAttempts /
+  originalFinancialValues disappear, or if the chain, single-record identity,
+  old/new change log, reason/user stamps, currency segment or audit sequence
+  regress (F0-F23). Old tests untouched; P6 grew 118 -> 142 assertions.
+
+--------------------------------------------------------------------------------
+14. TEST RESULTS (final, after fix commit d6a90b3)
+--------------------------------------------------------------------------------
+  Phase 6 Payroll Workflow E2E (scripts/p6-tests.mjs): 142/142 passed
     A. Official path on a manual batch incl. reject/correct/resubmit + illegal
        ops + duplicate pay + re-archive + snapshot preservation   (A1-A81)
     B. Archive only after Paid                                    (B1-B3)
     C. Role/permission isolation (13 illegal attempts all denied) (C1-C17)
     D. Scope enforcement + in-scope allowance                     (D1-D6)
     E. Official happy path on a genuinely GENERATED batch         (E1-E12)
+    F. BUG REGRESSION: real-UI fresh-object correction preserves ALL sealed
+       history (baseline, rejected snapshot, versions, attempts, original
+       financial values, single record, audit sequence)           (F0-F23, NEW)
 
-  GATES (all must pass, run after Phase 6 changes):
+  GATES (all PASS after fix commit d6a90b3):
     P5   Central Audit Trail           61/61  PASS
     P4   Currency Governance          140/140 PASS
     P3   Data Model / Versions         66/66  PASS
@@ -186,6 +237,9 @@ under_audit->approved|rejected; rejected->under_audit; approved->paid; paid->[] 
     P2.1 UI automation                 31/31  PASS
     Release gate                       66/66  PASS
     Build (vite)                              OK
+  Baseline probe (PIPELINE A vs B): after fix BOTH preserve
+  baseline/rejectedSnapshot and yield [under_audit,rejected,corrected,resubmitted]
+  with originalFinancialValues available; PIPELINE A == PIPELINE B.
   i18n audit: diagnostic only (not a gate).
 
 --------------------------------------------------------------------------------
@@ -200,5 +254,9 @@ under_audit->approved|rejected; rejected->under_audit; approved->paid; paid->[] 
   * Export remains permission-gated in the UI (payroll.export); the state
     machine does not restrict export.
   * No new business policies or financial formulas were introduced.
-  * Perform a manual UI smoke test of the returned-card correction button +
-    Resubmit flow in the browser before rollback-window close (recommended).
+  * Manual-browser verification of the returned-card flow (jsdom driver driving
+    the REAL PayrollView) was executed: create -> submit -> reject -> recalc &
+    record correction (6000 -> 6500) -> resubmit all passed EXCEPT the sealed-
+    history loss documented in §13b; that bug was fixed and is now covered by
+    section F of the E2E suite. Bug report retained:
+    docs/P6-BUG-Correction-Baseline-Loss.txt.
