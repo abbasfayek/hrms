@@ -523,6 +523,30 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
 }
 
 /**
+ * Archive a paid payroll batch. Archiving is an orthogonal, guarded operation
+ * (Phase 2: permissions), NOT a new state-machine transition: the batch stays
+ * in the terminal 'paid' state and receives an archival stamp so the financial
+ * record still exists but is clearly retired from the active disbursed list.
+ * Works on a clone — the input is never mutated.
+ */
+export function archivePayrollBatch(batch, opts = {}) {
+  if (!batch) return { ok: false, error: 'no_batch', batch };
+  if ((batch.status || 'draft') !== 'paid') {
+    return { ok: false, error: `archive_requires_paid:${batch.status}`, batch };
+  }
+  const next = cloneBatch(batch);
+  const now = new Date().toISOString();
+  const actor = opts.by || '';
+  next.archived = true;
+  next.archivedAt = now;
+  next.archivedBy = actor;
+  next.updatedAt = now;
+  next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
+  next.auditHistory.push({ action: 'archive', from: 'paid', to: 'paid', by: actor, at: now, reason: opts.reason || 'salary archive' });
+  return { ok: true, batch: next };
+}
+
+/**
  * Legacy P2.2 "reject-and-return" rule: when the Financial Audit rejects a
  * payroll, EVERY monetary figure in the batch is wiped to zero (statement renders as
  * empty/zeros instead of showing the previously submitted amounts) and the

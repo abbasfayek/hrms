@@ -12,7 +12,8 @@
     "release:test": "node scripts/release-gate-test.mjs",
     "p21:test": "node scripts/p2-1-tests.mjs",
     "p21:uitest": "node scripts/p2-1-ui-tests.mjs",
-    "p22:test": "node scripts/p2-2-tests.mjs"
+    "p22:test": "node scripts/p2-2-tests.mjs",
+    "p22:roles:test": "node scripts/p2-2-roles-tests.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",

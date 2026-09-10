@@ -55,6 +55,30 @@ export const USER_ROLES = {
     descEn: 'Restricted access to a specific branch only',
     badgeClass: 'badge-warning',
   },
+  payroll_admin: {
+    id: 'payroll_admin',
+    nameAr: 'مسؤول الرواتب (تدوير الرواتب)',
+    nameEn: 'Payroll Admin',
+    descAr: 'إنشاء وتعديل مسيرات الرواتب وترحيلها للتدقيق المالي',
+    descEn: 'Creates, edits and submits payroll batches to financial audit',
+    badgeClass: 'badge-purple',
+  },
+  audit_reviewer: {
+    id: 'audit_reviewer',
+    nameAr: 'مدقق مالي (مراجع التدقيق)',
+    nameEn: 'Audit Reviewer',
+    descAr: 'مراجعة المسيرات، وقبولها أو ردّها للتصحيح',
+    descEn: 'Reviews payroll batches and approves or rejects/returns them',
+    badgeClass: 'badge-cyan',
+  },
+  payments_officer: {
+    id: 'payments_officer',
+    nameAr: 'موظف الصرف المالي',
+    nameEn: 'Payments Officer',
+    descAr: 'تنفيذ عمليات الصرف للرواتب المعتمدة فقط',
+    descEn: 'Executes disbursement of approved payrolls only',
+    badgeClass: 'badge-gold',
+  },
 };
 
 // =========================================================
@@ -90,7 +114,7 @@ export const ALL_PERMISSIONS = [
   'loans.view', 'loans.add', 'loans.edit', 'loans.pay', 'loans.delete',
   'increments.view', 'increments.add', 'increments.edit', 'increments.delete',
   'deductions.view', 'deductions.add', 'deductions.edit', 'deductions.delete',
-  'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.approve', 'payroll.export', 'payroll.disburse',
+  'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.approve', 'payroll.reject', 'payroll.submit', 'payroll.cancelPayment', 'payroll.archive', 'payroll.export', 'payroll.disburse',
   'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.delete',
   'companies.view', 'companies.manage',
   'reports.view', 'reports.export',
@@ -141,6 +165,10 @@ export const PERMISSIONS = {
   'payroll.generate': { module: 'payroll', ar: 'إنشاء / إعادة احتساب المسير', en: 'Generate payroll' },
   'payroll.edit': { module: 'payroll', ar: 'تعديل مسير قبل الاعتماد', en: 'Edit draft payroll' },
   'payroll.approve': { module: 'payroll', ar: 'تدقيق المسير واعتماده', en: 'Audit & approve payroll' },
+  'payroll.reject': { module: 'payroll', ar: 'رد المسير للتصحيح (Returned)', en: 'Reject / return payroll for correction' },
+  'payroll.submit': { module: 'payroll', ar: 'ترحيل المسير للتدقيق المالي', en: 'Submit payroll to financial audit' },
+  'payroll.cancelPayment': { module: 'payroll', ar: 'إلغاء الصرف لحالة مدفوعة', en: 'Cancel payment on a paid batch' },
+  'payroll.archive': { module: 'payroll', ar: 'أرشفة مسير مصروف', en: 'Archive a paid payroll batch' },
   'payroll.export': { module: 'payroll', ar: 'تصدير ملف الرواتب البنكي', en: 'Export bank payroll file' },
   'payroll.disburse': { module: 'payroll', ar: 'صرف الرواتب مالياً', en: 'Disburse salaries' },
   'eosb.view': { module: 'eosb', ar: 'عرض نهاية الخدمة', en: 'View end of service' },
@@ -173,7 +201,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     'loans.view', 'loans.add', 'loans.edit', 'loans.pay', 'loans.delete',
     'increments.view', 'increments.add', 'increments.edit', 'increments.delete',
     'deductions.view', 'deductions.add', 'deductions.edit', 'deductions.delete',
-'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.approve', 'payroll.export',
+'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.submit', 'payroll.export',
     'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.pay', 'eosb.delete',
     'companies.view', 'companies.manage',
     'reports.view', 'reports.export',
@@ -193,6 +221,32 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     'payroll.view', 'payroll.generate',
     'eosb.view', 'eosb.calculate',
     'companies.view',
+    'reports.view',
+  ],
+  // Phase 2 (Spec v1.0): Payroll Admin creates/edits batches and submits them
+  // to financial audit. It may NOT approve, reject, disburse or archive.
+  payroll_admin: [
+    'dashboard.view',
+    'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.submit', 'payroll.export',
+    'reports.view',
+  ],
+  // Phase 2 (Spec v1.0): Audit Reviewer approves or rejects/returns submitted
+  // payrolls. It may NOT generate, edit, submit, pay or archive.
+  // payroll.cancelPayment is reserved for the phase that extends the state
+  // machine (paid is terminal in Phase 1) — declared here, currently inert.
+  audit_reviewer: [
+    'dashboard.view',
+    'payroll.view',
+    'payroll.approve', 'payroll.reject', 'payroll.cancelPayment',
+    'audit.view',
+    'reports.view',
+  ],
+  // Phase 2 (Spec v1.0): Payments Officer only executes disbursement of
+  // approved payrolls (the payment queue point). It may NOT generate, edit,
+  // submit, approve or reject.
+  payments_officer: [
+    'dashboard.view',
+    'payroll.view', 'payroll.disburse',
     'reports.view',
   ],
 };

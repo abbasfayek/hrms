@@ -296,3 +296,84 @@ Current -> Proposed -> تنفيذ -> اختبار.
     حذف عمل دون توثيق) ويُقترح حذفه يدوياً.
 
 ============================================================
+=== المرحلة 2 (2026-09-10): الأدوار / الصلاحيات / النطاق ===
+=== (Financial Workflow & Currency Specification v1.0) ===
+============================================================
+
+أ) الأطر المرجعية:
+  - إلزامياً: financial-workflow-spec.txt + P2-2-Business-Rules (النطاق
+    مخصص للأدوار والصلاحيات والنطاق فقط).
+  - الممنوع في هذه المرحلة: قائمة الصرف ككيان مستقل، حوكمة أسعار الصرف،
+    محرك العملات، التقارير/Excel/الطباعة، أي تغيير في Workflow EOSB أو
+    المعادلات المالية أو السياسات؛ لا شيء من المرحلتين 3/4.
+  - قاعدة رئيسية: لا يمرّ أي إجراء مسير (إنشاء/تعديل/ترحيل/اعتماد/رفض/
+    صرف/تصدير/أرشفة) إلا عبر طبقة الحُرّاس الثلاثة: الصلاحية ← النطاق ←
+    الحالة State Machine (المرحلة 1 لم تتغير إطلاقاً).
+
+ب) الأدوار الجديدة (USER_ROLES) ومنظومة الصلاحيات:
+  - payroll_admin (مسؤول الرواتب): dashboard.view، payroll.view،
+    payroll.generate، payroll.edit، payroll.submit، payroll.export،
+    reports.view. لا يعتمد/يرفض/يصرّف/يؤرشف.
+  - audit_reviewer (المدقق المالي): dashboard.view، payroll.view،
+    payroll.approve، payroll.reject، audit.view، reports.view. لا ينشئ/
+    يعدّل/يرسل/يصرّف/يؤرشف/يصدّر (مشاهدة مراجعة فقط). يحمل reserve
+    payroll.cancelPayment (خامل — انظر هـ).
+  - payments_officer (موظف الصرف المالي): dashboard.view، payroll.view،
+    payroll.disburse، reports.view. ينفّذ الصرف المعتمد فقط (نقطة قائمة
+    الصرف).
+  - super_admin: يملك كامل صلاحيات المسير العشر (لا تغيير).
+  - company_hr: أُزيل منها payroll.approve واستُبدل بـ payroll.submit
+    (رفع الاعتماد من مسؤول الرواتب إلى المدقق).
+  - branch_hr: دون تغيير (فرع واحد فقط).
+  - الأرقام الجديدة في الكتالوج: payroll.submit, payroll.reject,
+    payroll.cancelPayment, payroll.archive (إجمالي 10 عبر payroll.*).
+
+ج) النطاق:
+  - الأدوار المالية الثلاثة (وحول company_hr) نطاقات شركة إلزامية عبر
+    assignedCompanyId؛ والفرع يُجبر على 'all' (المسيرات تعبر الفروع).
+  - storage.getState يطبّق نفس فلترة النطاق على الأدوار الجديدة
+    (بما يعادل company_hr/branch_hr تماماً — انحدار محفوظ).
+  - payrollAccess.userScope/payrollBatchInScope يفرضان النطاق أيضاً على
+    مستوى العنصر قبل أي إجراء فعلي.
+
+د) طبقة الحُرّاس الجديدة (public/js/engines/payrollAccess.js):
+  - PAYROLL_ACTION_PERMISSIONS (إجراء ← صلاحية)، PAYROLL_TRANSITION_ACTION
+    (حالة نهائية ← إجراء sanitized)، requirePayrollAction → {ok} |
+    {ok:false, error, layer: permission|scope|state}.
+  - transitionPayrollGuarded / recordPayrollCorrectionGuarded /
+    archivePayrollBatchGuarded: المسار الوحيد من الواجهة إلى انتقالات
+    المرحلة 1 (transitionPayroll/recordPayrollCorrection) وإلى
+    archivePayrollBatch (جديد، إضافي، بدون لمس آلة الحالة).
+  - PayrollView: أزرار الصرف التقطت بالـ canDisburse (قائمة الصرف =
+    Payments Officer)، أزرار الرفض/الاعتماد حسب canRejectAudit/
+    canApproveAudit، أُزيل زر صرف قائمة التدقيق (استُبدل بملاحظة
+    للقراءة فقط)، زر أرشفة للمدفوعات (canArchive)، تبويب التدقيق مخفي
+    لمن دون صلاحيات المراجعة، ومسار الترحيل يعود لتبويب الرواتب لمن لا
+    يراجع.
+  - الأرشفة = عَلَم (archived/archivedAt/archivedBy) على مسيرة مدفوعة
+    فقط — ليست حالة جديدة؛ آلة الحالة (paid → []) ثابتة.
+
+هـ) قرارات تحتاج موافقة / خارج النطاق:
+  1) payroll.cancelPayment (إلغاء مدفوع) مسجّل في الكتالوج ولدى
+     audit_reviewer لكنه خامل عمداً: paid طرفية في المرحلة 1 (لا
+     انتقال paid→approved) ولا يُكرّس إلا في المرحلة التي تُمدِّد آلة
+     الحالة (EOSB كان خارج نطاق المرحلة 1 أيضاً).
+  2) payroll.export غير ممنوح للمدقق (مشاهدة/مراجعة فقط).
+  3) i18n:audit يُبلّغ 773 لازمة مُشفرة (769 قبل المرحلة 2) — أساس
+     سابق للمرحلة، +4 من نصوص هذه المرحلة؛ ليس انحداراً.
+
+و) بوابات المرحلة 2 (كلها خضراء وقت التسليم):
+  - a) node --check على كل الملفات المتأثرة → سليم.
+  - b) p22:roles:test (جديد، الأدوار/الصلاحيات/النطاق/الحرّاس) → 88/88.
+  - c) p22:test (المرحلة 1) → 123/123 (لم يضعف شيء).
+  - d) p21:test → 47/47.
+  - e) release:test (الانحدار) → 66/66.
+  - f) npm run build → ناجح (التحذير الوحيد حجم chunk).
+  - g) الملفات المعدلة: package.json، public/js/types.js، storage.js،
+     i18n.js، components/PayrollView.js، UserModal.js، UsersView.js،
+     engines/payrollEngine.js + الجديد: engines/payrollAccess.js،
+     scripts/p2-2-roles-tests.mjs.
+
+لقطة المرحلة 2 بتاريخ 2026-09-10 تحقّق فعلياً (وليس افتراضياً).
+
+============================================================

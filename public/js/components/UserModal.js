@@ -123,6 +123,9 @@ export function openUserModal(user = null, onSaved) {
             <option value="super_admin" ${data.role === 'super_admin' ? 'selected' : ''}>${t('users.roleSuperAdmin')}</option>
             <option value="company_hr" ${data.role === 'company_hr' ? 'selected' : ''}>${t('users.roleCompanyHr')}</option>
             <option value="branch_hr" ${data.role === 'branch_hr' ? 'selected' : ''}>${t('users.roleBranchHr')}</option>
+            <option value="payroll_admin" ${data.role === 'payroll_admin' ? 'selected' : ''}>${t('users.rolePayrollAdmin')}</option>
+            <option value="audit_reviewer" ${data.role === 'audit_reviewer' ? 'selected' : ''}>${t('users.roleAuditReviewer')}</option>
+            <option value="payments_officer" ${data.role === 'payments_officer' ? 'selected' : ''}>${t('users.rolePaymentsOfficer')}</option>
           </select>
         </div>
 
@@ -228,10 +231,13 @@ export function openUserModal(user = null, onSaved) {
 
       function updateRoleVisibility(applyDefaults = true) {
         const role = roleSelect.value;
+        // Phase 2 (Spec v1.0): the financial roles (payroll_admin, audit_reviewer,
+        // payments_officer) are company-scoped — company selector shown, branch hidden.
+        const companyScoped = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'].includes(role);
         if (role === 'super_admin') {
           compGroup.style.display = 'none';
           branchGroup.style.display = 'none';
-        } else if (role === 'company_hr') {
+        } else if (companyScoped) {
           compGroup.style.display = 'block';
           branchGroup.style.display = 'none';
         } else {
@@ -297,7 +303,9 @@ export function openUserModal(user = null, onSaved) {
           role,
           permissions,
           assignedCompanyId: role === 'super_admin' ? 'all' : formData.get('assignedCompanyId'),
-          assignedBranchId: role === 'super_admin' || role === 'company_hr' ? 'all' : formData.get('assignedBranchId'),
+          // Phase 2: financial roles are company-scoped — branch always forced to
+          // 'all' (their batches span branches within the assigned company).
+          assignedBranchId: role === 'super_admin' || ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'].includes(role) ? 'all' : formData.get('assignedBranchId'),
           avatar: (formData.get('name') || 'م').charAt(0),
         };
 

@@ -120,7 +120,7 @@ export function renderUsersView(container, options = {}) {
                     ${u.role === 'super_admin' ? `<strong style="color:var(--primary);">${t('users.allCompaniesOption')}</strong>` : comp ? (isEn && comp.nameEn ? comp.nameEn : comp.nameAr) : '-'}
                   </td>
                   <td>
-                    ${u.role === 'super_admin' ? `<strong style="color:var(--primary);">${t('users.allBranchesOption')}</strong>` : u.role === 'company_hr' ? `<strong>${t('users.allBranchesOption')}</strong>` : branch ? (isEn && branch.nameEn ? branch.nameEn : branch.nameAr) : '-'}
+                    ${u.role === 'super_admin' ? `<strong style="color:var(--primary);">${t('users.allBranchesOption')}</strong>` : ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'].includes(u.role) ? `<strong>${t('users.allBranchesOption')}</strong>` : branch ? (isEn && branch.nameEn ? branch.nameEn : branch.nameAr) : '-'}
                   </td>
                   <td>
                     <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">

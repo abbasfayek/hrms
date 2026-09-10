@@ -588,12 +588,20 @@ class StorageService {
     const selectedCompId = this.getSelectedCompanyId();
     const selectedBranchId = this.getSelectedBranchId();
 
+    // Phase 2 (Spec v1.0): the financial roles (payroll_admin, audit_reviewer,
+    // payments_officer) are company-scoped exactly like company_hr/branch_hr —
+    // a user may never see (or act on) records outside their assigned scope.
+    const companyScopedRoles = ['company_hr', 'branch_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
+    const compScoped = user && user.role !== 'super_admin'
+      && (companyScopedRoles.includes(user.role) || (user.assignedCompanyId && user.assignedCompanyId !== 'all'));
+    const branchScoped = compScoped && user.assignedBranchId && user.assignedBranchId !== 'all';
+
     const isItemPermitted = (item) => {
-      if (user.role === 'branch_hr') {
+      if (compScoped) {
         if (item.companyId && item.companyId !== user.assignedCompanyId && item.companyId !== 'all') return false;
+      }
+      if (branchScoped) {
         if (item.branchId && item.branchId !== user.assignedBranchId && item.branchId !== 'all') return false;
-      } else if (user.role === 'company_hr') {
-        if (item.companyId && item.companyId !== user.assignedCompanyId && item.companyId !== 'all') return false;
       }
 
       if (selectedCompId !== 'all') {

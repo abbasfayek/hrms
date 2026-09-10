@@ -6,6 +6,7 @@ import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
+import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded } from '../engines/payrollAccess.js';
 import { openPayslipModal } from './PayslipModal.js';
 import { openBatchPayslipsPrintModal, printIsolatedBatchPayslips } from './BatchPayslipsPrintModal.js';
 import { openReleasePayrollModal } from './ReleasePayrollModal.js';
@@ -52,10 +53,18 @@ export function renderPayrollView(container, options = {}) {
   const getLivePayrolls = () => storage.getState().payrolls;
   const sym = settings.currencySymbol || '$';
   const isEn = i18n.getLang() === 'en';
+  // Phase 2 (Spec v1.0): every payroll action is permission-gated per role.
+  // Payroll Admin (generate/edit/submit) | Audit Reviewer (approve/reject) |
+  // Payments Officer (disburse) | Super Admin (everything incl. archive).
   const canManagePayroll = can(state.currentUser, 'payroll.generate');
+  const canEditDraft = can(state.currentUser, 'payroll.edit');
+  const canSubmitAudit = can(state.currentUser, 'payroll.submit');
+  const canApprove = can(state.currentUser, 'payroll.approve');
+  const canRejectAudit = can(state.currentUser, 'payroll.reject');
   const canExportPayroll = can(state.currentUser, 'payroll.export');
   const canDisburse = can(state.currentUser, 'payroll.disburse');
-  const canApprove = can(state.currentUser, 'payroll.approve');
+  const canArchive = can(state.currentUser, 'payroll.archive');
+  const canReviewAudit = canApprove || canRejectAudit || can(state.currentUser, 'audit.view');
   const canGrantLoan = can(state.currentUser, 'loans.add');
   const canPayLoan = can(state.currentUser, 'loans.pay');
   const canEditLoan = can(state.currentUser, 'loans.edit');
@@ -287,15 +296,20 @@ export function renderPayrollView(container, options = {}) {
           } catch (e) {
             console.error('Loan settlement on payroll release failed:', e);
           }
-          batch.status = 'paid';
-          batch.paidAt = new Date().toISOString();
-          batch.paidBy = storage.getActiveUser()?.name || (isEn ? 'Finance Manager' : 'المدير المالي');
-          batch.releaseStatus = 'released';
-          batch.releasedAt = new Date().toISOString();
-          batch.releasedBy = storage.getActiveUser()?.name || (isEn ? 'Finance Manager' : 'المدير المالي');
-          batch.items.forEach((it) => { it.isPaid = true; });
-          storage.addPayrollBatch(batch);
-          storage.addAudit('settle', 'payroll', `${targetMonth} → ${isEn ? 'released & paid' : 'تحرير وصرف'}`, batch.id);
+          // Phase 2 (Spec v1.0): payment runs ONLY through the guard stack —
+          // Payments Officer (payroll.disburse) + approved state + scope.
+          const payerName = storage.getActiveUser()?.name || (isEn ? 'Payments Officer' : 'موظف الصرف المالي');
+          const payRes = transitionPayrollGuarded(storage.getActiveUser(), batch, 'paid', { by: payerName });
+          if (!payRes.ok) {
+            toast.error(isEn ? `Cannot execute payment: ${payRes.error}` : `تعذر تنفيذ الصرف: ${payRes.error}`);
+            return;
+          }
+          const paid = payRes.batch;
+          paid.releasedAt = new Date().toISOString();
+          paid.releasedBy = payerName;
+          paid.items.forEach((it) => { it.isPaid = true; });
+          storage.addPayrollBatch(paid);
+          storage.addAudit('settle', 'payroll', `${targetMonth} → ${isEn ? 'released & paid' : 'تحرير وصرف'}`, paid.id);
           toast.success(tf('payroll.paymentRecordedSuccess', { month: targetMonth }));
           activeTab = 'disbursed';
           updateHeaderTabs();
@@ -542,7 +556,7 @@ export function renderPayrollView(container, options = {}) {
             ${currentBatch.rejectedBy ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">${isEn ? 'Returned by' : 'أعاده'}: <strong>${currentBatch.rejectedBy}</strong> • ${formatDate(currentBatch.rejectedAt)}</div>` : ''}
             ${currentBatch.corrections && currentBatch.corrections.length ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">✏️ ${isEn ? 'Corrections recorded' : 'تصحيحات مسجلة'}: <strong>${currentBatch.corrections.length}</strong> (${formatDate(currentBatch.corrections[currentBatch.corrections.length - 1].at)})</div>` : ''}
           </div>
-          ${canManagePayroll ? `
+          ${canSubmitAudit ? `
           <button type="button" class="btn btn-sm btn-success" id="btn-resubmit-payroll">
             ${Icons.upload(14)} ${isEn ? 'Resubmit to Financial Audit' : 'إعادة الإرسال للتدقيق المالي'}
           </button>
@@ -662,7 +676,7 @@ export function renderPayrollView(container, options = {}) {
               ${tf('payroll.detailTitle', { month: currentMonth })}
             </div>
             <div style="display:flex; align-items:center; gap:8px;">
-              ${isDraft && canManagePayroll ? `
+              ${isDraft && canSubmitAudit ? `
               <button type="button" class="btn btn-sm btn-info" id="btn-transfer-to-audit">
                 🛡️ ${isEn ? 'Send to Financial Audit' : 'ترحيل إلى قسم التدقيق المالي'}
               </button>
@@ -834,8 +848,9 @@ export function renderPayrollView(container, options = {}) {
           computePayrollReleaseSchedule(regenerated, companies);
           if (prev && prev.status === 'rejected') {
             // Preserve the Returned state + rejection metadata + record a correction on recalc.
-            const corr = recordPayrollCorrection(prev, regenerated, {
-              by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الرواتب'),
+            const actor = storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب');
+            const corr = recordPayrollCorrectionGuarded(state.currentUser, prev, regenerated, {
+              by: actor,
               reason: isEn ? 'Recalculated after audit return' : 'إعادة احتساب بعد إعادة التدقيق',
             });
             if (corr.ok) currentBatch = corr.batch;
@@ -873,9 +888,12 @@ export function renderPayrollView(container, options = {}) {
 
       // Transfer to Audit (draft → under_audit) or Resubmit (rejected → under_audit)
       const submitToAudit = (rejectionNote) => {
-        if (!canManagePayroll) return;
-        const res = transitionPayroll(currentBatch, 'under_audit', {
-          by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الرواتب'),
+        if (!canSubmitAudit) {
+          toast.error(isEn ? 'Insufficient permissions to submit payroll to Financial Audit.' : 'لا تملك صلاحية ترحيل المسير إلى التدقيق المالي.');
+          return;
+        }
+        const res = transitionPayrollGuarded(state.currentUser, currentBatch, 'under_audit', {
+          by: storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب'),
           rejectionReason: rejectionNote,
         });
         if (!res.ok) {
@@ -887,7 +905,9 @@ export function renderPayrollView(container, options = {}) {
         const isReturnedNow = res.batch.returnState === 'resubmitted';
         storage.addAudit(isReturnedNow ? 'resubmit' : 'generate', 'payroll', `${currentMonth} → ${isEn ? (isReturnedNow ? 'Re-submitted to Financial Audit' : 'Financial Audit') : (isReturnedNow ? 'أُعيد إرساله للتدقيق المالي' : 'التدقيق المالي')}`, currentBatch.id);
         toast.success(isEn ? (isReturnedNow ? `Payroll for ${currentMonth} re-submitted to Financial Audit.` : `Payroll for ${currentMonth} transferred to Financial Audit.`) : (isReturnedNow ? `أُعيد إرسال مسير رواتب ${currentMonth} للتدقيق المالي.` : `تم ترحيل مسير رواتب ${currentMonth} إلى قسم التدقيق المالي بنجاح`));
-        activeTab = 'audit';
+        // The submitter only goes to the audit stage when they may review it;
+        // otherwise they return to the locked batch on the payroll tab.
+        activeTab = canReviewAudit ? 'audit' : 'payroll';
         updateHeaderTabs();
         renderTabContent();
       };
@@ -995,14 +1015,17 @@ export function renderPayrollView(container, options = {}) {
           </div>
 
           <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:14px; flex-wrap:wrap;">
-            ${selectedAuditBatch.status === 'under_audit' && canApprove ? `
+            ${selectedAuditBatch.status === 'under_audit' && canRejectAudit ? `
               <button type="button" class="btn btn-outline" id="btn-reject-audit" style="color:var(--danger); border-color:rgba(239,68,68,0.4);">
                 ${Icons.x(16)} ${isEn ? 'Reject & Return for Correction' : 'رفض وإعادة للتصحيح'}
               </button>
+            ` : ''}
+            ${selectedAuditBatch.status === 'under_audit' && canApprove ? `
               <button type="button" class="btn btn-success" id="btn-approve-audit">
                 ${Icons.check(16)} ${isEn ? 'Approve Audit (returns to HR for payment)' : 'موافقة التدقيق (يعود لمسؤول الرواتب للصرف)'}
               </button>
-            ` : selectedAuditBatch.status === 'rejected' ? `
+            ` : ''}
+            ${selectedAuditBatch.status === 'rejected' ? `
               <span style="font-size:12px; color:var(--text-muted); max-width:420px; line-height:1.6;">
                 ${isEn ? '📎 This payroll was returned to HR (Returned / Needs Correction). It must be corrected and re-submitted from the Payroll tab.' : '📎 أُعيد هذا المسير إلى مسؤول الرواتب (حالة عودة / بحاجة تصحيح). يجب تصحيحه وإعادة إرساله من تبويب الرواتب.'}
               </span>
@@ -1010,10 +1033,10 @@ export function renderPayrollView(container, options = {}) {
               <span style="font-size:12px; color:var(--text-muted);">
                 ${isEn ? '✅ Paid & archived — read-only financial history.' : '✅ تم الصرف والأرشفة — سجل مالي للقراءة فقط.'}
               </span>
-            ` : canDisburse ? `
-              <button type="button" class="btn btn-success" id="btn-audit-disburse">
-                💰 ${isEn ? 'Pay Salaries Now' : 'صرف الرواتب الآن'}
-              </button>
+            ` : selectedAuditBatch.status === 'approved' ? `
+              <span style="font-size:12px; color:var(--text-muted); max-width:420px; line-height:1.6;">
+                ${isEn ? '🔒 Audit approved — awaiting disbursement by the Payments Officer (payment queue). No pay button here: payment is executed from the Payroll tab only.' : '🔒 اعتمد التدقيق المسير — بانتظار صرف موظف الصرف المالي (قائمة الصرف). لا يوجد زر صرف هنا: يتم الصرف حصرياً من تبويب الرواتب.'}
+              </span>
             ` : ''}
           </div>
         </div>
@@ -1125,7 +1148,7 @@ export function renderPayrollView(container, options = {}) {
           return;
         }
         const auditNote = contentArea.querySelector('#audit-notes-input')?.value || '';
-        const res = transitionPayroll(selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي'), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
+        const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي'), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
         if (!res.ok) {
           toast.error(isEn ? `Cannot approve: ${res.error}` : `تعذر الاعتماد: ${res.error}`);
           return;
@@ -1139,7 +1162,7 @@ export function renderPayrollView(container, options = {}) {
       });
 
       contentArea.querySelector('#btn-reject-audit')?.addEventListener('click', () => {
-        if (!canApprove) return;
+        if (!canRejectAudit) return;
         if (selectedAuditBatch.status !== 'under_audit') {
           toast.error(isEn ? 'Only batches under audit can be rejected.' : 'لا يمكن رفض إلا المسيرات قيد التدقيق.');
           return;
@@ -1152,9 +1175,9 @@ export function renderPayrollView(container, options = {}) {
           confirmText: isEn ? 'Yes, Return for Correction' : 'نعم، إعادة للتصحيح',
           onConfirm: () => {
             saveEmployeeAuditInputs();
-            const auditor = storage.getActiveUser()?.name || (isEn ? 'Internal Auditor' : 'المدقق المالي');
+            const auditor = storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي');
             const notes = contentArea.querySelector('#audit-notes-input')?.value || '';
-            const res = transitionPayroll(selectedAuditBatch, 'rejected', {
+            const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'rejected', {
               by: auditor,
               rejectionReason: notes || (isEn ? 'Audit returned the payroll for correction' : 'أعاد التدقيق المسير للتصحيح'),
               auditNotes: notes,
@@ -1175,23 +1198,7 @@ export function renderPayrollView(container, options = {}) {
         });
       });
 
-      contentArea.querySelector('#btn-revoke-audit')?.addEventListener('click', () => {
-        if (!canApprove) return;
-        saveEmployeeAuditInputs();
-        selectedAuditBatch.status = 'under_audit';
-        storage.addPayrollBatch(selectedAuditBatch);
-        storage.addAudit('edit', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit revoked' : 'إلغاء الاعتماد'}`, selectedAuditBatch.id);
-        toast.info(isEn ? 'Audit approval revoked for re-examination.' : 'تم إلغاء الاعتماد وإعادة المسير لمرحلة التدقيق.');
-        renderTabContent();
-      });
-
-      contentArea.querySelector('#btn-audit-disburse')?.addEventListener('click', () => {
-        if (!canDisburse) return;
-        saveEmployeeAuditInputs();
-        disburseBatch(selectedAuditBatch);
-      });
-
-    // =========================================================
+      // =========================================================
     // 3. DISBURSED & PAID PAYROLLS TAB
     // =========================================================
     } else if (activeTab === 'disbursed') {
@@ -1249,6 +1256,14 @@ export function renderPayrollView(container, options = {}) {
                             ` : `<button type="button" class="btn btn-sm btn-outline btn-print-disbursed-all">
                               ${Icons.printer(14)} ${isEn ? 'Print All Payslips' : 'طباعة كافة الوصولات'}
                             </button>`}
+                            ${canArchive && !b.archived ? `
+                            <button type="button" class="btn btn-sm btn-outline btn-archive-paid-batch" style="color:var(--danger); border-color:rgba(239,68,68,0.4);">
+                              ${isEn ? 'Archive' : 'أرشفة'}
+                            </button>
+                            ` : ''}
+                            ${b.archived ? `
+                            <span class="badge badge-purple">${isEn ? 'Archived' : 'مؤرشف'}</span>
+                            ` : ''}
                             <button type="button" class="btn btn-sm btn-primary btn-view-disbursed-batch">
                               ${Icons.fileText(14)} ${isEn ? 'View Batch' : 'عرض التفاصيل'}
                             </button>
@@ -1285,6 +1300,28 @@ export function renderPayrollView(container, options = {}) {
             updateHeaderTabs();
             renderTabContent();
           }
+        });
+
+        row.querySelector('.btn-archive-paid-batch')?.addEventListener('click', () => {
+          if (!canArchive || !b) return;
+          showConfirmDialog({
+            title: isEn ? 'Archive Payroll' : 'أرشفة مسير الرواتب',
+            message: isEn
+              ? `<strong>${b.month}</strong> — this paid payroll will be permanently archived (financial read-only). Employees' payslips remain available in the disbursed history.`
+              : `<strong>${b.month}</strong> — سيُؤرشف مسير الرواتب المصروف بشكل نهائي (قراءة مالية فقط). تبقى وصولات الموظفين متاحة في سجل المصروفات.`,
+            confirmText: isEn ? 'Yes, Archive Payroll' : 'نعم، أرشفة المسير',
+            onConfirm: () => {
+              const res = archivePayrollBatchGuarded(state.currentUser, b, { by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام') });
+              if (!res.ok) {
+                toast.error(isEn ? `Cannot archive: ${res.error}` : `تعذر الأرشفة: ${res.error}`);
+                return;
+              }
+              storage.addPayrollBatch(res.batch);
+              storage.addAudit('archive', 'payroll', `${b.month} → ${isEn ? 'archived' : 'مؤرشف'}`, b.id);
+              toast.success(isEn ? 'Payroll archived successfully.' : 'تمت أرشفة المسير بنجاح.');
+              renderTabContent();
+            },
+          });
         });
       });
 
@@ -1563,9 +1600,11 @@ export function renderPayrollView(container, options = {}) {
       <button type="button" class="tab-btn ${activeTab === 'payroll' ? 'active' : ''}" data-tab="payroll" id="tab-payroll-active">
         ${Icons.dollar(16)} ${isEn ? 'Due & Active Payrolls' : 'الرواتب المستحقة والمسيرات'}
       </button>
+      ${canReviewAudit ? `
       <button type="button" class="tab-btn ${activeTab === 'audit' ? 'active' : ''}" data-tab="audit" id="tab-payroll-audit">
         ${Icons.shieldCheck(16)} ${isEn ? 'Financial Audit Stage' : 'قسم التدقيق والمراجعة'}
       </button>
+    ` : ''}
       <button type="button" class="tab-btn ${activeTab === 'disbursed' ? 'active' : ''}" data-tab="disbursed" id="tab-payroll-disbursed">
         ${Icons.award(16)} ${isEn ? 'Disbursed Payrolls' : 'الرواتب المصروفة والمؤرشفة'} (${getPaidBatches().length})
       </button>
