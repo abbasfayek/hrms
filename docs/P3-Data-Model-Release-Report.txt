@@ -1,0 +1,181 @@
+============================================================
+HRMS - تقرير إصدار Phase 3: نموذج بيانات تدقيق الرواتب
+Release Report — Payroll Audit Data Model (Spec v1.0)
+التاريخ: 2026-09-10
+============================================================
+
+1) Commit Hash (implementation)
+--------------------------------
+  a928f05  Phase 3 (Spec v1.0): payroll audit data model —
+           sealed baseline of original values, per-version
+           financial snapshots + explicit R→C→R links,
+           approval/payment/archive references, read-time
+           legacy upgrade; p3 gate 66/66, all baselines green.
+  (هذا التقرير يُرفع في commit منفصل يتبع commit التنفيذ.)
+
+2) Files Modified / Added
+--------------------------------
+  ADDED   public/js/engines/payrollDataModel.js   — Phase 3 data model:
+          baselineSnapshot, per-version financialSnapshot + links,
+          approval/payment/archive references, financialChangeLog,
+          versionChain, resubmissionRounds, originalFinancialValues,
+          normalizeRecord (read-time migration), seal().
+  ADDED   scripts/p3-tests.mjs                    — P3 gate (66 assertions).
+  MOD     public/js/engines/payrollEngine.js      — additive stamps ONLY:
+          payrollSchema marker, ensureBaseline on first submission,
+          approvalReference/paymentReference on approve/paid, versions
+          now pushed via pushVersion (adds sealed snapshot + links +
+          status; old fields type/version/by/at/reason unchanged),
+          archiveReference + revision on the archive audit entry.
+  MOD     public/js/storage.js                    — getState maps payrolls
+          through normalizeRecord (additive, defensive, never mutates
+          storage, never throws on legacy/corrupt records).
+  MOD     package.json                            — added "p3:test".
+
+3) Data Model BEFORE (Phase 1/2, unchanged behavior)
+--------------------------------
+  - record: status, revision, created/updatedAt, totals,
+    totalsByCurrency, items (rich monetary fields).
+  - rejection: rejectedBy/At/Reason/returnState/isAmountsCleared,
+    rejectedSnapshot (point-in-time financial copy).
+  - auditHistory[] {action,from,to,by,at,reason,revision},
+    auditAttempts[] {attempt,result,by,at,reason,from/toVersion}.
+  - versions[] {type,version,by,at,reason}  ← NO financial snapshot,
+    NO explicit links, NO embedded status.
+  - corrections[] {by,at,reason,changes[{field,oldValue,newValue}],
+    fromVersion,toVersion}.
+  - paid/archive stamps: paidBy/paidAt, releasedAt/By, archive fields.
+
+  GAPS found in the examination:
+    a) Original values not persisted anywhere BEFORE the first
+       submission (draft → under_audit) — versions carried no
+       financial values, so history could not be replayed without
+       the current record.
+    b) No explicit version IDs / links, so the Rejected → Corrected →
+       Resubmitted relationship was implicit (order inference only).
+    c) No approval / payment / archive reference data.
+
+4) Data Model AFTER (additive, else unchanged)
+--------------------------------
+  record.payrollSchema = 'p3'          — model version marker.
+  record.baselineSnapshot              — SEALED original financial
+       values captured at first submission (draft → under_audit),
+       never overwritten: {capturedStatus, capturedBy, capturedAt,
+       totalGross/Deductions/Net/CompanyGosi, totalsByCurrency,
+       items[monetary fields], baselineSource:'first_submit'}.
+  record.versions[]                    — existing fields preserved;
+       ADDED: versionId (V{revision}), status (post-transition state),
+       prevVersionId / nextVersionId (explicit bidirectional chain),
+       financialSnapshot (sealed point-in-time monetary copy incl.
+       per-currency totals — every version is self-contained).
+  record.approvalReference             — {referenceId, approvedAt,
+       approvedBy, status:'approved', versionId}.
+  record.paymentReference              — {referenceId, executedAt,
+       executedBy, status:'disbursed', versionId, amounts[] (per
+       currency)}. Payment Queue remains a logical transition point,
+       NOT a separate entity / no state-machine change.
+  record.archiveReference              — {referenceId, archivedAt,
+       archivedBy, reason} on the terminal paid state (archive stays
+       a flag + stamp; the State Machine is unchanged).
+  record.auditHistory archive entry now also carries the revision
+       (additive) so the change log is uniformly version-linked.
+
+  Read-side API (pure, non-destructive):
+    versionChain(batch)      — ordered versions with explicit links
+                               and per-version summaries from sealed
+                               snapshots.
+    resubmissionRounds(b)    — explicit R→C→R rounds by versionId.
+    originalFinancialValues(b) — sealed baseline (original), else the
+                               earliest authoritative rejected snapshot
+                               for legacy, else null — never rebuilt
+                               from the current record.
+    financialChangeLog(b)    — append-only ordered ledger derived
+                               deterministically from auditHistory +
+                               corrections (user/time/reason/versionId;
+                               corrected events carry old→new changes).
+    normalizeRecord(b)       — read-time migration projection.
+    seal() / financialSnapshot() — deep-copy immutability helpers.
+
+5) Migration Strategy
+--------------------------------
+  - NOTHING is migrated destructively. No stored field is rewritten
+    or removed; storage key hrms_payrolls_v3 is unchanged.
+  - Existing records gain the p3 model lazily at WRITE time: the next
+    transition/correction/archive stamps baseline (if missing) and
+    re-pushes the version through pushVersion, enriching it.
+  - READ path: normalizeRecord() upgrades legacy records to the p3
+    view deterministically and idempotently:
+      * versionId falls back to V{version} (stable),
+      * prev/next links recomputed from order (stable),
+      * status recovered from the revision-matched audit entry,
+      * financialSnapshot: preserved if present; synthesized ONLY for
+        the LAST version (that node coincides with the current record,
+        flagged financialSnapshot.synthesized = true); middle-version
+        gaps are left null — history is never fabricated.
+  - Legacy original values: when no baseline was ever captured, the
+    earliest authoritative financial point (last rejectedSnapshot) is
+    returned; if none was stored nothing is invented (null).
+  - normalizeRecord runs inside try/catch and returns records intact
+    on any anomaly — a corrupt legacy record can never break reads.
+
+6) Backward-compatibility verification
+--------------------------------
+  - All existing fields keep their exact names/shapes; versions keep
+    type/version/by/at/reason so P2.2 assertions
+    (versions types join, lengths, corrections shape) still pass.
+  - Legacy fixture (no p3 fields) reads fine: ids V1..V6 derived,
+    links filled, status recovered, input object byte-identical after
+    normalizeRecord, normalization idempotent, corrupt records safe.
+  - storage.addPayrollBatch replace-by-month save path preserves
+    baseline + rejection + correction + version + references.
+
+7) Test Results (gate stack, run after implementation)
+--------------------------------
+  p3:test (NEW) ......... 66 passed, 0 failed   (covers the 11
+        required areas: creation, original values saved, rejection
+        history, correction history, version history, old→new,
+        user+timestamp+reason, resubmission history, backward
+        compatibility, no data loss on update, historical versions
+        cannot break the audit trail).
+  p22:test .............. 123 passed, 0 failed   (baseline preserved)
+  p21:test .............. 47 passed, 0 failed    (baseline preserved)
+  p22:roles:test ........ 92 passed, 0 failed    (baseline preserved)
+  release:test .......... 66 passed, 0 failed    (baseline preserved)
+  node --check .......... OK on all changed files
+  npm run build ......... OK (58 modules, dist generated)
+  npm run i18n:audit .... 773 hard-coded literals — identical to the
+        documented post-Phase-2 baseline (769 pre-Phase-2). Phase 3
+        added ZERO UI strings, so this is a pre-existing count, not a
+        Phase 3 regression.
+
+8) Risks / decisions needing approval
+--------------------------------
+  D1. Additive hooks inside closed Phase 1/2 files were APPROVED
+      interactively before implementation (the only place where
+      mutations + actor + reason exist). Scope of the edits is
+      strictly additive: state graph, permissions, formulas and all
+      existing field behavior are unchanged — proven by the intact
+      baseline gates above.
+  D2. Legacy records have no historically-stored financial values for
+      middle versions; the model does NOT invent them (snapshots stay
+      null), and the LAST-node synthesis is flagged
+      financialSnapshot.synthesized = true. Anyone inheriting legacy
+      data should accept that only rejection time-points carry real
+      financial history from before Phase 3.
+  D3. Requested continuously-reliable audit this phase deliberately
+      does not render history in the UI (reports/printing are out of
+      Phase 3 scope by instruction). The read-side API
+      (versionChain / financialChangeLog / originalFinancialValues /
+      resubmissionRounds) is the interface the future history view
+      will consume.
+  D4. baselineSnapshot is captured on first submission. Draft-time
+      edits before any submission are the HR working copy and are not
+      recorded as audit events (they leave zero trace because they
+      never entered the controlled financial workflow). Acceptable
+      per the approved scope.
+
+9) Gate result: ALL GREEN. Phase 3 (Data Model) is complete.
+   Phase 4 (Currency/Exchange-Rate Governance), Payment Queue entity,
+   Reports/Excel/Print and any formula/policy/roles/State-Machine
+   change remain OUT OF SCOPE unless separately ordered.
+============================================================
