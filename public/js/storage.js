@@ -17,6 +17,9 @@ import {
   defaultCurrencies,
 } from './seedData.js';
 import { getEffectivePermissions, getAllCurrencies, resolveEmployeeCurrency } from './types.js';
+// Phase 3 read-time upgrade projection for payroll records (additive; never
+// mutates stored data, never throws on legacy/corrupt records).
+import { normalizeRecord } from './engines/payrollDataModel.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -657,7 +660,7 @@ class StorageService {
       increments: filteredIncrements,
       attendance: filteredAttendance,
       holidays: filteredHolidays,
-      payrolls: filteredPayrolls,
+      payrolls: filteredPayrolls.map((b) => normalizeRecord(b)),
       eosb: filteredEOSB,
       deletedRecords: filteredDeleted,
       audit: this.get(STORAGE_KEYS.AUDIT, []),

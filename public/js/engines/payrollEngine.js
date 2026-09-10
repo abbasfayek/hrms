@@ -6,6 +6,8 @@ import { getApprovedOvertimeSummary } from './overtimeEngine.js';
 import { getDailyRate, getHourlyRate, getMinuteRate } from './wageEngine.js';
 import { resolveEmployeeCurrency, countAbsenceDays } from '../types.js';
 import { t } from '../i18n.js';
+// Phase 3 additive audit data model (purely additive; no behavior change).
+import { PAYROLL_SCHEMA, pushVersion, ensureBaseline, attachApprovalReference, attachPaymentReference, attachArchiveReference } from './payrollDataModel.js';
 
 /**
  * Generate monthly payroll batch for all active employees.
@@ -437,6 +439,19 @@ export function transitionPayroll(batch, to, opts = {}) {
   next.revision = revision;
   next.updatedAt = now;
 
+  // Phase 3 additive data-model stamps (no behavior change): schema marker,
+  // sealed original values on the first submission, and approval/payment
+  // references on their terminal gateways. Attached to the clone only.
+  next.payrollSchema = PAYROLL_SCHEMA;
+  if (from === 'draft') {
+    ensureBaseline(next, { by: actor, at: now });
+  }
+  if (to === 'approved') {
+    attachApprovalReference(next, { by: actor, at: now, versionId: `V${revision}` });
+  } else if (to === 'paid') {
+    attachPaymentReference(next, { by: actor, at: now, versionId: `V${revision}`, referenceId: opts.referenceId });
+  }
+
   next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
   next.auditHistory.push({ action: to, from, to, by: actor, at: now, reason: opts.rejectionReason || note, revision });
   // Audit attempt/history keeps every audit round without ever losing data.
@@ -451,10 +466,13 @@ export function transitionPayroll(batch, to, opts = {}) {
     toVersion: revision,
   });
   // Version chain: Rejected Version → Corrected Version → Resubmitted Version.
-  next.versions = Array.isArray(batch.versions) ? batch.versions.slice() : [];
-  next.versions.push({
+  // Every version carries a sealed financialSnapshot + explicit links and the
+  // post-transition status (Phase 3 additive fields; type/version/by/at/reason
+  // are preserved exactly as before).
+  next.versions = pushVersion(next, {
     type: to === 'rejected' ? 'rejected' : to === 'under_audit' && from === 'rejected' ? 'resubmitted' : to,
     version: revision,
+    status: to,
     by: actor,
     at: now,
     reason: opts.rejectionReason || note,
@@ -493,6 +511,7 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
   next.returnState = 'corrected';
   next.revision = revision;
   next.updatedAt = now;
+  next.payrollSchema = PAYROLL_SCHEMA;
   next.corrections = Array.isArray(prev.corrections) ? prev.corrections.slice() : [];
   next.corrections.push({
     by: opts.by || '',
@@ -502,8 +521,7 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
     fromVersion: prev.revision || 0,
     toVersion: revision,
   });
-  next.versions = Array.isArray(prev.versions) ? prev.versions.slice() : [];
-  next.versions.push({ type: 'corrected', version: revision, by: opts.by || '', at: now, reason: opts.reason || 'correction after audit return' });
+  next.versions = pushVersion(next, { type: 'corrected', version: revision, status: 'rejected', by: opts.by || '', at: now, reason: opts.reason || 'correction after audit return' });
   next.auditHistory = Array.isArray(prev.auditHistory) ? prev.auditHistory.slice() : [];
   next.auditHistory.push({ action: 'corrected', from: prev.status, to: 'rejected', by: opts.by || '', at: now, reason: opts.reason || '', revision });
   next.auditAttempts = Array.isArray(prev.auditAttempts) ? prev.auditAttempts.slice() : [];
@@ -542,8 +560,10 @@ export function archivePayrollBatch(batch, opts = {}) {
   next.archivedAt = now;
   next.archivedBy = actor;
   next.updatedAt = now;
+  next.payrollSchema = PAYROLL_SCHEMA;
+  next.archiveReference = attachArchiveReference(next, { by: actor, at: now, reason: opts.reason || 'salary archive' });
   next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
-  next.auditHistory.push({ action: 'archive', from: 'paid', to: 'paid', by: actor, at: now, reason: opts.reason || 'salary archive' });
+  next.auditHistory.push({ action: 'archive', from: 'paid', to: 'paid', by: actor, at: now, reason: opts.reason || 'salary archive', revision: batch.revision || 0 });
   return { ok: true, batch: next };
 }
 
