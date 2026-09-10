@@ -149,6 +149,70 @@ export function renderSettingsView(container) {
           </div>
         </div>
 
+        <!-- P4 Currency Governance & Exchange Rates Card (Super Admin only) -->
+        ${isSuperAdmin ? `
+        <div class="card" style="grid-column: span 2; border:1px solid rgba(16, 185, 129, 0.3); background:linear-gradient(135deg, rgba(16, 185, 129, 0.02) 0%, rgba(6, 182, 212, 0.02) 100%);">
+          <div class="card-header">
+            <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+              ${Icons.dollar(20)} ${isEn ? 'Currency Governance & Exchange Rates' : 'إدارة العملات وأسعار الصرف'}
+            </div>
+            <span class="badge badge-success">${isEn ? 'Super Admin only' : 'المسؤول العام فقط'}</span>
+          </div>
+
+          <div style="font-size:12.5px; color:var(--text-muted); margin-bottom:14px;">
+            ${isEn ? 'The base currency is the single reference used to convert every recorded amount. Each financial record (payroll item, EOSB settlement, loan) pins the exchange rate in force on the day it was recorded; committed records are never re-priced with a later rate. The base currency always has an implicit rate of 1.' : 'العملة الأساسية هي المرجع الوحيد لتحويل كل مبلغ مسجل. كل سجل مالي (بند رواتب، نهاية خدمة، سلفة) يثبّت سعر الصرف المعمول به يوم تسجيله؛ ولا يُعاد تسعير السجلات المؤكدة بسعر لاحق أبداً. سعر العملة الأساسية ضمني دائماً = 1.'}
+          </div>
+
+          <div class="grid grid-cols-2">
+            <div class="form-group">
+              <label class="form-label">${isEn ? 'Base Currency (applies to NEW records only)' : 'العملة الأساسية (تنطبق فقط على السجلات الجديدة)'}</label>
+              <select class="form-select" name="baseCurrency">
+                ${allCurrencies
+                  .map(
+                    (c) => `
+                    <option value="${c.code}" ${(settings.baseCurrency || settings.currency || 'USD') === c.code ? 'selected' : ''}>
+                      ${isEn ? (c.nameEn || c.nameAr) : c.nameAr} (${c.code})
+                    </option>
+                  `
+                  )
+                  .join('')}
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">${isEn ? 'Pinned Snapshot Policy' : 'سياسة السعر المثبّت'}</label>
+              <div style="font-size:12.5px; color:var(--text-muted); padding-top:8px;">
+                ${isEn ? 'Rate set today = used by records created from now on. Once a record commits, its rate is pinned and cannot be edited — add a new rate for later records.' : 'السعر المحدد اليوم يُستخدم للسجلات التي تُنشأ من الآن. بمجرد تأكيد السجل يصبح سعره مثبتاً لا يُعدّل — أضف سعراً جديداً للسجلات اللاحقة.'}
+              </div>
+            </div>
+          </div>
+
+          <div id="exchange-rates-list" style="margin-top:4px;"></div>
+
+          <div class="grid grid-cols-4" style="margin-top:14px; align-items:end;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">${isEn ? 'Currency' : 'العملة'}</label>
+              <select class="form-select" id="p4-rate-currency"></select>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">${isEn ? 'Rate (1 unit = how many base)' : 'سعر الصرف (1 وحدة = كم من الأساسية)'}</label>
+              <input type="number" step="0.000001" min="0.000001" class="form-input" id="p4-rate-value" placeholder="e.g. 1460.000000">
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">${isEn ? 'Rate Date *' : 'تاريخ السعر *'}</label>
+              <input type="date" class="form-input" id="p4-rate-date">
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">${isEn ? 'Note / Source' : 'ملاحظة / المصدر'}</label>
+              <div style="display:flex; gap:8px;">
+                <input type="text" class="form-input" id="p4-rate-note" placeholder="e.g. manual entry">
+                <button type="button" class="btn btn-primary" id="btn-save-ex-rate" style="white-space:nowrap;">${Icons.check(16)} ${isEn ? 'Set' : 'تثبيت'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        ` : ''}
+
         <!-- P2.2 Super-Admin Payroll Lock (visible to Super Admin only) -->
         ${isSuperAdmin ? `
         <div class="card" style="grid-column: span 2; border:1px solid rgba(220, 38, 38, 0.25);">
@@ -519,6 +583,103 @@ export function renderSettingsView(container) {
     renderCustomCurrencies();
   });
 
+  // P4 Exchange Rates: render + manage (Super Admin only)
+  const exchangeRatesListEl = container.querySelector('#exchange-rates-list');
+  const rateCurrencySel = container.querySelector('#p4-rate-currency');
+  const rateCurrencyLabel = container.querySelector('#p4-rate-currency-label');
+  const baseCurrencySel = container.querySelector('select[name="baseCurrency"]');
+
+  const p4CurrentBase = () => (baseCurrencySel?.value || '') || settings.baseCurrency || settings.currency || 'USD';
+
+  function p4RateOptions() {
+    if (!rateCurrencySel) return;
+    const base = p4CurrentBase();
+    const known = allCurrencies.filter((c) => c.code !== base);
+    const current = rateCurrencySel.value;
+    rateCurrencySel.innerHTML = known
+      .map(
+        (c) => `
+        <option value="${c.code}" ${(current === '' ? (c.code === 'USD' ? 'selected' : '') : current === c.code) ? 'selected' : ''}>
+          ${isEn ? (c.nameEn || c.nameAr) : c.nameAr} (${c.code})
+        </option>`
+      )
+      .join('');
+  }
+
+  function p4ActiveRate(code) {
+    const base = p4CurrentBase();
+    const suited = storage.getExchangeRates()
+      .filter((r) => r.currency === code && r.baseCurrency === base)
+      .sort((a, b) => String(b.rateDate || '').localeCompare(String(a.rateDate || '')));
+    return suited[0] || null;
+  }
+
+  function renderExchangeRates() {
+    if (!exchangeRatesListEl) return;
+    const base = p4CurrentBase();
+    const entries = storage.getExchangeRates().filter((r) => r.baseCurrency === base);
+    if (!entries.length) {
+      exchangeRatesListEl.innerHTML = `<div style="font-size:12.5px; color:var(--text-muted); padding:8px 0;">${isEn ? 'No exchange rates set for the current base currency yet.' : 'لا توجد أسعار صرف محددة للعملة الأساسية الحالية بعد.'}</div>`;
+      return;
+    }
+    exchangeRatesListEl.innerHTML = entries
+      .map(
+        (r) => `
+      <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--border-color); border-radius:8px; margin-bottom:6px; background:var(--bg-card);">
+        <span class="badge badge-primary">${r.currency}</span>
+        <strong style="min-width:130px; font-size:14px; direction:ltr;">1 ${r.currency} = ${r.rate} ${base}</strong>
+        <span style="color:var(--text-muted); font-size:12px;">${isEn ? 'on' : 'بتاريخ'} ${r.rateDate || '—'}</span>
+        <span style="flex:1; font-size:12px; color:var(--text-muted);">${r.note || ''}</span>
+        ${r.locked
+          ? `<span class="badge badge-warning" title="${isEn ? 'Referenced by a committed financial record — immutable' : 'مثبت بسجل مالي مؤكد — غير قابل للتعديل'}">🔒 ${isEn ? 'Pinned' : 'مثبّت'}</span>`
+          : `<span class="badge badge-success">${isEn ? 'Editable' : 'قابل للتعديل'}</span>`}
+        ${r.history && r.history.length
+          ? `<span class="badge badge-gray" title="${r.history.map((h) => `${h.from} → ${h.to} (${h.by || ''})${h.reason ? ' · ' + h.reason : ''}`).join(' | ')}" style="cursor:help;">${r.history.length} ${isEn ? 'edit(s)' : 'تعديل'}</span>`
+          : ''}
+      </div>`
+      )
+      .join('');
+  }
+
+  baseCurrencySel?.addEventListener('change', () => {
+    p4RateOptions();
+    renderExchangeRates();
+  });
+
+  container.querySelector('#btn-save-ex-rate')?.addEventListener('click', () => {
+    const code = rateCurrencySel?.value;
+    const rate = Number(container.querySelector('#p4-rate-value')?.value);
+    const rateDate = (container.querySelector('#p4-rate-date')?.value || '').trim();
+    const note = (container.querySelector('#p4-rate-note')?.value || '').trim();
+    if (!code) return toast.error(isEn ? 'Select a currency' : 'اختر العملة');
+    if (!Number.isFinite(rate) || rate <= 0) return toast.error(isEn ? 'Rate must be a positive number' : 'يجب أن يكون سعر الصرف رقماً موجباً');
+    if (!rateDate) return toast.error(isEn ? 'Rate date is required' : 'تاريخ سعر الصرف مطلوب');
+    const active = p4ActiveRate(code);
+    const res = storage.setExchangeRate({
+      user: storage.getActiveUser(),
+      currency: code,
+      rate,
+      rateDate,
+      note,
+      ...(active && active.locked ? { newRate: true } : {}),
+    });
+    if (!res.ok) {
+      const msg = res.message || res.error;
+      return toast.error(isEn ? msg : msg);
+    }
+    ['#p4-rate-value', '#p4-rate-note'].forEach((s) => {
+      const el = container.querySelector(s);
+      if (el) el.value = '';
+    });
+    if (container.querySelector('#p4-rate-date')) container.querySelector('#p4-rate-date').value = '';
+    renderExchangeRates();
+    toast.success(isEn ? 'Exchange rate saved — it will be pinned on new records' : 'تم حفظ سعر الصرف — وسيُثبّت على السجلات الجديدة');
+  });
+
+  if (rateCurrencyLabel) rateCurrencyLabel.textContent = p4CurrentBase();
+  p4RateOptions();
+  renderExchangeRates();
+
   // Save Settings
   container.querySelector('#btn-save-settings')?.addEventListener('click', () => {
     if (!can(storage.getActiveUser(), 'settings.manage')) { // RBAC gate (C-5)
@@ -536,8 +697,11 @@ export function renderSettingsView(container) {
     // Friday-only flag harmless by mapping it. Defaults: Saturday & Sunday.
     const checkedDays = Array.from(formData.getAll('weekendDay')).map(Number).filter((n) => n >= 0 && n <= 6);
     const weekendDays = checkedDays.length ? checkedDays : [6, 0];
+    // Start from the LATEST stored settings (P4 exchange rates are saved
+    // immediately, so a stale closure copy must never clobber them).
+    const fresh = storage.getState().settings || settings;
     const updatedSettings = {
-      ...settings,
+      ...fresh,
       companyName: formData.get('companyName'),
       companyNameEn: formData.get('companyNameEn'),
       companyPhone: formData.get('companyPhone'),
@@ -575,6 +739,9 @@ export function renderSettingsView(container) {
       // P2.2 payroll lock may only be changed by a Super Admin. Non-super-admin
       // saves simply preserve the current value.
       ...(isSuperAdmin ? { payrollViewEnabled: formData.get('payrollViewEnabled') === 'on' } : {}),
+      // P4 base currency may only be changed by a Super Admin; it affects NEW
+      // records only (historical baseAmount is never rewritten).
+      ...(isSuperAdmin ? { baseCurrency: formData.get('baseCurrency') || fresh.baseCurrency || fresh.currency || 'USD' } : {}),
     };
 
     storage.saveSettings(updatedSettings);

@@ -20,6 +20,17 @@ import { getEffectivePermissions, getAllCurrencies, resolveEmployeeCurrency } fr
 // Phase 3 read-time upgrade projection for payroll records (additive; never
 // mutates stored data, never throws on legacy/corrupt records).
 import { normalizeRecord } from './engines/payrollDataModel.js';
+// Phase 4 currency governance: rate master, transaction-level snapshots,
+// currency-mixing guards, and additive governance stamps (see
+// docs/P4-Currency-Governance-Release-Report.txt for the documented policy).
+import {
+  getRates,
+  setExchangeRate,
+  lockExchangeRate,
+  stampPayrollBatch,
+  stampEosbRecord,
+  stampLoanRecord,
+} from './engines/currencyGovernance.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -732,6 +743,47 @@ class StorageService {
   }
 
   // ==================================================================
+  // Phase 4: Currency / Exchange-Rate Governance (super_admin only).
+  // The rate master lives in settings.exchangeRates (append-only, with
+  // locked entries). Rates are Transaction-level snapshots stamped onto
+  // financial records at creation; committed records are never re-stamped.
+  // ==================================================================
+
+  _governanceSettings() {
+    return this.get(STORAGE_KEYS.SETTINGS, defaultSettings) || {};
+  }
+
+  getExchangeRates() {
+    return getRates(this._governanceSettings());
+  }
+
+  setExchangeRate(opts = {}) {
+    const settings = this._governanceSettings();
+    const result = setExchangeRate(settings, { ...opts, user: opts.user || this.getActiveUser() });
+    if (result.ok && result.rates) {
+      this.saveSettings({ ...settings, exchangeRates: result.rates });
+    }
+    return result;
+  }
+
+  // Internal: lock active rates referenced by freshly-committed non-base
+  // currencies. Idempotent — already-locked rates are never touched.
+  _lockRatesForCodes(codes) {
+    if (!Array.isArray(codes) || !codes.length) return;
+    let settings = this._governanceSettings();
+    let rates = getRates(settings);
+    let changed = false;
+    (codes || []).forEach((code) => {
+      const unlockedBefore = rates.filter((r) => r.currency === code && !r.locked).length;
+      rates = lockExchangeRate(settings, code);
+      const unlockedAfter = rates.filter((r) => r.currency === code && !r.locked).length;
+      if (unlockedAfter < unlockedBefore) changed = true;
+      settings = { ...settings, exchangeRates: rates };
+    });
+    if (changed) this.saveSettings(settings);
+  }
+
+  // ==================================================================
   // H-4/H-5: Mandatory company/branch scoping.
   // New records must carry the employee's REAL company & branch. We never
   // fabricate 'comp-1'/'br-1' placeholders — an employee with no assigned
@@ -1021,9 +1073,16 @@ class StorageService {
     loan.currency = this._loanCurrencyOf(loan);
     loan.currencySymbol = loan.currencySymbol || this._loanSymbolOf(loan.currency);
     this.attachEmployeeScope(loan);
+    // Phase 4: transaction-level rate snapshot (sealed at creation).
+    let follow = [];
+    try {
+      const stamped = stampLoanRecord(loan, this._governanceSettings());
+      follow = stamped.followCurrencies || [];
+    } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.LOANS, []);
     list.unshift(loan);
     this.set(STORAGE_KEYS.LOANS, list);
+    if (follow.length) this._lockRatesForCodes(follow);
   }
   updateLoan(loan) {
     if (!loan || !loan.id) return { ok: false, error: 'invalid_record' };
@@ -1032,11 +1091,19 @@ class StorageService {
     loan.currency = this._loanCurrencyOf(loan);
     loan.currencySymbol = loan.currencySymbol || this._loanSymbolOf(loan.currency);
     this.attachEmployeeScope(loan);
+    // Phase 4: a loan edited before ever being stamped receives a NEW snapshot
+    // at this save; an already-stamped (committed) loan is never re-stamped.
+    let follow = [];
+    try {
+      const stamped = stampLoanRecord(loan, this._governanceSettings());
+      follow = stamped.followCurrencies || [];
+    } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.LOANS, []);
     const idx = list.findIndex((l) => l && l.id === loan.id);
     if (idx === -1) return { ok: false, error: 'not_found' };
     list[idx] = loan;
     this.set(STORAGE_KEYS.LOANS, list);
+    if (follow.length) this._lockRatesForCodes(follow);
     return { ok: true, saved: loan };
   }
   deleteLoan(loanId) {
@@ -1063,11 +1130,30 @@ class StorageService {
     // payroll is never silently reverted to draft/approved by a stale device
     // pushing an older copy of the same month during the next sync.
     if (batch && typeof batch === 'object') batch.updatedAt = new Date().toISOString();
+    // Phase 4: stamp transaction-level exchange-rate snapshots (items +
+    // totalsByCurrency + governance summary). Purely additive; already-sealed
+    // committed records are never re-stamped, missing-rate records are never
+    // backfilled. Rates referenced by a committed (non-draft) save are locked.
+    let freshlyResolved = [];
+    try {
+      const stamped = stampPayrollBatch(batch, this._governanceSettings(), { at: batch.updatedAt });
+      freshlyResolved = stamped.freshlyResolvedCurrencies || [];
+    } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.PAYROLLS, []);
     const idx = list.findIndex((b) => b.month === batch.month);
     if (idx !== -1) list[idx] = batch;
     else list.unshift(batch);
     this.set(STORAGE_KEYS.PAYROLLS, list);
+    // Lock rates pinned by this save only if the batch is committed now: any
+    // currency freshly resolved HERE, plus every non-base currency already
+    // stamped on the batch that is still unlocked (draft-then-commit path).
+    if (batch.status && batch.status !== 'draft') {
+      const lockCandidates = new Set(freshlyResolved || []);
+      (batch.items || []).forEach((it) => {
+        if (it && it.currency && it.exchangeRateStatus === 'ok') lockCandidates.add(String(it.currency));
+      });
+      if (lockCandidates.size) this._lockRatesForCodes([...lockCandidates]);
+    }
   }
 
   // EOSB Mutators
@@ -1077,9 +1163,17 @@ class StorageService {
     // Bump the version stamp on every save so the cross-device server merge
     // always picks the newest settlement record.
     if (eosb && typeof eosb === 'object') eosb.updatedAt = new Date().toISOString();
+    // Phase 4: transaction-level rate snapshot (settlements are committed
+    // financial records at creation). Rate is locked if resolved non-base.
+    let follow = [];
+    try {
+      const stamped = stampEosbRecord(eosb, this._governanceSettings(), { at: eosb.updatedAt });
+      follow = stamped.followCurrencies || [];
+    } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.EOSB, []);
     list.unshift(eosb);
     this.set(STORAGE_KEYS.EOSB, list);
+    if (follow.length) this._lockRatesForCodes(follow);
   }
   deleteEOSB(eosbId) {
     const list = this.get(STORAGE_KEYS.EOSB, []);
