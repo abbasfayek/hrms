@@ -531,6 +531,7 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
  */
 export function archivePayrollBatch(batch, opts = {}) {
   if (!batch) return { ok: false, error: 'no_batch', batch };
+  if (batch.archived) return { ok: false, error: 'already_archived', batch };
   if ((batch.status || 'draft') !== 'paid') {
     return { ok: false, error: `archive_requires_paid:${batch.status}`, batch };
   }

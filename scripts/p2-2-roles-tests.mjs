@@ -218,8 +218,12 @@ ok('archive stamps archivedAt/archivedBy', !!archRes.batch.archivedAt && archRes
 ok('archive appends an archive entry to the audit history', archRes.batch.auditHistory.some((a) => a.action === 'archive'));
 ok('archive never mutates the input batch', !batchPaid.archived);
 ok('archive does not alter the Phase 1 state machine', canTransitionPayroll(batchPaid, 'paid').ok === false && canTransitionPayroll(batchPaid, 'approved').ok === false);
+ok('archived flag forbids ANY re-archive (record is sealed after archive)', archivePayrollBatch(archRes.batch, { by: 'S2' }).ok === false && archivePayrollBatch(archRes.batch, { by: 'S2' }).error === 'already_archived');
+ok('archived record stays a terminal paid row (no transition out)', canTransitionPayroll(archRes.batch, 'approved').ok === false && canTransitionPayroll(archRes.batch, 'paid').ok === false);
+ok('archived paid record cannot receive a correction (correction requires Returned)', recordPayrollCorrectionGuarded(uSuperAdmin, archRes.batch, archRes.batch, { by: 'S' }).ok === false);
 ok('payroll_admin cannot archive (permission layer)', archivePayrollBatchGuarded(uPayrollAdmin, batchPaid, { by: 'P' }).ok === false);
 ok('audit_reviewer cannot archive (permission layer)', archivePayrollBatchGuarded(uAuditReviewer, batchPaid, { by: 'A' }).ok === false);
+ok('super_admin cannot archive a batch already archived (scope+state kept, sealed)', archivePayrollBatchGuarded(uSuperAdmin, archRes.batch, { by: 'S' }).ok === false);
 
 console.log('  [P2.2b correction is guarded the same way]');
 const fixed = { ...batchRejected, items: batchRejected.items.map((it) => ({ ...it, overtimeAmount: (it.overtimeAmount || 0) + 5 })) };
