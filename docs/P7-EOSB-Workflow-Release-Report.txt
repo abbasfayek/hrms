@@ -1,0 +1,261 @@
+================================================================================
+PHASE 7 — EOSB / FINAL SETTLEMENT WORKFLOW (COMMIT HASH: b691951)
+  Release Report — Financial Workflow & Currency Specification v1.0
+================================================================================
+
+--------------------------------------------------------------------------------
+1. SCOPE
+--------------------------------------------------------------------------------
+Phase 7 delivers the FULL official EOSB (End-Of-Service Benefit / Final
+Settlement) workflow end-to-end, on top of the closed Phase 1-6 baselines:
+
+  Draft --submit--> Under Audit --approve--> Approved --disburse--> Paid
+                           |                                          |
+                        reject                                     cancel payment
+                           |                                          |
+                           v                                          v
+        Returned / Needs Correction                           Approved (re-payable)
+           |                                        (paid -> approved, eosb behavior)
+           |  correction (record old->new)
+           v
+     Corrected draft --resubmit--> Under Audit (NEW audit attempt, SAME record,
+                                              no duplicate settlement)
+
+EOSB workflow ONLY (no calculate/formula changes). EOSB has NO Archive action
+and NO Payment Queue (both excluded by design — see §15). No Phase 8 work.
+
+--------------------------------------------------------------------------------
+2. FILES MODIFIED (IMPLEMENTATION COMMIT b691951)
+--------------------------------------------------------------------------------
+  A public/js/engines/eosbWorkflow.js        NEW pure workflow engine: state
+                                             machine (canTransitionEosb),
+                                             transitionEosb (reject never
+                                             zeroes; cancel_payment paid->approved
+                                             clears payment ref), eosbFinancialSnapshot,
+                                             ensureEosbBaseline (idempotent),
+                                             pushEosbVersion (V1->V2->... linked),
+                                             originalEosbFinancialValues,
+                                             recordEosbCorrection (fresh-object
+                                             safe: rebinds id, extends version
+                                             chain, carries rejection meta).
+  A public/js/engines/eosbAccess.js          NEW guarded layer: EOSB_ACTION_PERMISSIONS
+                                             (calculate/edit->eosb.calculate,
+                                             submit/approve/reject/cancelPayment->eosb.approve,
+                                             disburse->eosb.pay, delete->eosb.delete),
+                                             requireEosbAction (permission->scope->state),
+                                             transitionEosbGuarded,
+                                             recordEosbCorrectionGuarded,
+                                             deleteEosbGuarded, eosbRecordInScope,
+                                             setEosbDeniedHook (denial audit).
+  M public/js/types.js                       ALL_PERMISSIONS += 'eosb.pay'
+                                             (label/company_hr default existed).
+  M public/js/storage.js                     addEOSB seals the baseline snapshot
+                                             BEFORE the write (see §13);
+                                             persistEosb(record) stamps+audits
+                                             every real transition with
+                                             versionId/auditAttempt/corrections/
+                                             paymentReference; updateEOSB enriched
+                                             audit; _eosbEventAction CORRECTED
+                                             branch; _auditEosb enrichment; EOSB
+                                             deny hook wired -> auditDeniedEosb.
+  M public/js/components/EOSBView.js         Approve/Reject/Pay/Resubmit/Cancel
+                                             now route through transitionEosbGuarded +
+                                             persistEosb; delete through
+                                             deleteEosbGuarded; new "correct"
+                                             button (returned cards) opens the
+                                             calculator in preview-only mode
+                                             -> recordEosbCorrectionGuarded;
+                                             rejection reason shown.
+  M public/js/components/EOSBCalculatorModal.js  opts param + previewOnly mode
+                                             ("Record Correction" label) returning
+                                             the settlement to the caller via
+                                             onResult WITHOUT saving.
+  A scripts/p7-tests.mjs                     NEW EOSB Workflow E2E suite (121
+                                             assertions, node scripts/p7-tests.mjs).
+  A docs/P7-EOSB-Workflow-Release-Report.txt this report.
+
+--------------------------------------------------------------------------------
+3. WORKFLOW (verified end-to-end through the REAL public surfaces: guard stack +
+   Phase 1 state machine principles + storage + Phase 5 audit trail + Phase 4
+   currency snapshots + Phase 3 data model)
+--------------------------------------------------------------------------------
+  Stage            Engine                                      Audit event
+  ---------------  ------------------------------------------  ----------------
+  create           calculator modal -> addEOSB (under_audit)   created
+  reject           transitionEosbGuarded(under_audit->draft)   rejected
+  correction       recordEosbCorrectionGuarded(draft->draft)   corrected
+  resubmit         transitionEosbGuarded(draft->under_audit)   resubmitted
+  approve          transitionEosbGuarded(under_audit->approved) approved
+  pay / disburse   transitionEosbGuarded(approved->paid)       paid
+  cancel payment   transitionEosbGuarded(paid->approved)       cancel_payment
+  delete           deleteEosbGuarded (non-paid only)           deleted
+  any forbidden    reportDenied -> storage hook                denied (outcome 'denied')
+
+Transition table (Phase 7): draft->under_audit; under_audit->approved|draft(reject);
+returned draft->under_audit (resubmit); approved->paid; paid->approved (cancel_payment).
+Paid is NOT editable; no duplicate submit/pay; reject only from under_audit.
+
+--------------------------------------------------------------------------------
+4. GUARDS (permission -> scope -> state, always all three)
+--------------------------------------------------------------------------------
+  company_hr: full lifecycle (calculate/edit/submit/approve/reject/disburse/
+              cancelPayment/delete).
+  branch_hr:  view + calculate ONLY (submit/approve/reject/disburse/delete all
+              denied at layer 'permission').
+  payroll_admin, audit_reviewer, payments_officer: NO EOSB permissions (denied
+              at layer 'permission' — EOSB is HR-owned).
+  Super admin: everything, still bound by the state machine.
+  Out-of-scope: scope_violation at layer 'scope' (e.g. company_hr scoped to
+              comp-2 cannot submit/correct/delete a comp-1 settlement though
+              the permission passes).
+
+--------------------------------------------------------------------------------
+5. REJECT / RETURN BEHAVIOUR
+--------------------------------------------------------------------------------
+  * amounts NEVER zeroed: rejectedSnapshot captured at reject; every monetary
+    value asserted == pre-reject value (netSettlementAmount stays > 0)
+  * rejectedBy / rejectedAt / rejectionReason attached
+  * returnState = 'needs_correction' -> a MARKED draft, never a fresh draft
+  * returned version V1 + auditAttempt result 'returned'
+  * REJECTED audit event carries reason + actor + versionId + attempt +
+    rejection linkage (rejectedBy/returnState/rejectedSnapshot) + financial view
+
+--------------------------------------------------------------------------------
+6. CORRECTION (fresh-object contract — the P6-bug class)
+--------------------------------------------------------------------------------
+  recordEosbCorrectionGuarded(HR, returnedRec, FRESH_calculateEOSB_object,
+  reason). The real UI hands a HISTORY-LESS object (no id/history). The engine:
+  * rebinds fresh.id = previous id (no duplicate settlement)
+  * PRESERVES baselineSnapshot (ORIGINAL first-submit values) and
+    rejectedSnapshot (reject-time values) — never overwritten
+  * only EXTENDS the version chain (returned,corrected, V1->V2 linked;
+    revisions never restart)
+  * records old->new changes per financial field (oldValue/newValue) + by/at/reason
+  * carries rejection meta (rejectedBy/rejectedAt/rejectionReason) across
+  * corrections may only be recorded on a RETURNED draft (guard: edit_
+    requires_returned_draft), after which the record stays draft +
+    returnState='corrected' until resubmit.
+  Changes payload is nested as corrections[].changes (an array of {field,oldValue,
+  newValue}), echoed on the CORRECTED audit event.
+
+--------------------------------------------------------------------------------
+7. RESUBMIT
+--------------------------------------------------------------------------------
+  same record (id preserved; no duplicate settlement ever created), status back
+  to under_audit, returnState='resubmitted', resubmittedBy/At, a NEW audit
+  attempt, RESUBMITTED audit event (never a second SUBMITTED).
+
+--------------------------------------------------------------------------------
+8. PAYMENT ELIGIBILITY / PAID
+--------------------------------------------------------------------------------
+  * only approved can be paid: draft / under_audit / paid -> denied at
+    layer 'state' (disburse_requires_approved / disburse_requires_approved:paid)
+  * paid stamps paidBy/paidAt + paymentReference (referenceId/executedBy/
+    executedAt/netSettlementAmount/currency/baseAmount); PAID carries it
+  * duplicate payment impossible (paid->paid denied; exactly ONE PAID event)
+  * paid settlement NOT editable / not re-approvable / not deletable
+
+--------------------------------------------------------------------------------
+9. CANCEL PAYMENT (EOSB-specific, spec-documented behavior)
+--------------------------------------------------------------------------------
+  paid -> approved via transitionEosbGuarded(record, 'approved') which resolves
+  to cancelPayment. Clears paidBy/paidAt/paymentReference, sets
+  cancelPaymentBy/cancelPaymentAt, appends 'cancel_payment' version, emits a
+  CANCEL_PAYMENT audit event (fromStatus paid -> toStatus approved) with the
+  paymentReference cleared. The record is then re-disbursable (re-pay -> paid
+  works, producing a second PAID event). No Archive step — EOSB workflow has
+  no archive action (spec: archive is a payroll concept; see §15).
+
+--------------------------------------------------------------------------------
+10. AUDIT TRAIL INTEGRATION (Phase 5)
+--------------------------------------------------------------------------------
+  * exactly one honest event per real transition (persist-after-click mirrors
+    the EOSBView handler); plain re-saves/denials emit nothing fabricated
+  * every denial is recorded as outcome 'denied' with requestedAction + layer
+  * append-only hash chain verified (verifyAuditTrail) after EVERY step
+  * events link versionId (V{revision}) + auditAttempt (attempt/result) +
+    corrections (old->new) + rejection reference + paymentReference +
+    financial/currency snapshot (financialFieldsOf -> amount/currency/rate/
+    rateDate/baseCurrency/baseAmount/currencyModel/governance)
+
+--------------------------------------------------------------------------------
+11. CURRENCY SNAPSHOT PRESERVATION (Phase 4)
+--------------------------------------------------------------------------------
+  * currency/exchangeRate/exchangeRateDate/baseCurrency/baseAmount/
+    salaryCurrency + governance sealed at creation; re-stamps reuse the same
+    (locked) rate — a committed IQD settlement is NEVER re-priced
+  * the codebase convention is baseAmount = amount x rate (multiplicative);
+    tests assert net x 1480 for IQD, never division
+  * USD advances on an IQD employee are skipped (skippedCurrencyLoans) and
+    never merged into the IQD payout (remainingLoanDeductions 0; no USD+IQD mix)
+  * baselineSnapshot + rejectedSnapshot freeze original rate/base values across
+    reject/correction/resubmit/approve/pay
+
+--------------------------------------------------------------------------------
+12. BACKWARD COMPATIBILITY
+--------------------------------------------------------------------------------
+  * permission catalog, role model, all EOSB formulas UNCHANGED (only additive
+    'eosb.pay' permission added for the disburse guard, matching the documented
+    permission list)
+  * legacy patch workflow updateEOSB intact (P5 fixture probe)
+  * addEOSB/updateEOSB/deleteEOSB semantics unchanged for existing callers
+  * all Phase 1-6 gates still green after the change (see §14)
+
+--------------------------------------------------------------------------------
+13. BUG FOUND & FIXED DURING PHASE 7 (REAL BUG, REAL UI SURFACE)
+--------------------------------------------------------------------------------
+  Bug #1 — baselineSnapshot lost on direct-to-under_audit creation:
+  the calculator saves a settlement directly as under_audit; addEOSB appended
+  the baseline seal AFTER this.set(EOSB, list), but getState() returns
+  deserialized copies, so the just-sealed baseline never survived. Records
+  created via the real UI had NO baselineSnapshot (original first submission
+  values), breaking corrections/audit. Fixed by sealing BEFORE the write.
+  Verified by P7 B1/B19/B34 and the C section.
+
+--------------------------------------------------------------------------------
+14. TEST RESULTS
+--------------------------------------------------------------------------------
+  Phase 7 EOSB Workflow E2E (scripts/p7-tests.mjs): 121/121 passed
+    A. Permission -> Scope -> State guard matrix (all 5 roles + super_admin +
+       out-of-scope + every illegal state)                    (A1-A37)
+    B. Full real-UI circle: create(under_audit) -> reject -> FRESH-object
+       correction -> resubmit -> approve -> pay -> cancel -> re-pay,
+       incl. duplicate-submit/pay/edit/delete denials, single record, honest
+       event sequence, baseline/rejected snapshot preservation       (B1-B62)
+    C. IQD currency snapshot preservation (rate frozen, USD advance skipped,
+       no assurance of currency mixing, never re-priced)       (C1-C6)
+    D. Audit integrity: actor/timestamp/old/new/reason/version/attempt/
+       financial/currency on every event + traceRecord + hash-chain  (D1-D6)
+    E. Backward compatibility: legacy updateEOSB patch sequence   (E1-E3)
+    F. Guarded-layer denials never mutate; denied events recorded (F1-F7)
+
+  GATES (all PASS after commit b691951):
+    P7   EOSB Workflow E2E                121/121 PASS
+    P6   Payroll Workflow E2E             142/142 PASS
+    P5   Central Audit Trail               61/61  PASS
+    P4   Currency Governance              140/140 PASS
+    P3   Data Model / Versions             66/66  PASS
+    P2.2 Multi-currency + rules           123/123 PASS
+    P2.2 Roles / Permissions / Scope       92/92  PASS
+    P2.1 State machine / guards            47/47  PASS
+    P2.1 UI automation                     31/31  PASS
+    Release gate                           66/66  PASS
+    Build (vite)                                 OK
+
+--------------------------------------------------------------------------------
+15. DECISIONS / NOTES
+--------------------------------------------------------------------------------
+  * EOSB has NO Archive action: the spec's archive belongs to the payroll
+    workflow only (P6 §9); EOSB cards go to end-state Paid (or back to draft
+    via a reject/correction).
+  * No Payment Queue introduced (spec: the full Payment entity is a later
+    phase). Only approved->paid disburse + the paymentReference stamp here.
+  * cancel_payment (paid->approved) is honored and audited per the documented
+    EOSB behavior, cleared and re-disbursable.
+  * Delete is permitted for non-paid settlements only (draft/returned/
+    under_audit/approved can be deleted by delete-capable roles; paid is never
+    deletable for audit integrity).
+  * The currency convention in this codebase is MULTIPLICATIVE (baseAmount =
+    amount x rate); the seeded IQD rate 1480 is a synthetic multiplier, not a
+    market IQD/USD quote — no formula was changed.
+  * No new business policies or financial formulas were introduced.
