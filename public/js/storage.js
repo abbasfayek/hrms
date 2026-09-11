@@ -1252,8 +1252,11 @@ class StorageService {
     if (batch && typeof batch === 'object') batch.updatedAt = new Date().toISOString();
     // Phase 5: capture the last KNOWN state of this month (captured at the
     // previous write — the aliased object may already carry the new status).
-    const monthKey = String(batch && batch.month !== undefined ? batch.month : (batch && batch.id));
-    const baseline = monthKey ? (this._payrollBaselines.get(monthKey) || null) : null;
+    const monthKey = batch && (batch.month !== undefined || batch.id) ? (batch.month || (batch.id && batch.id.replace('PAYROLL-', ''))) : null;
+    const compositeKey = batch && batch.month !== undefined && batch.companyId && batch.branchId
+      ? `${batch.month}|${batch.companyId}|${batch.branchId}`
+      : monthKey;
+    const baseline = monthKey ? (this._payrollBaselines.get(compositeKey) || null) : null;
     // Phase 4: stamp transaction-level exchange-rate snapshots (items +
     // totalsByCurrency + governance summary). Purely additive; already-sealed
     // committed records are never re-stamped, missing-rate records are never
@@ -1264,7 +1267,7 @@ class StorageService {
       freshlyResolved = stamped.freshlyResolvedCurrencies || [];
     } catch (e) { /* governance must never break an existing financial save */ }
     const list = this.get(STORAGE_KEYS.PAYROLLS, []);
-    const idx = list.findIndex((b) => b.month === batch.month);
+    const idx = list.findIndex((b) => b.month === batch.month && b.companyId === batch.companyId && b.branchId === batch.branchId);
     const hadStored = idx !== -1;
     if (idx !== -1) list[idx] = batch;
     else list.unshift(batch);
@@ -1283,7 +1286,7 @@ class StorageService {
     // record THIS write as the new baseline. Plain re-saves emit nothing.
     if (monthKey) {
       this._auditPayroll(baseline, batch, { hadStored });
-      this._payrollBaselines.set(monthKey, {
+      this._payrollBaselines.set(compositeKey, {
         status: batch.status || 'draft',
         correctionsLen: (batch.corrections || []).length || 0,
         archived: !!batch.archived,
@@ -1596,9 +1599,24 @@ class StorageService {
 
       const actor = this._recordActor(extra.by || undefined);
       const attempt = latestAuditAttempt(batch, action);
+      // Branch isolation (Phase 8.5): every payroll event carries the REAL
+      // company/branch identity of the transaction (batch level first, item
+      // level fallback for legacy batches), the logical payroll id (when the
+      // batch carries the composite PAYROLL-{month}-{company}-{branch} id),
+      // and the affected workforce ids — never the currentBranchId of the UI.
+      const payrollId = String((batch && batch.id) || '');
+      const batchItems = (batch && Array.isArray(batch.items)) ? batch.items : [];
+      const companyId = batch ? String(batch.companyId || (batchItems[0] && batchItems[0].companyId) || '') : '';
+      const branchId = batch ? String(batch.branchId || (batchItems[0] && batchItems[0].branchId) || '') : '';
+      const employeeIds = [...new Set(batchItems.map((it) => it && it.employeeId).filter(Boolean))];
       const event = {
         recordType: AUDIT_RECORD_TYPES.PAYROLL,
         recordId: String(batch.month !== undefined ? batch.month : (batch.id || 'unknown')),
+        payrollId,
+        companyId,
+        branchId,
+        employeeIds,
+        employeeId: employeeIds.length ? employeeIds[0] : null,
         action,
         outcome: 'success',
         actor,
@@ -1752,6 +1770,14 @@ class StorageService {
       const event = {
         recordType,
         recordId: String(recordId || 'unknown'),
+        // Branch isolation (Phase 8.5): denied payroll attempts carry the REAL
+        // target identity too, so the audit trail always says which branch a
+        // denied operation was attempted against.
+        payrollId: opts.payrollId != null ? String(opts.payrollId) : null,
+        companyId: opts.companyId != null ? String(opts.companyId) : null,
+        branchId: opts.branchId != null ? String(opts.branchId) : null,
+        employeeIds: Array.isArray(opts.employeeIds) ? opts.employeeIds : null,
+        employeeId: opts.employeeId != null ? String(opts.employeeId) : null,
         action: AUDIT_ACTIONS.DENIED,
         outcome: 'denied',
         actor: this._actor(this.getActiveUser()),
@@ -1777,7 +1803,14 @@ class StorageService {
 
   // Accessors used by the payroll guarded layer (security-denied attempts).
   auditDeniedPayroll(recordId, action, opts = {}) {
-    this._auditDenied(AUDIT_RECORD_TYPES.PAYROLL, recordId, action, opts);
+    this._auditDenied(AUDIT_RECORD_TYPES.PAYROLL, recordId, action, {
+      ...opts,
+      payrollId: opts.payrollId,
+      companyId: opts.companyId,
+      branchId: opts.branchId,
+      employeeIds: opts.employeeIds,
+      employeeId: opts.employeeId,
+    });
   }
   auditDeniedEosb(recordId, action, opts = {}) {
     this._auditDenied(AUDIT_RECORD_TYPES.EOSB, recordId, action, opts);
@@ -1971,6 +2004,11 @@ setAuditDeniedHook((info) => storage.auditDeniedPayroll(info.recordId, info.acti
   layer: info.layer,
   reason: info.reason,
   fromStatus: info.fromStatus,
+  payrollId: info.payrollId,
+  companyId: info.companyId,
+  branchId: info.branchId,
+  employeeIds: info.employeeIds,
+  employeeId: info.employeeId,
 }));
 // Phase 7: route EOSB guard denials into the central audit trail.
 setEosbDeniedHook((info) => storage.auditDeniedEosb(info.recordId, info.action, {

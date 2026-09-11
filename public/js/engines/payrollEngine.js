@@ -166,6 +166,7 @@ export function generateMonthlyPayroll(
     return {
       id: `PI-${emp.id}-${month}`,
       month,
+      payrollPeriodId: month,
       employeeId: emp.id,
       companyId: emp.companyId || '',
       branchId: emp.branchId || '',
@@ -241,9 +242,15 @@ export function generateMonthlyPayroll(
   const totalNet = parseFloat(items.reduce((sum, it) => sum + it.netSalary, 0).toFixed(2));
   const totalCompanyGosi = parseFloat(items.reduce((sum, it) => sum + it.gosiCompanyContribution, 0).toFixed(2));
 
+  const primaryCompanyId = items[0]?.companyId || '';
+  const primaryBranchId = items[0]?.branchId || '';
+
   return {
-    id: `PAYROLL-${month}`,
+    id: `PAYROLL-${month}-${primaryCompanyId}-${primaryBranchId}`,
     month,
+    payrollPeriodId: month,
+    companyId: primaryCompanyId,
+    branchId: primaryBranchId,
     title,
     issueDate,
     status: 'draft',

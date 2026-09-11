@@ -1,0 +1,143 @@
+================================================================================
+BRANCH ISOLATION — FINAL GATE (COMMIT HASH: TBD)
+  Branch Isolation Release Report — before Phase 9
+================================================================================
+
+--------------------------------------------------------------------------------
+1. SCOPE
+--------------------------------------------------------------------------------
+Branch Isolation closes the outstanding Branch-Isolation issue on top of closed
+Phases 1-8 baselines. No new Business Policies, no Formula changes, no State
+Machine changes. Branch identity is now bound at ENGINE level: a sensitive
+payroll operation is only executed when its batch's REAL company+branch match
+BOTH the acting user's scope AND the CURRENT branch context at execution time.
+Every relevant number is verified by the Final Branch Isolation Gate
+(scripts/final-branch-isolation-gate.mjs — 75 assertions, S1..S10).
+
+--------------------------------------------------------------------------------
+2. FILES MODIFIED
+--------------------------------------------------------------------------------
+  M public/js/engines/payrollAccess.js
+      requirePayrollBranchContext(user, batch, action, context) is now the
+      4th guard (after permission → scope → {NEW} context). It:
+        - refuses sensitive ops (generate/edit/submit/approve/reject/disburse/
+          archive/cancelPayment) on a batch that carries NO company/branch
+          identity anywhere (batch level OR item level) → branch_context_required
+        - validates the batch against the acting user's assigned scope
+          (company_mismatch / branch_mismatch, scope layer)
+        - validates the batch against the CURRENT UI branch context passed as
+          opts.context ({ companyId, branchId }) → branch_mismatch /
+          company_mismatch (context layer) — the UI binding.
+      requirePayrollAction, transitionPayrollGuarded,
+      recordPayrollCorrectionGuarded and archivePayrollBatchGuarded thread
+      opt.context through; denials are reported (reportDenied) with the batch's
+      real identity.
+  M public/js/components/PayrollView.js
+      Every guarded call passes context: getPayrollBranchContext() — disburse,
+      correction, submit, approve, reject, archive (6 call sites).
+  M public/js/storage.js
+      addPayrollBatch → _auditPayroll success events now carry payrollId,
+      companyId, branchId, employeeIds, employeeId (recordId stays = month for
+      backward compatibility). _auditDenied denials also carry the target
+      identity for payroll. Switch of branch NEVER rewrites stored payrolls.
+  M public/js/engines/payrollEngine.js
+      generateMonthlyPayroll stamps payrollPeriodId: month on the batch AND on
+      every item (archive-integrity identifier #4).
+  M public/js/components/ArchivePayrollModal.js
+      Legacy archiving stamps payrollPeriodId: month on the batch.
+  A scripts/final-branch-isolation-gate.mjs
+      NEW Final Branch Isolation Gate (S1..S10, 75 assertions) + embedded
+      regression of every prior gate suite.
+  D scripts/branch-isolation-tests.mjs
+      Removed the flawed standalone probe (wrong generateMonthlyPayroll call
+      shape, fabricated status:'archived', unreachable object states).
+
+--------------------------------------------------------------------------------
+3. ENFORCEMENT MODEL (engine-level, UI-agnostic)
+--------------------------------------------------------------------------------
+  Guard order (unchanged first two, new third):
+    1. permission  — user holds the permission for the action
+    2. scope       — every batch item within the user's assigned company/branch
+    3. CONTEXT     — the batch's real identity must match the CURRENT branch:
+                     - identity-less batch            → branch_context_required
+                     - assigned-scope mismatch        → company/branch_mismatch
+                     - UI-context mismatch            → company/branch_mismatch
+                      (super_admin = global authority, exempt by design)
+
+  Batch identity resolution: batch.companyId/branchId first, else the first
+  item's companyId/branchId (legacy + generated batches always carry per-item
+  identity). p5/p6 permission-first expectations are preserved (denials carry
+  layer: 'permission' before any context logic runs).
+
+  The Current Branch context is the SAME { companyId, branchId } the UI sends
+  as `context` on every guarded transition — the test drives the exact shape a
+  user action produces, so a denial under test equals a denial in production.
+
+--------------------------------------------------------------------------------
+4. FINAL GATE — 10 ACCEPTANCE POINTS (all verified)
+--------------------------------------------------------------------------------
+  S1  Engine-level branch context enforcement: sensitive ops on identity-less
+      batches refused (branch_context_required); wrong-context correction
+      refused before any state check; correct-context ops pass.
+  S2  Real E2E Baghdad workflow: generate → submit → approve → disburse →
+      archive → stored Paid + Archived.
+  S3  Cross-branch protection (working in Baghdad cannot touch Erbil):
+      failed submits never store; failed approve/disburse/archive leave the
+      stored Baghdad record byte-identical.
+  S4  Real E2E Erbil workflow WITH a Returned/re-submit leg and reverse
+      protection (working in Erbil cannot touch Baghdad); Baghdad remains
+      Paid + Archived throughout.
+  S5  Same employee (same full name) in both branches → two independent payroll
+      records per real branch, never mixed.
+  S6  Archive integrity: archived batches retain companyId, branchId,
+      employeeId(s) and payrollPeriodId permanently; branchId is never re-read
+      from the currentSelectedBranchId at display time.
+  S7  Switching branches never rewrites/deletes/replaces stored payrolls
+      (raw storage byte-identical across switches; both batches stay
+      Paid + Archived on round-trip).
+  S8  Reports / Excel / print take rows exclusively from the stored batch whose
+      companyId+branchId equal the current context → no cross-branch leakage;
+      row sum == batch net.
+  S9  Audit trail: every payroll event (success AND denied) carries companyId,
+      branchId, payrollId, employeeIds, action, actor, timestamp; paid events
+      carry the REAL branch, not the UI's currentBranchId; hash chain valid.
+  S10 Full regression green.
+
+  Scenario as ordered: Baghdad → generate → submit → approve → disburse →
+  archive → switch to Erbil → generate → submit → reject(Returned) → resubmit →
+  approve → disburse → archive → switch back to Baghdad → BOTH remain
+  Paid + Archived, each with its own workforce, amounts and audit trail.
+
+--------------------------------------------------------------------------------
+5. TEST RESULTS
+--------------------------------------------------------------------------------
+  Final Branch Isolation Gate ................... 75 passed, 0 failed
+    S1 branch context enforcement ...............  9
+    S2 Baghdad E2E flow .........................  5
+    S3 cross-branch (Baghdad→Erbil) .............  7
+    S4 Erbil E2E + reverse + Returned leg ....... 13
+    S5 same-employee independence ...............  4
+    S6 archive integrity ........................  7
+    S7 branch switching (no rewrite) ............  6
+    S8 reports/Excel/print isolation ............  8
+    S9 audit trail identity .....................  6
+    S10 regression (embedded, 10 suites) ........ 10
+
+  Regression (S10, embedded + standalone, all green):
+    P2.1  47  |  P2.2  123  |  Roles  92  |  P3  66  |  P4  140
+    P5  61  |  P6  142  |  P8  64  |  UI  31  |  Release  66
+  Build: vite OK (✓ built).
+
+--------------------------------------------------------------------------------
+6. KNOWN GAPS (unchanged, carried from earlier phases)
+--------------------------------------------------------------------------------
+  * GOSI report recalculates from live employee data instead of a stored
+    snapshot (documented P8 §9) — requires a business decision; NOT part of
+    this gate.
+  * Phase 5+ payroll events keep recordId = the month for backward
+    compatibility; branch disambiguation is done via payrollId + branchId.
+  * super_admin deliberately bypasses branch context (global authority).
+--------------------------------------------------------------------------------
+7. HOW TO RUN
+--------------------------------------------------------------------------------
+  node scripts/final-branch-isolation-gate.mjs   (or: npm run branch:isolation)

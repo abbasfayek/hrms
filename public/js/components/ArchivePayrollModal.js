@@ -147,13 +147,19 @@ export function openArchivePayrollModal({ onDone }) {
 
         valid.forEach(({ month, gross, deductions, net, count, paidDate, note }) => {
           // Reuse an existing batch id for this month (or the standard
-          // PAYROLL-{month} format) so the cross-device merge keys on the SAME
+          // PAYROLL-{month}-{companyId}-{branchId} format) so the cross-device merge keys on the SAME
           // id and the archived copy replaces any draft, never duplicating it.
-          const existing = storage.getState().payrolls.find((b) => b.month === month);
-          const batchId = existing && existing.id ? existing.id : `PAYROLL-${month}`;
+          const state = storage.getState();
+          const currentCompId = storage.getSelectedCompanyId();
+          const currentBrId = storage.getSelectedBranchId();
+          const existing = state.payrolls.find((b) => b.month === month && b.companyId === currentCompId && b.branchId === currentBrId);
+          const batchId = existing && existing.id ? existing.id : `PAYROLL-${month}-${currentCompId}-${currentBrId}`;
           const batch = {
             id: batchId,
             month,
+            payrollPeriodId: month,
+            companyId: currentCompId,
+            branchId: currentBrId,
             title: isEn ? `Monthly Payroll ${month}` : `مسير الرواتب الشهري ${formatPayMonth(month)}`,
             issueDate: paidDate,
             status: 'paid',

@@ -115,6 +115,41 @@ export function renderPayrollView(container, options = {}) {
     return localTodayStr() >= `${month}-${String(payDay).padStart(2, '0')}`;
   }
 
+  // Get the current branch context for payroll operations
+  function getPayrollBranchContext() {
+    const sc = storage.getState();
+    return {
+      companyId: storage.getSelectedCompanyId(),
+      branchId: storage.getSelectedBranchId(),
+    };
+  }
+
+  // Get live payrolls filtered by current branch context
+  function getBranchPayrolls() {
+    const { companyId, branchId } = getPayrollBranchContext();
+    return getLivePayrolls().filter((b) => 
+      b.companyId === companyId && b.branchId === branchId
+    );
+  }
+
+  // A payroll month may only be generated / reviewed once its payday arrived.
+  function isMonthAvailable(month) {
+    const { companyId, branchId } = getPayrollBranchContext();
+    const batch = getLivePayrolls().find((b) => b.month === month && b.companyId === companyId && b.branchId === branchId);
+    let payDay = defaultPayDay();
+    if (batch) {
+      // Released batches keep their historical data; pending draft/audit/approved
+      // batches are re-scheduled from the (possibly edited) branch payDay each time.
+      if (batch.releaseStatus === 'released') {
+        payDay = Number(batch.releasePayDay) || payDay;
+      } else {
+        const scheduled = computePayrollReleaseSchedule(batch, companies);
+        payDay = Number(scheduled.releasePayDay) || payDay;
+      }
+    }
+    return localTodayStr() >= `${month}-${String(payDay).padStart(2, '0')}`;
+  }
+
   // Default month: the latest month whose payroll is due and still open (not
   // paid/archived). Existing open batches (draft/under_audit/approved) have
   // priority; a due in-year month with no batch yet is also a valid target.
@@ -129,7 +164,7 @@ export function renderPayrollView(container, options = {}) {
     for (let i = 0; i < 24; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const batch = getLivePayrolls().find((b) => b.month === m);
+      const batch = getLivePayrolls().find((b) => b.month === m && b.companyId === getPayrollBranchContext().companyId && b.branchId === getPayrollBranchContext().branchId);
       if (batch) {
         if (batch.status !== 'paid') return m;
         continue;
@@ -139,16 +174,22 @@ export function renderPayrollView(container, options = {}) {
     return cur;
   }
 
+  // Get the current branch context for payroll operations
+  const { companyId: currentCompanyId, branchId: currentBranchId } = getPayrollBranchContext();
+
   let currentMonth = options.month || defaultPayMonth();
 
   // Get current month batch from storage or generate dynamically (only when
   // that month's payroll is actually due — never before its payday).
-  let currentBatch = getLivePayrolls().find((b) => b.month === currentMonth);
+  let currentBatch = getLivePayrolls().find((b) => b.month === currentMonth && b.companyId === currentCompanyId && b.branchId === currentBranchId);
   if (currentBatch && currentBatch.releaseStatus !== 'released') {
     computePayrollReleaseSchedule(currentBatch, companies);
   }
   if (!currentBatch && isMonthAvailable(currentMonth)) {
     currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+    // Tag the generated batch with current branch context
+    currentBatch.companyId = currentCompanyId;
+    currentBatch.branchId = currentBranchId;
     computePayrollReleaseSchedule(currentBatch, companies);
   }
 
@@ -157,12 +198,15 @@ export function renderPayrollView(container, options = {}) {
   // When the selected month has no batch and isn't due, no draft is generated.
   const selectMonth = (newMonth) => {
     currentMonth = newMonth;
-    currentBatch = getLivePayrolls().find((b) => b.month === currentMonth);
+    const ctx = getPayrollBranchContext();
+    currentBatch = getLivePayrolls().find((b) => b.month === newMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
     if (currentBatch && currentBatch.releaseStatus !== 'released') {
       computePayrollReleaseSchedule(currentBatch, companies);
     }
-    if (!currentBatch && isMonthAvailable(currentMonth)) {
-      currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+    if (!currentBatch && isMonthAvailable(newMonth)) {
+      currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: newMonth, adjustments: increments, companies }, settings);
+      currentBatch.companyId = ctx.companyId;
+      currentBatch.branchId = ctx.branchId;
       computePayrollReleaseSchedule(currentBatch, companies);
     }
     renderTabContent();
@@ -222,9 +266,12 @@ export function renderPayrollView(container, options = {}) {
         `;
       contentArea.querySelector('#payroll-month-selector-empty')?.addEventListener('change', (e) => {
         currentMonth = e.target.value;
-        currentBatch = getLivePayrolls().find((b) => b.month === currentMonth);
+        const ctx = getPayrollBranchContext();
+        currentBatch = getLivePayrolls().find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
         if (!currentBatch && isMonthAvailable(currentMonth)) {
           currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+          currentBatch.companyId = ctx.companyId;
+          currentBatch.branchId = ctx.branchId;
           computePayrollReleaseSchedule(currentBatch, companies);
         }
         renderTabContent();
@@ -299,7 +346,7 @@ export function renderPayrollView(container, options = {}) {
           // Phase 2 (Spec v1.0): payment runs ONLY through the guard stack —
           // Payments Officer (payroll.disburse) + approved state + scope.
           const payerName = storage.getActiveUser()?.name || (isEn ? 'Payments Officer' : 'موظف الصرف المالي');
-          const payRes = transitionPayrollGuarded(storage.getActiveUser(), batch, 'paid', { by: payerName });
+          const payRes = transitionPayrollGuarded(storage.getActiveUser(), batch, 'paid', { by: payerName, context: getPayrollBranchContext() });
           if (!payRes.ok) {
             toast.error(isEn ? `Cannot execute payment: ${payRes.error}` : `تعذر تنفيذ الصرف: ${payRes.error}`);
             return;
@@ -399,9 +446,12 @@ export function renderPayrollView(container, options = {}) {
 
         contentArea.querySelector('#payroll-month-selector-notdue')?.addEventListener('change', (e) => {
           currentMonth = e.target.value;
-          currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+          const ctx = getPayrollBranchContext();
+          currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
           if (!currentBatch && isMonthAvailable(currentMonth)) {
             currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+            currentBatch.companyId = ctx.companyId;
+            currentBatch.branchId = ctx.branchId;
             computePayrollReleaseSchedule(currentBatch, companies);
           }
           renderTabContent();
@@ -409,9 +459,12 @@ export function renderPayrollView(container, options = {}) {
 
         contentArea.querySelector('#btn-go-last-due-month')?.addEventListener('click', () => {
           currentMonth = defaultPayMonth();
-          currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+          const ctx = getPayrollBranchContext();
+          currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
           if (!currentBatch && isMonthAvailable(currentMonth)) {
             currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+            currentBatch.companyId = ctx.companyId;
+            currentBatch.branchId = ctx.branchId;
             computePayrollReleaseSchedule(currentBatch, companies);
           }
           renderTabContent();
@@ -455,9 +508,12 @@ export function renderPayrollView(container, options = {}) {
 
         contentArea.querySelector('#payroll-month-selector')?.addEventListener('change', (e) => {
           currentMonth = e.target.value;
-          currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+          const ctx = getPayrollBranchContext();
+          currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
           if (!currentBatch && isMonthAvailable(currentMonth)) {
             currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+            currentBatch.companyId = ctx.companyId;
+            currentBatch.branchId = ctx.branchId;
             computePayrollReleaseSchedule(currentBatch, companies);
           }
           renderTabContent();
@@ -831,10 +887,13 @@ export function renderPayrollView(container, options = {}) {
       // Event handlers
       contentArea.querySelector('#payroll-month-selector')?.addEventListener('change', (e) => {
         currentMonth = e.target.value;
-        currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+        const ctx = getPayrollBranchContext();
+        currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
         if (!currentBatch && isMonthAvailable(currentMonth)) {
           currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
-        computePayrollReleaseSchedule(currentBatch, companies);
+          currentBatch.companyId = ctx.companyId;
+          currentBatch.branchId = ctx.branchId;
+          computePayrollReleaseSchedule(currentBatch, companies);
         } else if (!currentBatch && !isMonthAvailable(currentMonth)) {
           toast.warning(isEn ? `Payroll for ${currentMonth} is not due yet (payday day ${defaultPayDay()}).` : `مسير رواتب ${currentMonth} غير مستحق بعد (يوم الصرف ${defaultPayDay()}).`);
           renderTabContent();
@@ -858,6 +917,7 @@ export function renderPayrollView(container, options = {}) {
             const actor = storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب');
             const corr = recordPayrollCorrectionGuarded(state.currentUser, prev, regenerated, {
               by: actor,
+              context: getPayrollBranchContext(),
               reason: isEn ? 'Recalculated after audit return' : 'إعادة احتساب بعد إعادة التدقيق',
             });
             // A denial must NEVER fall back to a plain draft save: that would
@@ -908,6 +968,7 @@ export function renderPayrollView(container, options = {}) {
         }
         const res = transitionPayrollGuarded(state.currentUser, currentBatch, 'under_audit', {
           by: storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب'),
+          context: getPayrollBranchContext(),
           rejectionReason: rejectionNote,
         });
         if (!res.ok) {
@@ -981,9 +1042,12 @@ export function renderPayrollView(container, options = {}) {
         `;
         contentArea.querySelector('#audit-month-selector')?.addEventListener('change', (e) => {
           currentMonth = e.target.value;
-          currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+          const ctx = getPayrollBranchContext();
+          currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
           if (!currentBatch && isMonthAvailable(currentMonth)) {
             currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+            currentBatch.companyId = ctx.companyId;
+            currentBatch.branchId = ctx.branchId;
             computePayrollReleaseSchedule(currentBatch, companies);
           }
           renderTabContent();
@@ -1120,10 +1184,13 @@ export function renderPayrollView(container, options = {}) {
 
       contentArea.querySelector('#audit-month-selector')?.addEventListener('change', (e) => {
         currentMonth = e.target.value;
-        currentBatch = livePayrolls.find((b) => b.month === currentMonth);
+        const ctx = getPayrollBranchContext();
+        currentBatch = livePayrolls.find((b) => b.month === currentMonth && b.companyId === ctx.companyId && b.branchId === ctx.branchId);
         if (!currentBatch && isMonthAvailable(currentMonth)) {
           currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
-        computePayrollReleaseSchedule(currentBatch, companies);
+          currentBatch.companyId = ctx.companyId;
+          currentBatch.branchId = ctx.branchId;
+          computePayrollReleaseSchedule(currentBatch, companies);
         } else if (!currentBatch && !isMonthAvailable(currentMonth)) {
           toast.warning(isEn ? `Payroll for ${currentMonth} is not due yet (payday day ${defaultPayDay()}).` : `مسير رواتب ${currentMonth} غير مستحق بعد (يوم الصرف ${defaultPayDay()}).`);
           renderTabContent();
@@ -1162,7 +1229,7 @@ export function renderPayrollView(container, options = {}) {
           return;
         }
         const auditNote = contentArea.querySelector('#audit-notes-input')?.value || '';
-        const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي'), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
+        const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي'), context: getPayrollBranchContext(), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
         if (!res.ok) {
           toast.error(isEn ? `Cannot approve: ${res.error}` : `تعذر الاعتماد: ${res.error}`);
           return;
@@ -1193,6 +1260,7 @@ export function renderPayrollView(container, options = {}) {
             const notes = contentArea.querySelector('#audit-notes-input')?.value || '';
             const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'rejected', {
               by: auditor,
+              context: getPayrollBranchContext(),
               rejectionReason: notes || (isEn ? 'Audit returned the payroll for correction' : 'أعاد التدقيق المسير للتصحيح'),
               auditNotes: notes,
             });
@@ -1325,7 +1393,7 @@ export function renderPayrollView(container, options = {}) {
               : `<strong>${b.month}</strong> — سيُؤرشف مسير الرواتب المصروف بشكل نهائي (قراءة مالية فقط). تبقى وصولات الموظفين متاحة في سجل المصروفات.`,
             confirmText: isEn ? 'Yes, Archive Payroll' : 'نعم، أرشفة المسير',
             onConfirm: () => {
-              const res = archivePayrollBatchGuarded(state.currentUser, b, { by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام') });
+              const res = archivePayrollBatchGuarded(state.currentUser, b, { by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام'), context: getPayrollBranchContext() });
               if (!res.ok) {
                 toast.error(isEn ? `Cannot archive: ${res.error}` : `تعذر الأرشفة: ${res.error}`);
                 return;
@@ -1587,6 +1655,18 @@ export function renderPayrollView(container, options = {}) {
       <div>
         <h2 style="font-size:20px; font-weight:800; color:var(--text-main);">${t('payroll.monthlyPayroll')}</h2>
         <p style="font-size:13px; color:var(--text-muted);">${t('payroll.monthlyPayrollSubtitle')}</p>
+        <div style="margin-top:8px; padding:6px 12px; background:var(--bg-card-hover); border-radius:6px; font-size:12px; font-weight:700; color:var(--primary); display:inline-flex; align-items:center; gap:6px;">
+          🏢 ${isEn ? 'Current Branch Context:' : 'سياق الفرع الحالي:'}
+          <span id="payroll-branch-context" style="font-family:monospace; background:var(--bg-input); padding:2px 8px; border-radius:4px;">
+            ${(() => {
+              const ctx = getPayrollBranchContext();
+              const state = storage.getState();
+              const comp = state.companies?.find(c => c.id === ctx.companyId);
+              const br = comp?.branches?.find(b => b.id === ctx.branchId);
+              return (comp ? (isEn ? comp.nameEn : comp.nameAr) : ctx.companyId) + ' / ' + (br ? (isEn ? br.nameEn : br.nameAr) : ctx.branchId);
+            })()}
+          </span>
+        </div>
       </div>
 
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">

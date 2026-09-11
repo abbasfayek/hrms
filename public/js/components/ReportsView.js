@@ -25,7 +25,8 @@ export function renderReportsView(container, options = {}) {
   // ------------------------------------------------------------------
   function getStoredMonthlyPayroll(month) {
     const batches = storage.getState().payrolls || [];
-    return batches.find((b) => b.month === month) || null;
+    const ctx = { companyId: storage.getSelectedCompanyId(), branchId: storage.getSelectedBranchId() };
+    return batches.find((b) => b.month === month && b.companyId === ctx.companyId && b.branchId === ctx.branchId) || null;
   }
 
   function payrollStatusInfo(batch, month) {
