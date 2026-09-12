@@ -371,6 +371,36 @@ async function getAuthContext(req) {
   return resolveAuthContext(req, sessions, getAllUsers);
 }
 
+// Server-side branch context validation
+function validateServerBranchContext(user) {
+  // Super admin doesn't need branch selection
+  if (user.role === 'super_admin') return { ok: true };
+  
+  // Branch HR users have assigned branch - must have specific branch
+  if (user.role === 'branch_hr') {
+    if (!user.assignedBranchId || user.assignedBranchId === 'all') {
+      return { ok: false, code: 'branch_required', message: 'Branch selection required' };
+    }
+    return { ok: true, branchId: user.assignedBranchId };
+  }
+  
+  // Company-scoped roles (company_hr, payroll_admin, audit_reviewer, payments_officer)
+  // These roles are company-scoped and can operate across all branches within their company
+  // Branch selection is a UI filtering concept, not a server-side restriction for these roles
+  const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
+  if (companyScopedRoles.includes(user.role)) {
+    return { ok: true, branchId: user.assignedBranchId || 'all' };
+  }
+  
+  // For other roles, check assigned branch
+  if (user.assignedBranchId && user.assignedBranchId !== 'all') {
+    return { ok: true, branchId: user.assignedBranchId };
+  }
+  
+  // Default: allow 'all' for other roles
+  return { ok: true, branchId: 'all' };
+}
+
 const MERGE_COLLECTIONS = new Set(
   ['companies', 'employees', 'leaves', 'hourly_leaves', 'overtime', 'loans',
     'increments', 'attendance', 'holidays', 'payrolls', 'eosb', 'audit']
@@ -480,6 +510,11 @@ async function handleAPI(req, res, urlParts, method) {
     const writeCheck = checkWritePerm(authCtx, collection);
     if (!writeCheck.ok) {
       return jsonResponse(res, { error: writeCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: writeCheck.reason }, writeCheck.status);
+    }
+    // Validate branch context for write operations (except for super_admin)
+    const branchCheck = validateServerBranchContext(user);
+    if (!branchCheck.ok) {
+      return jsonResponse(res, { error: 'Branch selection required', code: 'branch_required' }, 403);
     }
     try {
       const body = await readBody(req);
@@ -596,6 +631,7 @@ async function handleAPI(req, res, urlParts, method) {
     if (!backupCheck.ok) {
       return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
     }
+    // Super admin doesn't need branch validation
     try {
       const backup = {};
       for (const col of ALLOWED_COLLECTIONS) {
@@ -623,6 +659,7 @@ async function handleAPI(req, res, urlParts, method) {
     if (!restoreCheck.ok) {
       return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
     }
+    // Super admin doesn't need branch validation
     try {
       const body = await readBody(req);
       for (const [col, data] of Object.entries(body)) {
@@ -646,6 +683,13 @@ async function handleAPI(req, res, urlParts, method) {
     const impCheck = checkWritePerm(authCtx, 'import-employees');
     if (!impCheck.ok) {
       return jsonResponse(res, { error: impCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: impCheck.reason }, impCheck.status);
+    }
+    // Validate branch context for non-super-admin
+    if (!isSuper(user)) {
+      const branchCheck = validateServerBranchContext(user);
+      if (!branchCheck.ok) {
+        return jsonResponse(res, { error: 'Branch selection required', code: 'branch_required' }, 403);
+      }
     }
     try {
       const body = await readBody(req);

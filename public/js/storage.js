@@ -17,6 +17,7 @@ import {
   defaultCurrencies,
 } from './seedData.js';
 import { getEffectivePermissions, getAllCurrencies, resolveEmployeeCurrency } from './types.js';
+import { i18n } from './i18n.js';
 // Phase 3 read-time upgrade projection for payroll records (additive; never
 // mutates stored data, never throws on legacy/corrupt records).
 import { normalizeRecord } from './engines/payrollDataModel.js';
@@ -628,6 +629,71 @@ class StorageService {
 
   setSelectedBranchId(branchId) {
     this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, branchId);
+  }
+
+  /**
+   * Check if the current user has a valid branch context for operational actions.
+   * Returns { ok: true } if branch is properly set, or { ok: false, message } if not.
+   * Branch is required for all operational actions except for super_admin.
+   */
+  validateBranchContext() {
+    const user = this.getActiveUser();
+    if (!user) return { ok: false, message: 'no_user' };
+    
+    // Super admin doesn't need branch selection
+    if (user.role === 'super_admin') return { ok: true };
+    
+    // Branch HR users have assigned branch - they're already scoped
+    if (user.role === 'branch_hr') {
+      if (!user.assignedBranchId || user.assignedBranchId === 'all') {
+        return { ok: false, message: 'branch_required', userRole: user.role };
+      }
+      return { ok: true, branchId: user.assignedBranchId };
+    }
+    
+    // Company-scoped roles (company_hr, payroll_admin, audit_reviewer, payments_officer)
+    // These roles are company-scoped but may need branch for specific operations
+    const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
+    if (companyScopedRoles.includes(user.role)) {
+      const selectedBranchId = this.getSelectedBranchId();
+      if (!selectedBranchId || selectedBranchId === 'all') {
+        return { ok: false, message: 'branch_required', userRole: user.role };
+      }
+      return { ok: true, branchId: selectedBranchId };
+    }
+    
+    // For other roles, check if they have a branch assigned
+    if (user.assignedBranchId && user.assignedBranchId !== 'all') {
+      return { ok: true, branchId: user.assignedBranchId };
+    }
+    
+    const selectedBranchId = this.getSelectedBranchId();
+    if (!selectedBranchId || selectedBranchId === 'all') {
+      return { ok: false, message: 'branch_required', userRole: user.role };
+    }
+    
+    return { ok: true, branchId: selectedBranchId };
+  }
+
+  /**
+   * Get the validated branch ID for the current operation.
+   * Throws if branch context is invalid.
+   */
+  getValidatedBranchId() {
+    const validation = this.validateBranchContext();
+    if (!validation.ok) {
+      const messages = {
+        branch_required: i18n.getLang() === 'en' 
+          ? 'Please select a branch first before performing this operation.'
+          : 'يرجى تحديد الفرع أولاً قبل تنفيذ العملية.',
+        no_user: i18n.getLang() === 'en'
+          ? 'No active user session.'
+          : 'لا يوجد مستخدم نشط.',
+      };
+      const msg = messages[validation.message] || validation.message;
+      throw new Error(msg);
+    }
+    return validation.branchId;
   }
 
   getState() {

@@ -11,6 +11,7 @@ import { t, i18n } from '../i18n.js';
 export function openBatchPayslipsPrintModal(payrollBatch, settings, company = null, companies = []) {
   const items = payrollBatch.items || [];
   const isEn = i18n.getLang() === 'en';
+  const programName = isEn ? 'HRMS Enterprise' : 'بينو سوفت لإدارة الموارد البشرية';
   const compName = company ? company.nameAr : (settings.companyName || 'بينو سوفت');
   const compNameEn = company ? company.nameEn : (settings.companyNameEn || 'HRMS Enterprise');
   const crNo = company ? company.commercialRegistration : (settings.commercialRegistration || '-');
@@ -21,6 +22,9 @@ export function openBatchPayslipsPrintModal(payrollBatch, settings, company = nu
   const companyEmail = settings.companyEmail || '';
   const companyWhatsApp = settings.companyWhatsApp || '';
   const getBranchLabel = buildBranchLabelResolver(companies, isEn);
+  const payrollMonth = formatPayMonth(payrollBatch.month);
+  const printDate = formatDate(new Date().toISOString().split('T')[0]);
+  const documentRef = `PR-${payrollBatch.month}-${(payrollBatch.id || '').slice(-6).toUpperCase()}`;
 
   const bodyHtml = `
     <!-- Top Print Control Bar -->
@@ -43,7 +47,7 @@ export function openBatchPayslipsPrintModal(payrollBatch, settings, company = nu
 
     <!-- Preview Container (Scrollable inside modal) -->
     <div style="max-height: 500px; overflow-y:auto; padding: 4px; display:flex; flex-direction:column; gap:20px;">
-      ${items.map((it, idx) => generateSingleSlipHtml(it, payrollBatch, { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel }, false)).join('')}
+      ${items.map((it, idx) => generateSingleSlipHtml(it, payrollBatch, { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel, programName, payrollMonth, printDate, documentRef, itemsCount: items.length, slipIndex: idx + 1 }, false)).join('')}
     </div>
   `;
 
@@ -83,7 +87,7 @@ function buildBranchLabelResolver(companies, isEn) {
 }
 
 function generateSingleSlipHtml(it, payrollBatch, opts, isForPrintWindow = false) {
-  const { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel } = opts;
+  const { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel, programName, payrollMonth, printDate, documentRef, itemsCount, slipIndex } = opts;
   // P2.2: every payslip prints in the employee's own currency (code shown),
   // falling back to the company/global currency for legacy batches.
   const curCode = it.currency || fallbackCode || 'USD';
@@ -101,6 +105,9 @@ function generateSingleSlipHtml(it, payrollBatch, opts, isForPrintWindow = false
   const loanInstallment = Number(it.loanInstallment) || 0;
   const gosiEmp = Number(it.gosiEmployeeDeduction) || 0;
   const otherDeds = (Number(it.penaltiesDeduction) || 0) + (Number(it.otherDeductions) || 0);
+  const programNameDisplay = programName || (isEn ? 'HRMS Enterprise' : 'بينو سوفت لإدارة الموارد البشرية');
+  const pageInfo = isEn ? `Page ${slipIndex} of ${itemsCount}` : `صفحة ${slipIndex} من ${itemsCount}`;
+  const docRef = documentRef || `PR-${payrollBatch.month}-${(payrollBatch.id || '').slice(-6).toUpperCase()}`;
 
   return `
     <div class="receipt-slip-page" style="background:#ffffff; color:#0f172a; padding:24px 28px; border-radius:8px; border:${isForPrintWindow ? 'none' : '1px solid #cbd5e1'}; font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; ${isForPrintWindow ? 'page-break-after: always; break-after: page;' : ''}">
@@ -274,6 +281,27 @@ function generateSingleSlipHtml(it, payrollBatch, opts, isForPrintWindow = false
         </div>
       </div>
 
+      <!-- Enhanced Footer with Program Name, Document Ref, Page Info -->
+      <div class="no-print" style="display:none;">
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid #e2e8f0; font-size:10px; color:#64748b; text-align:center;">
+          <div>${isEn ? 'Document Ref:' : 'رقم المستند:'} <strong>${docRef}</strong></div>
+          <div style="margin-top:4px;">${isEn ? 'Print Date:' : 'تاريخ الطباعة:'} ${printDate}</div>
+          <div style="margin-top:4px;">${pageInfo}</div>
+        </div>
+      </div>
+      
+      <!-- Print-only Footer -->
+      <div style="display:none;" class="print-only-footer">
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid #e2e8f0; font-size:9px; color:#64748b; text-align:center;">
+          <div>${isEn ? 'Document Ref:' : 'رقم المستند:'} <strong>${docRef}</strong></div>
+          <div style="margin-top:2px;">${isEn ? 'Print Date:' : 'تاريخ الطباعة:'} ${printDate}</div>
+          <div style="margin-top:2px;">${pageInfo}</div>
+          <div style="margin-top:6px; font-weight:700; color:#4f46e5; font-size:10px;">
+            ${isEn ? `Issued from ${programNameDisplay}` : `صادر من برنامج ${programNameDisplay}`}
+          </div>
+        </div>
+      </div>
+
     </div>
   `;
 }
@@ -281,6 +309,7 @@ function generateSingleSlipHtml(it, payrollBatch, opts, isForPrintWindow = false
 export function printIsolatedBatchPayslips(payrollBatch, settings, company = null, companies = []) {
   const items = payrollBatch.items || [];
   const isEn = i18n.getLang() === 'en';
+  const programName = isEn ? 'HRMS Enterprise' : 'بينو سوفت لإدارة الموارد البشرية';
   const compName = company ? company.nameAr : (settings.companyName || 'بينو سوفت');
   const compNameEn = company ? company.nameEn : (settings.companyNameEn || 'HRMS Enterprise');
   const crNo = company ? company.commercialRegistration : (settings.commercialRegistration || '-');
@@ -291,6 +320,9 @@ export function printIsolatedBatchPayslips(payrollBatch, settings, company = nul
   const companyEmail = settings.companyEmail || '';
   const companyWhatsApp = settings.companyWhatsApp || '';
   const getBranchLabel = buildBranchLabelResolver(companies, isEn);
+  const payrollMonth = formatPayMonth(payrollBatch.month);
+  const printDate = formatDate(new Date().toISOString().split('T')[0]);
+  const documentRef = `PR-${payrollBatch.month}-${(payrollBatch.id || '').slice(-6).toUpperCase()}`;
 
   const win = window.open('', '_blank', 'width=850,height=950');
   if (!win) {
@@ -299,7 +331,7 @@ export function printIsolatedBatchPayslips(payrollBatch, settings, company = nul
   }
 
   const slipsHtml = items
-    .map((it) => generateSingleSlipHtml(it, payrollBatch, { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel }, true))
+    .map((it, idx) => generateSingleSlipHtml(it, payrollBatch, { compName, compNameEn, crNo, taxNo, currencySymbol, fallbackCode, companyPhone, companyEmail, companyWhatsApp, isEn, getBranchLabel, programName, payrollMonth, printDate, documentRef, itemsCount: items.length, slipIndex: idx + 1 }, true))
     .join('');
 
   win.document.write(`<!DOCTYPE html>
@@ -333,6 +365,7 @@ export function printIsolatedBatchPayslips(payrollBatch, settings, company = nul
         break-after: page !important;
       }
       .no-print { display: none !important; }
+      .print-only-footer { display: block !important; }
     }
   </style>
 </head>

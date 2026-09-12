@@ -48,20 +48,39 @@ export function openUserModal(user = null, onSaved) {
 
   const modulePerms = (moduleId) => Object.keys(PERMISSIONS).filter((p) => PERMISSIONS[p].module === moduleId);
 
-  const renderPermissionGroup = (selected) => {
+  const getExplicitPermissions = (userData) => {
+    // Return only explicitly set permissions, not role defaults
+    if (Array.isArray(userData.permissions) && userData.permissions.length > 0) {
+      // Check if permissions match role defaults exactly (meaning no explicit perms set)
+      const roleDefaults = DEFAULT_ROLE_PERMISSIONS[userData.role] || [];
+      const isDefaultOnly = userData.permissions.length === roleDefaults.length &&
+        userData.permissions.every(p => roleDefaults.includes(p));
+      if (isDefaultOnly) return [];
+      return userData.permissions;
+    }
+    return [];
+  };
+
+  const renderPermissionGroup = (userData) => {
+    const explicitPerms = getExplicitPermissions(userData);
+    const effectivePerms = userData.permissions || [];
     return PERMISSION_MODULES.map((module) => {
       const perms = modulePerms(module.id);
       if (perms.length === 0) return '';
-      const selectedCount = perms.filter((p) => selected.includes(p)).length;
+      const explicitCount = perms.filter((p) => explicitPerms.includes(p)).length;
+      const effectiveCount = perms.filter((p) => effectivePerms.includes(p)).length;
       const rows = perms
         .map((p) => {
-          const checked = selected.includes(p) ? 'checked' : '';
+          const isExplicit = explicitPerms.includes(p);
+          const isEffective = effectivePerms.includes(p);
+          const checked = isEffective ? 'checked' : '';
+          const explicitBadge = isExplicit ? `<span class="badge badge-primary" style="font-size:9px; margin-left:4px;">${t('users.explicit')}</span>` : '';
           const label = isEn ? PERMISSIONS[p].en : PERMISSIONS[p].ar;
           return `
-            <label class="perm-item" title="${label}">
-              <input type="checkbox" name="perm" value="${p}" ${checked}>
+            <label class="perm-item" title="${label}${isExplicit ? ' (' + t('users.explicit') + ')' : ''}">
+              <input type="checkbox" name="perm" value="${p}" ${checked} data-explicit="${isExplicit}">
               <span class="perm-checkbox"></span>
-              <span class="perm-label">${label}</span>
+              <span class="perm-label">${label}${explicitBadge}</span>
             </label>
           `;
         })
@@ -73,7 +92,7 @@ export function openUserModal(user = null, onSaved) {
             <div class="perm-card-title">
               <span class="perm-module-icon" style="background:${module.color}22; color:${module.color}; border-color:${module.color}55;">${name.charAt(0)}</span>
               <span class="perm-module-name">${name}</span>
-              <span class="perm-count" style="color:${module.color};">${selectedCount}/${perms.length}</span>
+              <span class="perm-count" style="color:${module.color};">${effectiveCount}/${perms.length} ${explicitCount > 0 ? `(${explicitCount} ${t('users.explicit')})` : ''}</span>
             </div>
             <div class="perm-card-actions">
               <button type="button" class="btn btn-xs perm-select-all" data-module="${module.id}">${t('users.selectAllModule')}</button>
@@ -159,7 +178,7 @@ export function openUserModal(user = null, onSaved) {
           </div>
         </div>
         <div class="perms-groups-grid" id="perms-groups">
-          ${renderPermissionGroup(data.permissions || [])}
+          ${renderPermissionGroup(data)}
         </div>
       </div>
     </form>
@@ -171,13 +190,21 @@ export function openUserModal(user = null, onSaved) {
   `;
 
   const collectPermissions = (overlay) => {
-    return Array.from(overlay.querySelectorAll('input[name="perm"]:checked')).map((cb) => cb.value);
+    // Only collect explicitly checked permissions (user manually checked them)
+    // Role defaults are applied automatically by the server/client logic
+    return Array.from(overlay.querySelectorAll('input[name="perm"]:checked'))
+      .filter((cb) => cb.dataset.explicit === 'true')
+      .map((cb) => cb.value);
   };
 
   const applyRoleDefaults = (overlay, role) => {
     const defaults = DEFAULT_ROLE_PERMISSIONS[role] || [];
     overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
-      cb.checked = defaults.includes(cb.value);
+      const wasExplicit = cb.dataset.explicit === 'true';
+      const isDefault = defaults.includes(cb.value);
+      cb.checked = isDefault;
+      // Role defaults are NOT explicit - user hasn't manually chosen them
+      cb.dataset.explicit = 'false';
     });
     refreshPermissionState(overlay);
   };
@@ -185,7 +212,11 @@ export function openUserModal(user = null, onSaved) {
   const applyToggleAllForModule = (overlay, moduleId, checked) => {
     const perms = modulePerms(moduleId);
     overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
-      if (perms.includes(cb.value)) cb.checked = checked;
+      if (perms.includes(cb.value)) {
+        cb.checked = checked;
+        // Manual toggle = explicit
+        cb.dataset.explicit = checked ? 'true' : 'false';
+      }
     });
     refreshPermissionState(overlay);
   };
@@ -193,17 +224,22 @@ export function openUserModal(user = null, onSaved) {
   const refreshPermissionState = (overlay) => {
     const checkedAll = Array.from(overlay.querySelectorAll('input[name="perm"]'));
     const checkedCount = checkedAll.filter((cb) => cb.checked).length;
+    const explicitCount = checkedAll.filter((cb) => cb.checked && cb.dataset.explicit === 'true').length;
     const totalCount = checkedAll.length;
     const countEl = overlay.querySelector('#perm-total-count');
-    if (countEl) countEl.textContent = isEn ? `${checkedCount} of ${totalCount} selected` : `${checkedCount} من ${totalCount} محدد`;
+    if (countEl) countEl.textContent = isEn ? `${checkedCount} of ${totalCount} selected (${explicitCount} explicit)` : `${checkedCount} من ${totalCount} محدد (${explicitCount} صريح)`;
     // Update per-card counters
     PERMISSION_MODULES.forEach((module) => {
       const card = overlay.querySelector(`[data-module-card="${module.id}"]`);
       const perms = modulePerms(module.id);
       if (!card || perms.length === 0) return;
       const selCount = perms.filter((p) => overlay.querySelector(`input[name="perm"][value="${p}"]`)?.checked).length;
+      const explicitCountModule = perms.filter((p) => {
+        const cb = overlay.querySelector(`input[name="perm"][value="${p}"]`);
+        return cb?.checked && cb.dataset.explicit === 'true';
+      }).length;
       const badge = card.querySelector('.perm-count');
-      if (badge) badge.textContent = `${selCount}/${perms.length}`;
+      if (badge) badge.textContent = `${selCount}/${perms.length}${explicitCountModule > 0 ? ` (${explicitCountModule} ${t('users.explicit')})` : ''}`;
     });
   };
 
@@ -261,6 +297,14 @@ export function openUserModal(user = null, onSaved) {
         btn.addEventListener('click', () => applyToggleAllForModule(overlay, btn.dataset.module, false));
       });
 
+      // Individual checkbox changes = explicit user choice
+      overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          cb.dataset.explicit = cb.checked ? 'true' : 'false';
+          refreshPermissionState(overlay);
+        });
+      });
+
       // Reset to role defaults
       overlay.querySelector('#btn-reset-role-defaults')?.addEventListener('click', () => {
         applyRoleDefaults(overlay, roleSelect.value);
@@ -278,11 +322,9 @@ export function openUserModal(user = null, onSaved) {
           return;
         }
 
-        const permissions = collectPermissions(overlay);
-        if (permissions.length === 0) {
-          toast.error(t('users.noPermissionsError'));
-          return;
-        }
+        const explicitPermissions = collectPermissions(overlay);
+        // Allow empty explicit permissions - role defaults will apply automatically
+        const permissions = explicitPermissions;
 
         const formData = new FormData(form);
         const role = formData.get('role');

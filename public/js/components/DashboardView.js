@@ -13,6 +13,13 @@ export function renderDashboardView(container, navigateTo) {
   const { employees, leaves, overtime, companies, currentUser, settings } = state;
   const isEn = i18n.getLang() === 'en';
 
+  // Branch context validation
+  const branchValidation = storage.validateBranchContext();
+  const branchRequired = !branchValidation.ok && currentUser && currentUser.role !== 'super_admin';
+  const currentBranchName = branchValidation.branchId 
+    ? (companies.flatMap(c => c.branches || []).find(b => b.id === branchValidation.branchId) || {}).nameAr 
+    : null;
+
   const activeEmployees = employees.filter((e) => e.status === 'active' || e.status === 'probation');
   const onLeaveEmployees = employees.filter((e) => e.status === 'on_leave');
   const pendingLeaves = leaves.filter((l) => l.status === 'pending');
@@ -106,6 +113,32 @@ export function renderDashboardView(container, navigateTo) {
   upcomingBirthdays.sort((a, b) => a.daysLeft - b.daysLeft);
 
   container.innerHTML = `
+    <!-- Branch Status Banner -->
+    ${branchRequired ? `
+    <div class="card" style="margin-bottom: 16px; background: linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(245, 158, 11, 0.08) 100%); border-color: rgba(239, 68, 68, 0.3);">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:16px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <span style="font-size:20px;">⚠️</span>
+          <div>
+            <div style="font-weight:700; font-size:15px; color:#dc2626;">${isEn ? 'Branch Required' : 'الفرع مطلوب'}</div>
+            <div style="font-size:13px; color:#991b1b;">${isEn ? 'Please select a branch from the top bar to perform operational actions.' : 'يرجى تحديد الفرع من الشريط العلوي لتنفيذ العمليات التشغيلية.'}</div>
+          </div>
+        </div>
+        <button type="button" class="btn btn-danger btn-sm" id="btn-go-to-branch-selector">${isEn ? 'Select Branch Now' : 'تحديد الفرع الآن'}</button>
+      </div>
+    ` : (currentBranchName ? `
+    <div class="card" style="margin-bottom: 16px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, rgba(6, 182, 212, 0.06) 100%); border-color: rgba(16, 185, 129, 0.3);">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 16px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:18px;">✅</span>
+          <div>
+            <div style="font-weight:700; font-size:14px; color:#059669;">${isEn ? 'Active Branch' : 'الفرع النشط'}</div>
+            <div style="font-size:13px; color:#047857;">${currentBranchName}</div>
+          </div>
+        </div>
+      </div>
+    ` : '')}
+    
     <!-- Top KPI Grid -->
     <div class="grid grid-cols-4" style="margin-bottom: 24px;">
       <div class="card stat-card stat-primary">
@@ -153,33 +186,59 @@ export function renderDashboardView(container, navigateTo) {
       </div>
     </div>
 
-    <!-- Quick Actions Banner -->
+    <!-- Quick Actions - Categorized -->
     <div class="card" style="margin-bottom: 24px; background: linear-gradient(135deg, rgba(79, 70, 229, 0.05) 0%, rgba(124, 58, 237, 0.05) 100%); border-color: rgba(99, 102, 241, 0.2);">
-      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:16px;">
         <div>
           <h3 style="font-size:16px; font-weight:800; color:var(--primary); display:flex; align-items:center; gap:8px;">
             ${Icons.sparkles(20)} ${t('quickActions')}
           </h3>
           <p style="font-size:13px; color:var(--text-muted);">${t('quickActionsSub')}</p>
         </div>
-        <div class="quick-action-bar">
-          <button type="button" class="btn btn-primary" id="btn-quick-new-emp">
-            ${Icons.userPlus(16)} ${t('addNewEmployee')}
+      </div>
+      
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
+        <!-- Employee Actions -->
+        <div style="padding:12px; background:var(--bg-card); border-radius:var(--radius-md); border:1px solid var(--border-color);">
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">${isEn ? 'Employees' : 'الموظفون'}</div>
+          <button type="button" class="btn btn-primary btn-sm w-full" id="btn-quick-new-emp" style="margin-bottom:6px;">
+            ${Icons.userPlus(14)} ${t('addNewEmployee')}
           </button>
-          <button type="button" class="btn btn-danger" id="btn-quick-absence">
-            ${Icons.clock(16)} ${t('att.recordAbsenceDelay')}
+          <button type="button" class="btn btn-outline btn-sm w-full" id="btn-quick-view-emp">
+            ${Icons.users(14)} ${isEn ? 'View All Employees' : 'عرض كل الموظفين'}
           </button>
-          <button type="button" class="btn btn-success" id="btn-quick-payroll">
-            ${Icons.dollar(16)} ${t('monthlyPayroll')}
+        </div>
+        
+        <!-- Payroll Actions -->
+        <div style="padding:12px; background:var(--bg-card); border-radius:var(--radius-md); border:1px solid var(--border-color);">
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">${isEn ? 'Payroll' : 'الرواتب'}</div>
+          <button type="button" class="btn btn-success btn-sm w-full" id="btn-quick-payroll" style="margin-bottom:6px;">
+            ${Icons.dollar(14)} ${t('monthlyPayroll')}
           </button>
-          <button type="button" class="btn btn-outline" id="btn-quick-leave">
-            ${Icons.calendar(16)} ${t('requestLeave')}
+          <button type="button" class="btn btn-outline btn-sm w-full" id="btn-quick-payroll-view">
+            ${Icons.list(14)} ${isEn ? 'View Payroll Batches' : 'عرض مسيرات الرواتب'}
           </button>
-          <button type="button" class="btn btn-outline" id="btn-quick-rollover">
-            ${Icons.refresh(16)} ${t('rolloverYearBalance')}
+        </div>
+        
+        <!-- Leave & Attendance Actions -->
+        <div style="padding:12px; background:var(--bg-card); border-radius:var(--radius-md); border:1px solid var(--border-color);">
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">${isEn ? 'Leaves & Attendance' : 'الإجازات والحضور'}</div>
+          <button type="button" class="btn btn-outline btn-sm w-full" id="btn-quick-leave" style="margin-bottom:6px;">
+            ${Icons.calendar(14)} ${t('requestLeave')}
           </button>
-          <button type="button" class="btn btn-outline" id="btn-quick-eosb">
-            ${Icons.award(16)} ${t('eosbCalculator')}
+          <button type="button" class="btn btn-danger btn-sm w-full" id="btn-quick-absence">
+            ${Icons.clock(14)} ${t('att.recordAbsenceDelay')}
+          </button>
+        </div>
+        
+        <!-- Payroll Tools -->
+        <div style="padding:12px; background:var(--bg-card); border-radius:var(--radius-md); border:1px solid var(--border-color);">
+          <div style="font-size:11px; font-weight:700; color:var(--text-muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:0.5px;">${isEn ? 'Payroll Tools' : 'أدوات الرواتب'}</div>
+          <button type="button" class="btn btn-outline btn-sm w-full" id="btn-quick-rollover" style="margin-bottom:6px;">
+            ${Icons.refresh(14)} ${t('rolloverYearBalance')}
+          </button>
+          <button type="button" class="btn btn-outline btn-sm w-full" id="btn-quick-eosb">
+            ${Icons.award(14)} ${t('eosbCalculator')}
           </button>
         </div>
       </div>
@@ -368,11 +427,19 @@ export function renderDashboardView(container, navigateTo) {
     navigateTo('employees', { openNewModal: true });
   });
 
+  container.querySelector('#btn-quick-view-emp')?.addEventListener('click', () => {
+    navigateTo('employees');
+  });
+
   container.querySelector('#btn-quick-absence')?.addEventListener('click', () => {
     openAbsenceModal(null, () => renderDashboardView(container, navigateTo));
   });
 
   container.querySelector('#btn-quick-payroll')?.addEventListener('click', () => {
+    navigateTo('payroll');
+  });
+
+  container.querySelector('#btn-quick-payroll-view')?.addEventListener('click', () => {
     navigateTo('payroll');
   });
 
@@ -394,5 +461,21 @@ export function renderDashboardView(container, navigateTo) {
 
   container.querySelector('#btn-view-all-leaves')?.addEventListener('click', () => {
     navigateTo('leaves');
+  });
+
+  // Branch selector button
+  container.querySelector('#btn-go-to-branch-selector')?.addEventListener('click', () => {
+    // Scroll to top where branch selector is
+    const topbar = document.querySelector('.topbar, header, .top-bar');
+    if (topbar) {
+      topbar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Highlight the branch selector briefly
+      const branchSelect = document.getElementById('topbar-branch-select');
+      if (branchSelect) {
+        branchSelect.style.boxShadow = '0 0 0 3px var(--primary)';
+        branchSelect.style.transition = 'box-shadow 0.3s';
+        setTimeout(() => { branchSelect.style.boxShadow = ''; }, 2000);
+      }
+    }
   });
 }

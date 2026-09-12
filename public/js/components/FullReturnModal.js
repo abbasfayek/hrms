@@ -1,9 +1,9 @@
 // =========================================================
 // Full Return Modal — Simplified 1-Step Reversal Workflow
 // =========================================================
-// Button: "ترجيع كامل"
-// Workflow: 1 Click → Reason Input → Confirm → Full Reversal.
+// Flow: Select Batch → Enter Reason → Confirm → Execute → Success → Back to Payroll
 // Zero manual amount typing, zero complex multi-step forms.
+// All backend validation, audit trail, and state machine rules preserved.
 // =========================================================
 
 import { storage } from '../storage.js';
@@ -19,6 +19,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
   const state = storage.getState();
   const { settings } = state;
 
+  // Pre-validation
   if (!batch || batch.status !== 'paid') {
     toast.error(isEn ? 'Full return can only be performed on a paid payroll.' : 'يمكن إجراء الترجيع الكامل على مسير مصروف فقط.');
     return;
@@ -37,6 +38,13 @@ export function openFullReturnModal({ batch, onCompleted }) {
   const items = Array.isArray(batch.items) ? batch.items : [];
   if (!items.length) {
     toast.error(isEn ? 'No employee items found in this payroll batch.' : 'لا توجد بنود موظفين في هذا المسير.');
+    return;
+  }
+
+  // Branch validation
+  const branchValidation = storage.validateBranchContext();
+  if (!branchValidation.ok) {
+    toast.error(branchValidation.message || (isEn ? 'Please select a branch first.' : 'يرجى تحديد الفرع أولاً.'));
     return;
   }
 
@@ -69,7 +77,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
 
   const footerHtml = `
     <button type="button" class="btn btn-secondary full-return-cancel-btn">${t('cancel')}</button>
-    <button type="button" class="btn btn-danger full-return-confirm-btn">${isEn ? 'Confirm Full Return' : 'تأكيد الترجيع الكامل'}</button>
+    <button type="button" class="btn btn-danger full-return-confirm-btn" style="font-weight:700;">${isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل'}</button>
   `;
 
   createModal({
@@ -82,7 +90,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
       const reasonInput = overlay.querySelector('#full-return-reason');
       setTimeout(() => reasonInput?.focus(), 60);
 
-      overlay.querySelector('.full-return-confirm-btn').addEventListener('click', () => {
+      overlay.querySelector('.full-return-confirm-btn').addEventListener('click', async () => {
         const reason = (reasonInput?.value || '').trim();
         if (!reason) {
           toast.warning(isEn ? 'Please enter the reason for return.' : 'يرجى كتابة سبب الترجيع للمتابعة.');
@@ -90,100 +98,140 @@ export function openFullReturnModal({ batch, onCompleted }) {
           return;
         }
 
-        let targetBatch = batch;
-        const branchContext = { companyId: storage.getSelectedCompanyId(), branchId: storage.getSelectedBranchId() };
+        // Disable button during processing
+        const confirmBtn = overlay.querySelector('.full-return-confirm-btn');
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = isEn ? '⏳ Executing...' : '⏳ جاري التنفيذ...';
 
-        // If batch is not yet archived, archive it first if user has permission
-        if (!targetBatch.archived) {
-          if (can(state.currentUser, 'payroll.archive')) {
-            const resArchive = archivePayrollBatchGuarded(state.currentUser, targetBatch, {
-              by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام'),
-              context: branchContext,
-            });
-            if (resArchive.ok) {
-              targetBatch = resArchive.batch;
-              storage.addPayrollBatch(targetBatch);
+        try {
+          const state = storage.getState();
+          const { settings } = state;
+          let targetBatch = batch;
+          const branchContext = { companyId: storage.getSelectedCompanyId(), branchId: branchValidation.branchId || storage.getSelectedBranchId() };
+
+          // Auto-archive if needed (background, silent)
+          if (!targetBatch.archived) {
+            if (can(state.currentUser, 'payroll.archive')) {
+              const resArchive = archivePayrollBatchGuarded(state.currentUser, targetBatch, {
+                by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام'),
+                context: branchContext,
+              });
+              if (resArchive.ok) {
+                targetBatch = resArchive.batch;
+                storage.addPayrollBatch(targetBatch);
+              }
             }
           }
-        }
 
-        // Build component lines for every employee in the batch for their exact full net
-        const components = items.map((it) => ({
-          employeeId: it.employeeId,
-          employeeName: it.employeeName || null,
-          componentCode: 'SALARY_CUT',
-          quantity: 1,
-          rateOrRuleRef: Number(it.netSalary) || 0,
-          reason: reason,
-          sourceRef: `FULL_RETURN_${targetBatch.month}`,
-          manualEntry: false,
-        }));
-
-        const input = {
-          originalBatch: targetBatch,
-          originalTransactionId: targetBatch.id,
-          direction: 'debit',
-          recovery: { method: 'separate_recovery' },
-          ratePolicy: { mode: 'original' },
-          reason: reason,
-          description: isEn ? `Full return for ${targetBatch.month}` : `ترجيع كامل لمسير ${targetBatch.month}`,
-          components,
-          manualEntry: false,
-        };
-
-        const res = createPayrollCorrectionGuarded(state.currentUser, input, {
-          settings,
-          context: branchContext,
-          existingCorrections: storage.getCorrections(targetBatch.id),
-        });
-
-        if (!res.ok) {
-          const errorMap = {
-            reason_required: isEn ? 'Reason for return is required.' : 'سبب الترجيع إلزامي.',
-            original_not_archived: isEn ? 'This payroll batch must be archived first.' : 'يجب أرشفة مسير الرواتب أولاً قبل الترجيع.',
-            correction_conflict: isEn ? 'There is already an open correction/return for this payroll.' : 'يوجد بالفعل طلب ترجيع/تصحيح مفتوح لهذا المسير.',
-            correction_window_expired: isEn ? 'The correction period for this payroll has expired.' : 'انتهت الفترة الزمنية المتاحة للترجيع لهذا المسير.',
-          };
-          const errorMsg = errorMap[res.error] || (isEn ? `Could not process full return: ${res.error}` : `تعذر تنفيذ الترجيع الكامل: ${res.error}`);
-          toast.error(errorMsg);
-          return;
-        }
-
-        // Advance to under_audit (financial audit queue) seamlessly in background
-        const subRes = transitionCorrectionGuarded(state.currentUser, res.correction, 'under_audit', {
-          by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية'),
-          context: branchContext,
-        });
-        const finalCorrection = subRes.ok ? subRes.correction : res.correction;
-
-        storage.addPayrollCorrection(finalCorrection);
-
-        // Update target batch with full return metadata
-        const updatedBatch = {
-          ...targetBatch,
-          fullReturn: {
-            completed: true,
+          // Build component lines for every employee in the batch for their exact full net
+          const components = items.map((it) => ({
+            employeeId: it.employeeId,
+            employeeName: it.employeeName || null,
+            componentCode: 'SALARY_CUT',
+            quantity: 1,
+            rateOrRuleRef: Number(it.netSalary) || 0,
             reason: reason,
-            correctionId: finalCorrection.correctionId,
-            displayNumber: finalCorrection.displayNumber || null,
-            at: new Date().toISOString(),
+            sourceRef: `FULL_RETURN_${targetBatch.month}`,
+            manualEntry: false,
+          }));
+
+          const input = {
+            originalBatch: targetBatch,
+            originalTransactionId: targetBatch.id,
+            direction: 'debit',
+            recovery: { method: 'separate_recovery' },
+            ratePolicy: { mode: 'original' },
+            reason: reason,
+            description: isEn ? `Full return for ${targetBatch.month}` : `ترجيع كامل لمسير ${targetBatch.month}`,
+            components,
+            manualEntry: false,
+          };
+
+          const res = createPayrollCorrectionGuarded(state.currentUser, input, {
+            settings,
+            context: branchContext,
+            existingCorrections: storage.getCorrections(targetBatch.id),
+          });
+
+          if (!res.ok) {
+            const errorMap = {
+              reason_required: isEn ? 'Reason for return is required.' : 'سبب الترجيع إلزامي.',
+              original_not_archived: isEn ? 'This payroll batch must be archived first.' : 'يجب أرشفة مسير الرواتب أولاً قبل الترجيع.',
+              correction_conflict: isEn ? 'There is already an open correction/return for this payroll.' : 'يوجد بالفعل طلب ترجيع/تصحيح مفتوح لهذا المسير.',
+              correction_window_expired: isEn ? 'The correction period for this payroll has expired.' : 'انتهت الفترة الزمنية المتاحة للترجيع لهذا المسير.',
+              branch_required: isEn ? 'Please select a branch first.' : 'يرجى تحديد الفرع أولاً.',
+            };
+            const errorMsg = errorMap[res.error] || (isEn ? `Could not process full return: ${res.error}` : `تعذر تنفيذ الترجيع الكامل: ${res.error}`);
+            toast.error(errorMsg);
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل';
+            return;
+          }
+
+          // Advance to under_audit (financial audit queue) seamlessly in background
+          const subRes = transitionCorrectionGuarded(state.currentUser, res.correction, 'under_audit', {
             by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية'),
-          },
-        };
-        storage.addPayrollBatch(updatedBatch);
+            context: branchContext,
+          });
+          const finalCorrection = subRes.ok ? subRes.correction : res.correction;
 
-        storage.addAudit(
-          'correction',
-          'payroll',
-          isEn
-            ? `Full return executed on ${targetBatch.month} (${formattedAmount}) — Reason: ${reason}`
-            : `تم تنفيذ ترجيع كامل لمسير ${targetBatch.month} بمبلغ (${formattedAmount}) — السبب: ${reason}`,
-          finalCorrection.correctionId
-        );
+          storage.addPayrollCorrection(finalCorrection);
 
-        toast.success(isEn ? 'Payroll full return executed successfully.' : 'تم ترجيع المسير بالكامل بنجاح.');
-        close();
-        if (onCompleted) onCompleted(finalCorrection, updatedBatch);
+          // Update target batch with full return metadata
+          const prevStatus = targetBatch.previousStatus || targetBatch.status || 'paid';
+          const updatedBatch = {
+            ...targetBatch,
+            previousStatus: prevStatus,
+            fullReturnState: 'fully_returned',
+            fullReturn: {
+              completed: true,
+              status: 'fully_returned',
+              previousStatus: prevStatus,
+              reason: reason,
+              correctionId: finalCorrection.correctionId,
+              displayNumber: finalCorrection.displayNumber || null,
+              at: new Date().toISOString(),
+              by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية'),
+            },
+          };
+          storage.addPayrollBatch(updatedBatch);
+
+          storage.addAudit(
+            'correction',
+            'payroll',
+            isEn
+              ? `Full return executed on ${targetBatch.month} (${formattedAmount}) — Reason: ${reason}`
+              : `تم تنفيذ ترجيع كامل لمسير ${targetBatch.month} بمبلغ (${formattedAmount}) — السبب: ${reason}`,
+            finalCorrection.correctionId
+          );
+
+          storage.addAudit(
+            'full_return',
+            'payroll',
+            isEn
+              ? `Full return executed on ${targetBatch.month} (${formattedAmount}) — Reason: ${reason} (Ref: ${finalCorrection.displayNumber || finalCorrection.correctionId})`
+              : `تم تنفيذ ترجيع كامل لمسير ${targetBatch.month} بمبلغ (${formattedAmount}) — السبب: ${reason} (المرجع: ${finalCorrection.displayNumber || finalCorrection.correctionId})`,
+            targetBatch.id
+          );
+
+          toast.success(isEn ? 'Payroll full return executed successfully.' : 'تم ترجيع المسير بالكامل بنجاح.');
+          
+          // Simple success flow - close modal and navigate back to payroll
+          close();
+          
+          // Navigate back to payroll view
+          if (window.hrmsApp) {
+            window.hrmsApp.navigateTo('payroll');
+          } else if (onCompleted) {
+            onCompleted(finalCorrection, updatedBatch);
+          }
+        } catch (error) {
+          console.error('Full return error:', error);
+          toast.error(isEn ? 'An unexpected error occurred.' : 'حدث خطأ غير متوقع.');
+        } finally {
+          confirmBtn.disabled = false;
+          confirmBtn.innerHTML = isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل';
+        }
       });
     },
   });
