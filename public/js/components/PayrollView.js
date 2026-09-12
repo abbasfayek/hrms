@@ -19,6 +19,7 @@ import { openLoanReceiptModal } from './LoanReceiptModal.js';
 import { openDeductionBonusModal, openDeductionsBonusesListModal } from './DeductionBonusModal.js';
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
 import { openPayrollCorrectionModal } from './PayrollCorrectionModal.js';
+import { openFullReturnModal } from './FullReturnModal.js';
 import { toast } from './Toast.js';
 import { showConfirmDialog, createModal } from './Modal.js';
 import { t, tf, i18n } from '../i18n.js';
@@ -649,9 +650,16 @@ export function renderPayrollView(container, options = {}) {
             <strong>✅ ${isEn ? 'Salaries for this month have been disbursed.' : 'تم صرف رواتب هذا الشهر بنجاح ونقلها إلى سجل الرواتب المصروفة.'}</strong>
             <div style="font-size:12px; margin-top:2px;">${isEn ? 'Paid on' : 'تاريخ الصرف'}: ${formatDate(currentBatch.paidAt)} • ${isEn ? 'By' : 'بواسطة'}: ${currentBatch.paidBy || 'HR'}</div>
           </div>
-          <button type="button" class="btn btn-sm btn-outline" id="btn-go-to-disbursed">
-            ${isEn ? 'View in Disbursed List' : 'عرض في قائمة المصروفات'}
-          </button>
+          <div style="display:flex; align-items:center; gap:8px;">
+            ${canCreateCorrection ? `
+            <button type="button" class="btn btn-sm btn-danger" id="btn-full-return-main">
+              ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
+            </button>
+            ` : ''}
+            <button type="button" class="btn btn-sm btn-outline" id="btn-go-to-disbursed">
+              ${isEn ? 'View in Disbursed List' : 'عرض في قائمة المصروفات'}
+            </button>
+          </div>
         </div>
         ` : ''}
 
@@ -1005,6 +1013,18 @@ export function renderPayrollView(container, options = {}) {
         activeTab = 'disbursed';
         updateHeaderTabs();
         renderTabContent();
+      });
+
+      contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
+        if (!currentBatch || !canCreateCorrection) return;
+        openFullReturnModal({
+          batch: currentBatch,
+          onCompleted: () => {
+            activeTab = 'corrections';
+            updateHeaderTabs();
+            renderTabContent();
+          },
+        });
       });
 
       const triggerDisburse = () => disburseBatch(currentBatch);
@@ -1366,6 +1386,11 @@ export function renderPayrollView(container, options = {}) {
                             ${b.archived ? `
                             <span class="badge badge-purple">${isEn ? 'Archived' : 'مؤرشف'}</span>
                             ` : ''}
+                            ${canCreateCorrection ? `
+                            <button type="button" class="btn btn-sm btn-danger btn-full-return-batch" title="${isEn ? 'Full Return' : 'ترجيع كامل'}">
+                              ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
+                            </button>
+                            ` : ''}
                             ${b.archived && canCreateCorrection ? `
                             <button type="button" class="btn btn-sm btn-outline btn-correct-batch">
                               ${Icons.refresh(14)} ${isEn ? 'Correction' : 'تصحيح'}
@@ -1407,6 +1432,18 @@ export function renderPayrollView(container, options = {}) {
             updateHeaderTabs();
             renderTabContent();
           }
+        });
+
+        row.querySelector('.btn-full-return-batch')?.addEventListener('click', () => {
+          if (!b || !canCreateCorrection) return;
+          openFullReturnModal({
+            batch: b,
+            onCompleted: () => {
+              activeTab = 'corrections';
+              updateHeaderTabs();
+              renderTabContent();
+            },
+          });
         });
 
         row.querySelector('.btn-correct-batch')?.addEventListener('click', () => {
@@ -1703,8 +1740,11 @@ export function renderPayrollView(container, options = {}) {
               <select class="form-select" id="pc-new-batch" style="width:180px; padding:6px 10px;">
                 ${archivedBatches.map((b) => `<option value="${b.id}">${b.month}</option>`).join('')}
               </select>
-              <button type="button" class="btn btn-primary btn-sm" id="btn-new-correction">
-                ${Icons.refresh(14)} ${isEn ? 'New Correction' : 'تصحيح جديد'}
+              <button type="button" class="btn btn-danger btn-sm" id="btn-quick-full-return">
+                ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" id="btn-new-correction">
+                ${isEn ? 'Custom Correction' : 'تصحيح مخصص'}
               </button>` : `<span class="badge badge-gray">${isEn ? 'No archived payrolls in this branch' : 'لا مسيرات مؤرشفة في هذا الفرع'}</span>`}
             </div>
           </div>
@@ -1757,6 +1797,13 @@ export function renderPayrollView(container, options = {}) {
           </div>
         </div>
       `;
+
+      contentArea.querySelector('#btn-quick-full-return')?.addEventListener('click', () => {
+        const sel = contentArea.querySelector('#pc-new-batch');
+        const batch = archivedBatches.find((b) => b.id === (sel ? sel.value : ''));
+        if (!batch) return;
+        openFullReturnModal({ batch, onCompleted: () => renderTabContent() });
+      });
 
       contentArea.querySelector('#btn-new-correction')?.addEventListener('click', () => {
         const sel = contentArea.querySelector('#pc-new-batch');

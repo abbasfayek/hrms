@@ -169,17 +169,19 @@ export function openPayrollCorrectionModal({ original, onSaved, existingCorrecti
   }
 
   function buildInput() {
+    const overallReason = (overlayEl?.querySelector('#pc-reason')?.value || '').trim();
     const components = rows.map((r, i) => {
       const compSelect = overlayEl.querySelector(`#pc-comp-${i}`);
       const selected = compSelect ? compSelect.value : r.componentCode;
       const code = selected === '__OTHER__' ? (r.sourceOther || '').trim() : selected;
+      const lineReason = (r.reason || '').trim() || overallReason;
       return {
         employeeId: r.employeeId,
         employeeName: ((original.items || []).find((it) => it.employeeId === r.employeeId) || {}).employeeName || null,
         componentCode: code,
         quantity: Number(r.quantity) || 1,
         rateOrRuleRef: Number(r.rate) || 0,
-        reason: (r.reason || '').trim(),
+        reason: lineReason,
         sourceRef: (r.sourceRef || '').trim() || null,
         manualEntry: Boolean(r.manual),
       };
@@ -191,7 +193,7 @@ export function openPayrollCorrectionModal({ original, onSaved, existingCorrecti
       direction,
       recovery: direction === 'debit' ? { method: overlayEl.querySelector('#pc-recovery').value } : undefined,
       ratePolicy: { mode: overlayEl.querySelector('#pc-rate-policy').value },
-      reason: overlayEl.querySelector('#pc-reason').value.trim(),
+      reason: overallReason,
       description: '',
       components,
       manualEntry: rows.some((r) => r.manual),
@@ -217,7 +219,13 @@ export function openPayrollCorrectionModal({ original, onSaved, existingCorrecti
         if (cell) cell.innerHTML = formatAmountWithCode(Number(l.calculatedAmount) || 0, l.currency);
       });
     } else {
-      overlayEl.querySelector('#pc-prev-corr').innerHTML = built.error ? `⚠ ${escapeHtml(built.error)}` : '0.00';
+      const errMap = {
+        reason_required: isEn ? 'Reason required' : 'السبب مطلوب',
+        invalid_component_input: isEn ? 'Invalid quantity or rate' : 'الكمية أو المعدل غير صالح',
+        components_required: isEn ? 'Components required' : 'البنود مطلوبة',
+      };
+      const displayErr = errMap[built.error] || built.error;
+      overlayEl.querySelector('#pc-prev-corr').innerHTML = displayErr ? `⚠ ${escapeHtml(displayErr)}` : '0.00';
       overlayEl.querySelector('#pc-prev-lines').innerHTML = '';
     }
   }
@@ -411,7 +419,13 @@ export function openPayrollCorrectionModal({ original, onSaved, existingCorrecti
           existingCorrections: storage.getCorrections(original.id),
         });
         if (!res.ok) {
-          toast.error(res.error || (isEn ? 'Correction refused.' : 'رُفض التصحيح.'));
+          const errMap = {
+            reason_required: isEn ? 'Reason is required.' : 'سبب التصحيح إلزامي.',
+            original_not_archived: isEn ? 'Payroll batch must be archived first.' : 'يجب أرشفة مسير الرواتب أولاً.',
+            correction_conflict: isEn ? 'An open correction already exists for this batch.' : 'يوجد بالفعل طلب تصحيح مفتوح لهذا المسير.',
+            correction_window_expired: isEn ? 'Correction window has expired.' : 'انتهت الفترة المسموحة للتصحيح.',
+          };
+          toast.error(errMap[res.error] || res.error || (isEn ? 'Correction refused.' : 'رُفض التصحيح.'));
           return;
         }
         storage.addPayrollCorrection(res.correction);
