@@ -627,7 +627,12 @@ async function handleAPI(req, res, urlParts, method) {
       const body = await readBody(req);
       for (const [col, data] of Object.entries(body)) {
         if (ALLOWED_COLLECTIONS.includes(col)) {
-          writeCollection(col, data);
+          if (col === 'users') {
+            const stored = (await readCollectionData('users')) || [];
+            writeCollection(col, mergeUsersPreservePassword(stored, data));
+          } else {
+            writeCollection(col, data);
+          }
         }
       }
       return jsonResponse(res, { success: true, collections: Object.keys(body) });
