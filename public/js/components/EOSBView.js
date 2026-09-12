@@ -14,6 +14,7 @@ import { t, i18n } from '../i18n.js';
 // (permission → scope → state) so invalid or unauthorized transitions are
 // impossible and denied attempts are recorded in the central audit trail.
 import { transitionEosbGuarded, recordEosbCorrectionGuarded, deleteEosbGuarded } from '../engines/eosbAccess.js';
+import { disburseEosbAtomic, cancelEosbPaymentAtomic } from '../engines/eosbDisbursement.js';
 
 const EOSB_STATUS_META = {
   draft: { badge: 'badge-warning', ar: 'مسودة / أعيد للتدقيق', en: 'Draft / Returned' },
@@ -303,11 +304,18 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد صرف مبلغ ${fmtAmt(record, record.netSettlementAmount)} إلى ${record.employeeName}؟ بعد الصرف تُحال التسوية إلى "مصروف" ويمكن إصدار المخالصة.`,
         confirmText: isEn ? 'Yes, Disburse' : 'نعم، اصرف',
         onConfirm: () => {
-          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'paid', { reason: 'disbursed' });
+          const res = disburseEosbAtomic({
+            user: storage.getActiveUser(),
+            record,
+            storage,
+            by: storage.getActiveUser()?.name,
+          });
           if (guardFailed(res)) return;
-          storage.persistEosb(res.batch);
-          storage.addAudit('settle', 'eosb', `${record.employeeName} — ${fmtAmt(record, res.batch.netSettlementAmount)} ${isEn ? 'paid out' : 'تم صرفها'}`, record.id);
-          toast.success(isEn ? `Settlement of ${fmtAmt(record, res.batch.netSettlementAmount)} disbursed to ${record.employeeName}.` : `تم صرف ${fmtAmt(record, res.batch.netSettlementAmount)} إلى ${record.employeeName}.`);
+          const settledCount = (res.settledLoans || []).length;
+          const loanMsg = settledCount > 0
+            ? (isEn ? ` (${settledCount} outstanding loans settled and closed)` : ` (تمت تسوية وإغلاق ${settledCount} سلفة/قرض)`)
+            : '';
+          toast.success(isEn ? `Settlement of ${fmtAmt(record, res.batch.netSettlementAmount)} disbursed to ${record.employeeName}.${loanMsg}` : `تم صرف ${fmtAmt(record, res.batch.netSettlementAmount)} إلى ${record.employeeName}.${loanMsg}`);
           renderEOSBView(container);
         },
       });
@@ -351,10 +359,13 @@ export function renderEOSBView(container, options = {}) {
           : `هل تريد إلغاء صرف ${record.employeeName}؟ سيتم إعادة التصفية إلى حالة "معتمد" (غير مصروف) ومسح سجل الصرف.`,
         confirmText: isEn ? 'Yes, Cancel Payment' : 'نعم، ألغِ الصرف',
         onConfirm: () => {
-          const res = transitionEosbGuarded(storage.getActiveUser(), record, 'approved', { reason: 'cancel_payment' });
+          const res = cancelEosbPaymentAtomic({
+            user: storage.getActiveUser(),
+            record,
+            storage,
+            by: storage.getActiveUser()?.name,
+          });
           if (guardFailed(res)) return;
-          storage.persistEosb(res.batch);
-          storage.addAudit('cancel_payment', 'eosb', `${record.employeeName} — ${isEn ? 'payment cancelled, returned to approved' : 'إلغاء الصرف، أُعيد للمعتمد'}`, record.id);
           toast.warning(isEn ? 'Payment cancelled. Settlement returned to Approved status.' : 'تم إلغاء الصرف. أُعيدت التصفية لحالة معتمد.');
           renderEOSBView(container);
         },
