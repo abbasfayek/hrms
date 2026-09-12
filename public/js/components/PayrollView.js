@@ -4,9 +4,11 @@
 
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
-import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency } from '../types.js';
+import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency, escapeHtml } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
 import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded } from '../engines/payrollAccess.js';
+import { transitionCorrectionGuarded, coApproveCorrectionGuarded, archiveCorrectionGuarded } from '../engines/payrollCorrectionAccess.js';
+import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { openPayslipModal } from './PayslipModal.js';
 import { openBatchPayslipsPrintModal, printIsolatedBatchPayslips } from './BatchPayslipsPrintModal.js';
 import { openReleasePayrollModal } from './ReleasePayrollModal.js';
@@ -15,8 +17,9 @@ import { openLoanModal } from './LoanModal.js';
 import { openLoanReceiptModal } from './LoanReceiptModal.js';
 import { openDeductionBonusModal, openDeductionsBonusesListModal } from './DeductionBonusModal.js';
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
+import { openPayrollCorrectionModal } from './PayrollCorrectionModal.js';
 import { toast } from './Toast.js';
-import { showConfirmDialog } from './Modal.js';
+import { showConfirmDialog, createModal } from './Modal.js';
 import { t, tf, i18n } from '../i18n.js';
 import { can } from '../types.js';
 
@@ -71,6 +74,9 @@ export function renderPayrollView(container, options = {}) {
   const canDeleteLoan = can(state.currentUser, 'loans.delete');
   const canDeductions = can(state.currentUser, 'deductions.add');
   const canAddIncrement = can(state.currentUser, 'increments.add');
+  // Phase 9 — correction permissions (guards still enforce all business/SoD rules).
+  const canCreateCorrection = can(state.currentUser, 'payroll.correction.create');
+  const canCoApproveCorrection = can(state.currentUser, 'payroll.correction.coApprove');
 
   let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'loans' | 'increments'
 
@@ -226,6 +232,15 @@ export function renderPayrollView(container, options = {}) {
   // Filter disbursed payrolls - read live state so batches paid during this
   // view session (release / disburse) appear immediately, not a stale mount snapshot.
   const getPaidBatches = () => storage.getState().payrolls.filter((b) => b.status === 'paid');
+
+  // Phase 9 — corrections inherited into the CURRENT branch context (L4).
+  const getContextCorrections = () => {
+    const ctx = getPayrollBranchContext();
+    return storage.getCorrections().filter((c) => c
+      && String(c.companyId) === String(ctx.companyId)
+      && String(c.branchId) === String(ctx.branchId));
+  };
+  const correctionCount = () => getContextCorrections().length;
 
   function renderTabContent() {
     const contentArea = container.querySelector('#payroll-tab-content');
@@ -1346,6 +1361,11 @@ export function renderPayrollView(container, options = {}) {
                             ${b.archived ? `
                             <span class="badge badge-purple">${isEn ? 'Archived' : 'مؤرشف'}</span>
                             ` : ''}
+                            ${b.archived && canCreateCorrection ? `
+                            <button type="button" class="btn btn-sm btn-outline btn-correct-batch">
+                              ${Icons.refresh(14)} ${isEn ? 'Correction' : 'تصحيح'}
+                            </button>
+                            ` : ''}
                             <button type="button" class="btn btn-sm btn-primary btn-view-disbursed-batch">
                               ${Icons.fileText(14)} ${isEn ? 'View Batch' : 'عرض التفاصيل'}
                             </button>
@@ -1382,6 +1402,11 @@ export function renderPayrollView(container, options = {}) {
             updateHeaderTabs();
             renderTabContent();
           }
+        });
+
+        row.querySelector('.btn-correct-batch')?.addEventListener('click', () => {
+          if (!b || !b.archived || !canCreateCorrection) return;
+          openPayrollCorrectionModal({ original: b, onSaved: () => { activeTab = 'corrections'; updateHeaderTabs(); renderTabContent(); } });
         });
 
         row.querySelector('.btn-archive-paid-batch')?.addEventListener('click', () => {
@@ -1637,6 +1662,161 @@ export function renderPayrollView(container, options = {}) {
         if (!canAddIncrement) return;
         openSalaryIncrementModal(null, () => renderPayrollView(container, { tab: 'increments' }));
       });
+    } else if (activeTab === 'corrections') {
+      // =========================================================
+      // Phase 9 — POST-PAYMENT CORRECTIONS TAB (L1–L6, Decision 8)
+      // =========================================================
+      const ctx = getPayrollBranchContext();
+      const corrections = getContextCorrections();
+      const archivedBatches = getLivePayrolls().filter((b) => b && b.archived === true && b.status === 'paid'
+        && String(b.companyId) === String(ctx.companyId) && String(b.branchId) === String(ctx.branchId));
+
+      const statusMeta = (c) => {
+        if (c.archived === true) return { cls: 'badge-purple', text: isEn ? 'Archived (immutable)' : 'مؤرشف (غير قابل للتعديل)' };
+        if (c.status === 'paid') return { cls: 'badge-success', text: isEn ? 'Paid' : 'مصروف' };
+        if (c.status === 'approved') return { cls: 'badge-info', text: isEn ? 'Approved' : 'معتمد' };
+        if (c.status === 'under_audit') return c.coApprovePending ? { cls: 'badge-warning', text: isEn ? 'Pending 2nd approval' : 'بانتظار الموافقة الثانية' } : { cls: 'badge-warning', text: isEn ? 'Under Audit' : 'قيد التدقيق' };
+        if (c.status === 'rejected') return { cls: 'badge-danger', text: isEn ? 'Returned' : 'مُعاد للتصحيح' };
+        return { cls: 'badge-gray', text: isEn ? 'Draft' : 'مسودة' };
+      };
+
+      const money = (c) => {
+        const view = correctionFinancialView(c);
+        if (!view || !view.currencies || !view.currencies.length) return '0.00';
+        return view.currencies.map((g) => formatAmountWithCode(g.amount, g.code)).join(' + ');
+      };
+
+      contentArea.innerHTML = `
+        <div class="card" style="padding:0; overflow:hidden;">
+          <div style="padding:16px 20px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="font-weight:700; font-size:15px; color:var(--text-main);">${isEn ? 'Post-Payment Corrections' : 'التصحيحات اللاحقة للصرف'}</div>
+              <div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Original + Σ corrections = Net/Effective — the archived original is never modified (L1/L6).' : 'الأصلي + مجموع التصحيحات = الصافي/الفعال — لا يُعدّل المسير المؤرشف أبداً.'}</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              ${archivedBatches.length && canCreateCorrection ? `
+              <select class="form-select" id="pc-new-batch" style="width:180px; padding:6px 10px;">
+                ${archivedBatches.map((b) => `<option value="${b.id}">${b.month}</option>`).join('')}
+              </select>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-new-correction">
+                ${Icons.refresh(14)} ${isEn ? 'New Correction' : 'تصحيح جديد'}
+              </button>` : `<span class="badge badge-gray">${isEn ? 'No archived payrolls in this branch' : 'لا مسيرات مؤرشفة في هذا الفرع'}</span>`}
+            </div>
+          </div>
+          <div class="table-container" style="border:none;">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>${isEn ? 'Number' : 'الرقم'}</th>
+                  <th>${isEn ? 'Original' : 'المسير الأصلي'}</th>
+                  <th>${isEn ? 'Direction' : 'الاتجاه'}</th>
+                  <th>${isEn ? 'Amount (signed)' : 'المبلغ (مُوقّع)'}</th>
+                  <th>${isEn ? 'Recovery' : 'الاسترداد'}</th>
+                  <th>${isEn ? 'Status' : 'الحالة'}</th>
+                  <th style="text-align:left;">${isEn ? 'Actions' : 'إجراءات'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${corrections.length === 0
+                  ? `<tr><td colspan="7" style="text-align:center; padding:32px; color:var(--text-muted);">${isEn ? 'No corrections in this branch context yet.' : 'لا توجد تصحيحات في سياق هذا الفرع بعد.'}</td></tr>`
+                  : corrections.map((c) => {
+                    const sm = statusMeta(c);
+                    return `
+                    <tr data-cid="${c.correctionId}">
+                      <td><strong style="direction:ltr; unicode-bidi:embed;">${escapeHtml(c.displayNumber || c.correctionId)}</strong></td>
+                      <td>${escapeHtml(c.payrollPeriodId || '-')}</td>
+                      <td><span class="badge ${c.direction === 'debit' ? 'badge-danger' : 'badge-success'}">${c.direction === 'debit' ? (isEn ? 'Debit' : 'خصم') : (isEn ? 'Credit' : 'إضافة')}</span></td>
+                      <td style="direction:ltr; unicode-bidi:embed; font-weight:700;">${money(c)}</td>
+                      <td>${c.recovery && c.recovery.method ? escapeHtml(c.recovery.method) : '—'}</td>
+                      <td><span class="badge ${sm.cls}">${sm.text}</span></td>
+                      <td>
+                        <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end; flex-wrap:wrap;">
+                          ${c.status === 'draft' && canCreateCorrection ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="submit">${isEn ? 'Submit' : 'إرسال'}</button>` : ''}
+                          ${c.status === 'under_audit' && c.coApprovePending && canCoApproveCorrection ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="coApprove">${isEn ? 'Co-Approve' : 'الموافقة الثانية'}</button>` : ''}
+                          ${c.status === 'under_audit' && !c.coApprovePending && canApprove ? `<button type="button" class="btn btn-sm btn-primary" data-pc-act="approve">${isEn ? 'Approve' : 'اعتماد'}</button>` : ''}
+                          ${c.status === 'under_audit' && !c.coApprovePending && canRejectAudit ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="reject" style="color:var(--danger);">${isEn ? 'Return' : 'إعادة'}</button>` : ''}
+                          ${(c.status === 'under_audit' || c.status === 'approved') && canDisburse ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="disburse">${isEn ? 'Disburse' : 'صرف'}</button>` : ''}
+                          ${c.status === 'paid' && c.archived !== true && canArchive ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="archive">${isEn ? 'Archive' : 'أرشفة'}</button>` : ''}
+                          ${c.archived === true ? `<span style="font-size:11px; color:var(--text-muted);">${isEn ? 'read-only' : 'قراءة فقط'}</span>` : ''}
+                        </div>
+                      </td>
+                    </tr>`;
+                  }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      contentArea.querySelector('#btn-new-correction')?.addEventListener('click', () => {
+        const sel = contentArea.querySelector('#pc-new-batch');
+        const batch = archivedBatches.find((b) => b.id === (sel ? sel.value : ''));
+        if (!batch) return;
+        openPayrollCorrectionModal({ original: batch, onSaved: () => renderTabContent() });
+      });
+
+      const byName = () => storage.getActiveUser()?.name || '';
+
+      const runCorrectionAction = (correction, act) => {
+        if (act === 'coApprove') {
+          const res = coApproveCorrectionGuarded(state.currentUser, correction, { by: byName(), context: getPayrollBranchContext() });
+          if (!res.ok) { toast.error(isEn ? `Cannot co-approve: ${res.error}` : `تعذر الاعتماد الثاني: ${res.error}`); return; }
+          storage.addPayrollCorrection(res.correction);
+          storage.addAudit('approve', 'payroll', `${res.correction.displayNumber} → dual approved`, res.correction.correctionId);
+          toast.success(isEn ? 'Dual approval completed.' : 'تمت الموافقة الثانية.');
+          renderTabContent();
+          return;
+        }
+        if (act === 'reject') {
+          createModal({
+            title: isEn ? 'Return correction' : 'إعادة التصحيح للتصحيح',
+            size: 'sm',
+            bodyHtml: `<div class="form-group"><label class="form-label">${isEn ? 'Rejection reason (mandatory)' : 'سبب الرفض (إلزامي)'} *</label><textarea class="form-input" id="pc-reject-reason" rows="3" required></textarea></div>`,
+            footerHtml: `<button type="button" class="btn btn-secondary pc-reject-cancel">${t('cancel')}</button><button type="button" class="btn btn-danger pc-reject-confirm">${isEn ? 'Return' : 'إعادة'}</button>`,
+            onOpen: (overlay, close) => {
+              overlay.querySelector('.pc-reject-cancel').addEventListener('click', close);
+              overlay.querySelector('.pc-reject-confirm').addEventListener('click', () => {
+                const reason = overlay.querySelector('#pc-reject-reason').value.trim();
+                if (!reason) { toast.error(isEn ? 'A rejection reason is required.' : 'سبب الرفض إلزامي.'); return; }
+                const res = transitionCorrectionGuarded(state.currentUser, correction, 'rejected', { by: byName(), context: getPayrollBranchContext(), rejectionReason: reason });
+                if (!res.ok) { toast.error(isEn ? `Cannot return: ${res.error}` : `تعذر الإعادة: ${res.error}`); return; }
+                storage.addPayrollCorrection(res.correction);
+                storage.addAudit('reject', 'payroll', `${res.correction.displayNumber} → returned`, res.correction.correctionId);
+                toast.success(isEn ? 'Correction returned for revision.' : 'تمت إعادة التصحيح للمراجعة.');
+                close();
+                renderTabContent();
+              });
+            },
+          });
+          return;
+        }
+        const to = act === 'submit' ? 'under_audit' : act === 'approve' ? 'approved' : act === 'disburse' ? 'paid' : null;
+        if (act === 'archive') {
+          const res = archiveCorrectionGuarded(state.currentUser, correction, { by: byName(), context: getPayrollBranchContext() });
+          if (!res.ok) { toast.error(isEn ? `Cannot archive: ${res.error}` : `تعذر الأرشفة: ${res.error}`); return; }
+          storage.addPayrollCorrection(res.correction);
+          storage.addAudit('archive', 'payroll', `${res.correction.displayNumber} → archived`, res.correction.correctionId);
+          toast.success(isEn ? 'Correction archived (now immutable).' : 'تمت أرشفة التصحيح (غير قابل للتعديل الآن).');
+          renderTabContent();
+          return;
+        }
+        if (!to) return;
+        const res = transitionCorrectionGuarded(state.currentUser, correction, to, { by: byName(), context: getPayrollBranchContext() });
+        if (!res.ok) { toast.error(isEn ? `Cannot ${act}: ${res.error}` : `تعذر ${act}: ${res.error}`); return; }
+        storage.addPayrollCorrection(res.correction);
+        storage.addAudit(act, 'payroll', `${res.correction.displayNumber} → ${res.correction.status}`, res.correction.correctionId);
+        toast.success(isEn ? `Correction ${res.correction.status}.` : `حالة التصحيح: ${res.correction.status}.`);
+        renderTabContent();
+      };
+
+      contentArea.querySelectorAll('[data-pc-act]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const cid = btn.closest('tr')?.getAttribute('data-cid');
+          const correction = storage.getCorrections().find((c) => c && c.correctionId === cid);
+          if (!correction) return;
+          runCorrectionAction(correction, btn.getAttribute('data-pc-act'));
+        });
+      });
     }
   }
 
@@ -1701,6 +1881,9 @@ export function renderPayrollView(container, options = {}) {
     ` : ''}
       <button type="button" class="tab-btn ${activeTab === 'disbursed' ? 'active' : ''}" data-tab="disbursed" id="tab-payroll-disbursed">
         ${Icons.award(16)} ${isEn ? 'Disbursed Payrolls' : 'الرواتب المصروفة والمؤرشفة'} (${getPaidBatches().length})
+      </button>
+      <button type="button" class="tab-btn ${activeTab === 'corrections' ? 'active' : ''}" data-tab="corrections" id="tab-payroll-corrections">
+        ${Icons.refresh(16)} ${isEn ? 'Post-Payment Corrections' : 'التصحيحات اللاحقة للصرف'} (${correctionCount()})
       </button>
       <button type="button" class="tab-btn ${activeTab === 'loans' ? 'active' : ''}" data-tab="loans" id="tab-payroll-loans">
         ${Icons.receipt(16)} ${isEn ? 'Loans & Settlements' : 'كشف السلف وتصفيتها'}

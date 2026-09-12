@@ -27,6 +27,9 @@ const { openAttendanceModal } = await import(`${JS}components/AttendanceModal.js
 const { openAbsenceModal } = await import(`${JS}components/AbsenceModal.js`);
 const { openLeaveRequestModal } = await import(`${JS}components/LeaveRequestModal.js`);
 const { calculateLeaveBalance } = await import(`${JS}engines/leaveEngine.js`);
+const { openPayrollCorrectionModal } = await import(`${JS}components/PayrollCorrectionModal.js`);
+const { renderReportsView } = await import(`${JS}components/ReportsView.js`);
+const { i18n } = await import(`${JS}i18n.js`);
 
 let passed = 0;
 let failed = 0;
@@ -212,6 +215,72 @@ await closeOverlay();
 
 const bal = calculateLeaveBalance(empA, storage.getState().leaves, new Date(), storage.getState().settings);
 ok('balance counts only live approved days (1 + 0.5 = 1.5)', Math.abs(bal.usedAnnualDays - 1.5) < 0.001);
+
+// =========================================================
+// P9: Payroll Correction Modal + Reports corrections tab
+// =========================================================
+console.log('  [PayrollCorrectionModal → Reports corrections tab]');
+i18n.setLang('en');
+// super_admin default active user (usr-admin); no explicit login needed.
+let savedSel = { c: storage.getSelectedCompanyId(), b: storage.getSelectedBranchId() };
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
+
+const p9Batch = {
+  id: 'PAYROLL-2026-09-comp-1-br-1',
+  month: '2026-09',
+  companyId: 'comp-1',
+  branchId: 'br-1',
+  status: 'paid',
+  paidAt: '2026-09-10T08:00:00.000Z',
+  archived: true,
+  archivedAt: '2026-09-10T10:00:00.000Z',
+  totalGross: 6000,
+  totalNet: 6000,
+  totalsByCurrency: [{ code: 'SAR', symbol: 'ر.س', net: 6000, gross: 6000 }],
+  items: [
+    { id: 'it-p9-1', employeeId: 'emp-ui-1', employeeName: empA.fullName, currency: 'SAR', currencySymbol: 'ر.س', basicSalary: 6000, grossSalary: 6000, netSalary: 6000 },
+  ],
+};
+storage.addPayrollBatch(p9Batch);
+const storedP9 = storage.getState().payrolls.find((b) => b.id === p9Batch.id);
+ok('p9 archived paid batch stored', !!storedP9 && storedP9.status === 'paid' && storedP9.archived === true);
+
+let p9Saved = 0;
+openPayrollCorrectionModal({ original: storedP9, onSaved: () => p9Saved++ });
+let ovP9 = $('.modal-overlay');
+ok('p9 correction modal opens', !!ovP9);
+ok('p9 next-number preview stamped', !!$('#pc-form', ovP9) && $('#pc-form', ovP9).innerHTML.includes('CORR-001'));
+ok('p9 employee name resolved onto the line', $('#pc-emp-0', ovP9).selectedOptions[0]?.text === empA.fullName);
+setVal($('#pc-comp-0', ovP9), 'BONUS');
+setVal($('#pc-rate-0', ovP9), '300', 'input');
+setVal($('#pc-qty-0', ovP9), '1', 'input');
+setVal($('#pc-lreason-0', ovP9), 'UI smoke line reason', 'input');
+setVal($('#pc-reason', ovP9), 'UI smoke credit correction', 'input');
+await sleep(80);
+ok('p9 Net/Effective preview shows +300 credit (no guard error)', /300/.test($('#pc-prev-corr', ovP9).innerHTML) && !$('#pc-prev-corr', ovP9).innerHTML.includes('⚠'));
+click($('.submit-pc-btn', ovP9));
+await sleep(300);
+const p9Corrs = storage.getCorrections(p9Batch.id);
+ok('p9 correction saved as draft with stamped number', p9Corrs.length === 1 && p9Corrs[0].status === 'draft' && String(p9Corrs[0].displayNumber || '').endsWith('-CORR-001'));
+ok('p9 correction onSaved fired', p9Saved === 1);
+ok('p9 modal closed after save', !document.querySelector('.modal-overlay'));
+
+const repHost = document.createElement('div');
+document.body.appendChild(repHost);
+renderReportsView(repHost, {});
+await sleep(50);
+ok('p9 reports default audit tab renders', !!repHost.querySelector('#report-details-container'));
+click(repHost.querySelector('#rep-tab-corrections'));
+await sleep(50);
+ok('p9 reports corrections tab renders table', !!repHost.querySelector('#report-details-container table'));
+const repText = repHost.textContent;
+ok('p9 three-column Net/Effective summary visible', repText.includes('Net / Effective'));
+ok('p9 net effective = original + correction (6,300)', repText.includes('6,300') && repText.includes('300'));
+ok('p9 correction number + rate source listed', repText.includes('CORR-001') && repText.includes('original'));
+repHost.remove();
+storage.setSelectedCompanyId(savedSel.c);
+storage.setSelectedBranchId(savedSel.b);
 
 console.log('\n============================================');
 console.log(`P2.1 UI AUTOMATION: ${passed} passed, ${failed} failed`);

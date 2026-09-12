@@ -52,6 +52,10 @@ import { setAuditDeniedHook } from './engines/payrollAccess.js';
 // Phase 7: EOSB workflow guards + pure engine (deny hook + baseline seal).
 import { setEosbDeniedHook } from './engines/eosbAccess.js';
 import { ensureEosbBaseline } from './engines/eosbWorkflow.js';
+// Phase 9: payroll-correction guard denials + baseline seal for audit events.
+import { setAuditCorrectionDeniedHook } from './engines/payrollCorrectionAccess.js';
+import { correctionFinancialView } from './engines/payrollCorrectionModel.js';
+import { correctionDisplayNumber, nextCorrectionSequence } from './engines/payrollCorrectionModel.js';
 
 const STORAGE_KEYS = {
   COMPANIES: 'hrms_companies_v3',
@@ -70,6 +74,7 @@ const STORAGE_KEYS = {
   HOLIDAYS: 'hrms_holidays_v3',
   PAYROLLS: 'hrms_payrolls_v3',
   EOSB: 'hrms_eosb_v3',
+  CORRECTIONS: 'hrms_corrections_v3',
   THEME: 'hrms_theme_v3',
   AUDIT: 'hrms_audit_v3',
   AUDIT_TRAIL: 'hrms_audit_trail_v3',
@@ -91,6 +96,7 @@ const KEY_TO_COLLECTION = {
   [STORAGE_KEYS.HOLIDAYS]: 'holidays',
   [STORAGE_KEYS.PAYROLLS]: 'payrolls',
   [STORAGE_KEYS.EOSB]: 'eosb',
+  [STORAGE_KEYS.CORRECTIONS]: 'corrections',
   [STORAGE_KEYS.AUDIT]: 'audit',
   [STORAGE_KEYS.AUDIT_TRAIL]: 'audit_trail',
   [STORAGE_KEYS.DELETED_RECORDS]: 'deleted_records',
@@ -114,6 +120,10 @@ class StorageService {
     // derive the true transition. First write of an unknown month = baseline
     // (seed/migration) and emits NO fabricated event.
     this._payrollBaselines = new Map();
+    // Phase 9: last-known correction state per correctionId, captured at WRITE
+    // time so the audit hook derives the TRUE workflow transition (insert-only
+    // storage + insert-only upserts; archived corrections are frozen).
+    this._correctionBaselines = new Map();
     this.whenGateChecked = new Promise((resolve) => { this._resolveGateCheck = resolve; });
     this.init();
   }
@@ -235,6 +245,7 @@ class StorageService {
     ensure(STORAGE_KEYS.HOLIDAYS, []);
     ensure(STORAGE_KEYS.PAYROLLS, defaultPayrollBatches);
     ensure(STORAGE_KEYS.EOSB, defaultEOSBCalculations);
+    ensure(STORAGE_KEYS.CORRECTIONS, []);
     if ((this.get(STORAGE_KEYS.USERS, []) || []).length === 0) {
       this.set(STORAGE_KEYS.USERS, defaultUsers);
     }
@@ -451,11 +462,14 @@ class StorageService {
     this.set(STORAGE_KEYS.HOLIDAYS, []);
     this.set(STORAGE_KEYS.PAYROLLS, defaultPayrollBatches);
     this.set(STORAGE_KEYS.EOSB, defaultEOSBCalculations);
+    this.set(STORAGE_KEYS.CORRECTIONS, []);
     this.notify();
     // Phase 6: the payroll collections were replaced wholesale, so the local
     // last-known-state baselines must be dropped too (a month re-created after
     // a factory reset is a genuine CREATED record — never a stale 'updated').
     this._payrollBaselines.clear();
+    // Phase 9: factory reset also drops the correction baselines.
+    this._correctionBaselines.clear();
     // Phase 5: factory reset is a system-level data event. The trail itself is
     // preserved (its key is not among the reset collections) so the history of
     // the data being reset remains traceable.
@@ -476,6 +490,7 @@ class StorageService {
       [STORAGE_KEYS.HOLIDAYS, 'holidays'],
       [STORAGE_KEYS.PAYROLLS, 'payrolls'],
       [STORAGE_KEYS.EOSB, 'eosb'],
+      [STORAGE_KEYS.CORRECTIONS, 'corrections'],
     ];
     const now = new Date().toISOString();
     const user = this.getActiveUser();
@@ -507,11 +522,15 @@ class StorageService {
     this.set(STORAGE_KEYS.HOLIDAYS, []);
     this.set(STORAGE_KEYS.PAYROLLS, []);
     this.set(STORAGE_KEYS.EOSB, []);
+    this.set(STORAGE_KEYS.CORRECTIONS, []);
     this.notify();
     // Phase 6: the payroll collection was wiped, so the local last-known-state
     // baselines must be dropped too — a month re-created after a data clear is
     // a genuine CREATED record, never a stale 'updated'/'paid' transition.
     this._payrollBaselines.clear();
+    // Phase 9: corrections are a derived (never source-of-truth) payroll record;
+    // the same baseline-dropping rule applies to correction transitions.
+    this._correctionBaselines.clear();
     // Phase 5: record the wipe in the (preserved) audit trail so it can never
     // be mistaken for silent data loss.
     this._auditSystem(AUDIT_ACTIONS.RECORDS_CLEARED, { reason: 'all data cleared', newValue: { clearedAt: now, by: user ? (user.username || user.id) : 'system' } });
@@ -1815,6 +1834,168 @@ class StorageService {
   auditDeniedEosb(recordId, action, opts = {}) {
     this._auditDenied(AUDIT_RECORD_TYPES.EOSB, recordId, action, opts);
   }
+  // Accessor used by the correction guarded layer (security-denied attempts).
+  auditDeniedCorrection(recordId, action, opts = {}) {
+    this._auditDenied(AUDIT_RECORD_TYPES.CORRECTION, recordId, action, {
+      ...opts,
+      correctionId: opts.correctionId,
+      companyId: opts.companyId,
+      branchId: opts.branchId,
+      originalTransactionId: opts.originalTransactionId,
+      payrollPeriodId: opts.payrollPeriodId,
+      employeeIds: opts.employeeIds,
+    });
+  }
+
+  // ==============================================
+  // Phase 9 — Correction store (insert-only on the original payroll).
+  // ==============================================
+  // Corrections are a DERIVED record over an archived payroll: they live in
+  // their own collection, are keyed by a UUID correctionId, and never touch a
+  // payroll row. The human-readable per-payroll numbering (Decision 7) is
+  // stamped HERE at INSERT time from the sequence of stored corrections on the
+  // same original — so rejected/recreated requests still consume a number and
+  // numbers are never reused (§11.8). Once a correction is archived it becomes
+  // INSERT-ONLY: any further write or delete is refused (L3, §0a).
+  // ---------------------------------------------------------------------------
+
+  rawCorrections() {
+    return Array.isArray(this.get(STORAGE_KEYS.CORRECTIONS, [])) ? this.get(STORAGE_KEYS.CORRECTIONS, []) : [];
+  }
+
+  saveCorrections(corrections) {
+    this.set(STORAGE_KEYS.CORRECTIONS, Array.isArray(corrections) ? corrections : []);
+    return true;
+  }
+
+  getCorrections(originalTransactionId) {
+    const list = this.rawCorrections();
+    if (originalTransactionId === undefined || originalTransactionId === null) return list;
+    return list.filter((c) => c && c.originalTransactionId === originalTransactionId);
+  }
+
+  addPayrollCorrection(correction) {
+    if (!correction || typeof correction !== 'object' || !correction.correctionId) return false;
+    const list = this.rawCorrections();
+    const index = list.findIndex((c) => c && c.correctionId === correction.correctionId);
+    const existing = index >= 0 ? list[index] : null;
+
+    // Immutability: an ALREADY-archived correction can never be re-written.
+    if (existing && existing.archived === true) return false;
+
+    let stored = correction;
+    if (!existing) {
+      // INSERT path: stamp the Decision-7 display number from the sequence of
+      // corrections already stored on the SAME original (rejected ones included).
+      const seq = nextCorrectionSequence(list, correction.originalTransactionId);
+      stored = {
+        ...correction,
+        displayNumber: correction.displayNumber || correctionDisplayNumber(correction.originalTransactionId, seq),
+      };
+    } else {
+      // UPDATE path (draft/submit/approve/...): keep the original display number.
+      stored = { ...correction, displayNumber: correction.displayNumber || existing.displayNumber };
+    }
+
+    const base = existing || this._correctionBaselines.get(stored.correctionId) || null;
+    const nextList = index >= 0 ? list.slice() : [stored, ...list];
+    if (index >= 0) nextList[index] = stored;
+    this.set(STORAGE_KEYS.CORRECTIONS, nextList);
+    this._correctionBaselines.set(stored.correctionId, JSON.parse(JSON.stringify(stored)));
+
+    this._auditCorrection(base, stored);
+    return true;
+  }
+
+  deletePayrollCorrection(correctionId) {
+    if (!correctionId) return false;
+    const list = this.rawCorrections();
+    const index = list.findIndex((c) => c && c.correctionId === correctionId);
+    if (index < 0) return false;
+    if (list[index].archived === true) return false; // archived corrections are immutable
+    this.set(STORAGE_KEYS.CORRECTIONS, list.filter((c) => !(c && c.correctionId === correctionId)));
+    this._correctionBaselines.delete(correctionId);
+    return true;
+  }
+
+  // Derives the workflow event for a correction WRITE from the last-known state.
+  _auditCorrection(base, correction) {
+    try {
+      const view = correctionFinancialView(correction);
+      const identity = {
+        companyId: correction.companyId != null ? String(correction.companyId) : null,
+        branchId: correction.branchId != null ? String(correction.branchId) : null,
+        payrollPeriodId: correction.payrollPeriodId != null ? String(correction.payrollPeriodId) : null,
+        originalTransactionId: correction.originalTransactionId != null ? String(correction.originalTransactionId) : null,
+      };
+      const employeeIds = (Array.isArray(correction.components) ? correction.components : [])
+        .map((l) => l && l.employeeId)
+        .filter(Boolean);
+
+      let action = null;
+      if (!base) {
+        action = AUDIT_ACTIONS.CORRECTION_REQUEST;
+      } else {
+        const statusChanged = (base.status || 'draft') !== (correction.status || 'draft');
+        if (base.archived !== true && correction.archived === true) {
+          action = AUDIT_ACTIONS.CORRECTION_ARCHIVED;
+        } else if (statusChanged) {
+          const fromS = base.status || 'draft';
+          const toS = correction.status || 'draft';
+          if (fromS === 'under_audit' && toS === 'rejected') action = AUDIT_ACTIONS.CORRECTION_REJECTED;
+          else if (fromS === 'rejected' && toS === 'under_audit') action = AUDIT_ACTIONS.CORRECTION_RESUBMITTED;
+          else if (fromS === 'under_audit' && toS === 'approved') action = AUDIT_ACTIONS.CORRECTION_APPROVED;
+          else if (fromS === 'approved' && toS === 'paid') action = AUDIT_ACTIONS.CORRECTION_PAID;
+        } else if (base.coApprovePending !== true && correction.coApprovePending === true) {
+          // Primary approval of a DEBIT: record stays under_audit, dual pending.
+          action = AUDIT_ACTIONS.CORRECTION_APPROVED;
+        } else if (
+          (Array.isArray(correction.correctionChanges) ? correction.correctionChanges.length : 0)
+          > (Array.isArray(base.correctionChanges) ? base.correctionChanges.length : 0)
+        ) {
+          action = AUDIT_ACTIONS.CORRECTION_CORRECTED;
+        }
+      }
+
+      if (!action) return;
+      const actor = this._actor(this.getActiveUser());
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.CORRECTION,
+        recordId: correction.correctionId,
+        correctionId: correction.correctionId,
+        displayNumber: correction.displayNumber || null,
+        action,
+        outcome: 'success',
+        actor,
+        fromStatus: base ? (base.status || 'draft') : null,
+        toStatus: correction.status || 'draft',
+        ...identity,
+        employeeIds,
+        oldValue: base ? { status: base.status || 'draft', archived: base.archived === true, coApprovePending: base.coApprovePending === true, revision: base.revision || 1 } : null,
+        newValue: {
+          toStatus: correction.status || 'draft',
+          displayNumber: correction.displayNumber || null,
+          direction: correction.direction || 'credit',
+          recovery: correction.recovery ? JSON.parse(JSON.stringify(correction.recovery)) : null,
+          coApprovePending: correction.coApprovePending === true,
+          approvedBy: correction.approvedBy || null,
+          coApprovedBy: correction.coApprovedBy || null,
+          revision: correction.revision || 1,
+          rejectionReason: correction.rejectionReason || '',
+        },
+        reason: action === AUDIT_ACTIONS.CORRECTION_REJECTED
+          ? (correction.rejectionReason || '')
+          : (correction.reason || ''),
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        financial: view,
+        components: (view && view.components) || [],
+      };
+      this.appendAuditEvent(event);
+    } catch (e) { /* never break the caller */ }
+  }
 
   _auditSystem(action, opts = {}) {
     try {
@@ -2015,4 +2196,17 @@ setEosbDeniedHook((info) => storage.auditDeniedEosb(info.recordId, info.action, 
   error: info.error,
   layer: info.layer,
   fromStatus: info.fromStatus,
+}));
+// Phase 9: route correction guard denials into the central audit trail.
+setAuditCorrectionDeniedHook((info) => storage.auditDeniedCorrection(info.recordId, info.action, {
+  error: info.error,
+  layer: info.layer,
+  reason: info.reason,
+  fromStatus: info.fromStatus,
+  correctionId: info.correctionId,
+  companyId: info.companyId,
+  branchId: info.branchId,
+  originalTransactionId: info.originalTransactionId,
+  payrollPeriodId: info.payrollPeriodId,
+  employeeIds: info.employeeIds,
 }));

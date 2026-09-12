@@ -5,8 +5,10 @@
 import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, STATUS_LABELS, LEAVE_TYPE_LABELS, 
-getCurrentMonth, can, countAbsenceDays, formatAmountWithCode, summarizeCurrencySegments } from '../types.js';
+getCurrentMonth, can, countAbsenceDays, formatAmountWithCode, summarizeCurrencySegments, summarizeCurrencySegmentsHtml, escapeHtml } from '../types.js';
 import { calculateLeaveBalance } from '../engines/leaveEngine.js';
+import { computeNetEffective } from '../engines/payrollCorrectionEngine.js';
+import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { toast } from './Toast.js';
 import { i18n, t, tf } from '../i18n.js';
 
@@ -88,7 +90,7 @@ export function renderReportsView(container, options = {}) {
     </div>`;
   }
 
-  let activeReportType = options.type || 'audit'; // 'audit' | 'comparison' | 'payroll' | 'gosi' | 'leaves' | 'overtime' | 'eosb'
+  let activeReportType = options.type || 'audit'; // 'audit' | 'comparison' | 'payroll' | 'gosi' | 'leaves' | 'overtime' | 'eosb' | 'corrections'
   let reportMonth = getCurrentMonth();
 
   // Month comparison state
@@ -1165,6 +1167,163 @@ return {
         }));
         exportToXLSX(`EOSB_Settlements_Report`, (isEn ? `EOSB_Settlements_Report` : `نهاية_الخدمة`), exportData);
       });
+    } else if (activeReportType === 'corrections') {
+      // ==========================================
+      // 8. CORRECTIONS — Original | Corrections | Net/Effective (Decision 8)
+      // ==========================================
+      const storedBatch = getStoredMonthlyPayroll(reportMonth);
+      const payInfo = payrollStatusInfo(storedBatch, reportMonth);
+      const corrections = storedBatch ? storage.getCorrections(storedBatch.id) : [];
+      const net = storedBatch ? computeNetEffective(storedBatch, corrections) : null;
+      const rateSourceOf = (c) => (c.ratePolicy && c.ratePolicy.mode === 'current') ? (isEn ? 'current' : 'حالي') : (isEn ? 'original' : 'أصلي');
+      const statusText = (c) => {
+        if (c.archived === true) return isEn ? 'archived' : 'مؤرشف';
+        const m = { draft: isEn ? 'draft' : 'مسودة', under_audit: isEn ? 'under_audit' : 'تدقيق', approved: isEn ? 'approved' : 'معتمد', rejected: isEn ? 'returned' : 'مُعاد', paid: isEn ? 'paid' : 'مصروف' };
+        return m[c.status] || c.status;
+      };
+      const money = (c) => {
+        const view = correctionFinancialView(c);
+        if (!view || !view.currencies || !view.currencies.length) return '0.00';
+        return summarizeCurrencySegmentsHtml(view.currencies.map((g) => ({ code: g.code, amount: g.amount })));
+      };
+
+      reportArea.innerHTML = `
+        <div class="card" style="padding:20px; margin-bottom:20px; background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(245,158,11,0.05) 100%); border:1px solid var(--border-color);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <span class="badge badge-purple" style="font-size:12px;">${isEn ? 'P9 Corrections' : 'تصحيحات ما بعد الصرف'}</span>
+                ${storedBatch ? `<span class="badge ${payInfo.badge}" style="font-size:12px;">${payInfo.badgeText}</span>` : ''}
+                <h3 style="font-size:17px; font-weight:800; color:var(--text-main);">${tf('reports.correctionTitle', { month: reportMonth })}</h3>
+              </div>
+              <p style="font-size:12.5px; color:var(--text-muted); margin-top:4px;">
+                ${isEn ? 'Net/Effective = Original + Σ(direction × amount). Built ONLY from the stored, archived/disbursed original — it is never re-rated.' : 'الصافي/الفعال = الأصلي + مجموع (الاتجاه × المبلغ). يُبنى فقط من المسير الأصلي المخزن/المؤرشف/المصروف — ولا يُعاد تسعيره أبداً.'}
+              </p>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <input type="month" class="form-input" id="report-month-input" value="${reportMonth}" style="width:160px; padding:6px 10px; font-weight:700;">
+              <button type="button" class="btn btn-outline" id="btn-export-rep-corrections" ${corrections.length === 0 ? 'disabled' : ''}>
+                ${Icons.download(16)} ${isEn ? 'Export (Excel)' : 'تصدير Excel'}
+              </button>
+              <button type="button" class="btn btn-primary" onclick="window.print()">
+                ${Icons.printer(16)} ${isEn ? 'Print Report' : 'طباعة التقرير'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        ${monthAlertHtml(payInfo.bannerType, payInfo.bannerTitle, payInfo.bannerText)}
+
+        ${storedBatch ? `
+        <div class="card" style="padding:18px 20px; margin-bottom:20px; border:1px solid var(--border-color);">
+          <div style="font-weight:800; font-size:14px; color:var(--text-main); margin-bottom:12px;">📊 ${isEn ? 'Net / Effective summary' : 'ملخص صافي / فعال'}</div>
+          <div class="grid grid-cols-3" style="gap:12px;">
+            <div style="padding:12px 14px; border-radius:10px; background:var(--bg-card-hover); border:1px solid var(--border-color);">
+              <div style="font-size:11.5px; color:var(--text-muted);">${isEn ? 'Original (sealed)' : 'الأصلي (مختوم)'}</div>
+              <div style="font-weight:800; font-size:15px; margin-top:4px; color:var(--text-main);">${summarizeCurrencySegmentsHtml((storedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g.net })))}</div>
+            </div>
+            <div style="padding:12px 14px; border-radius:10px; background:var(--bg-card-hover); border:1px solid var(--border-color);">
+              <div style="font-size:11.5px; color:var(--text-muted);">${isEn ? 'Corrections (signed, Σ)' : 'التصحيحات (موقّع، مُجمّع)'}</div>
+              <div style="font-weight:800; font-size:15px; margin-top:4px; color:${(net && net.correctionsNet) < 0 ? 'var(--danger)' : 'var(--success)'};">${summarizeCurrencySegmentsHtml((net && net.currencies || []).map((g) => ({ code: g.code, amount: g.correctionsNet })))}</div>
+            </div>
+            <div style="padding:12px 14px; border-radius:10px; background:var(--bg-card-hover); border:1px solid var(--primary);">
+              <div style="font-size:11.5px; color:var(--text-muted);">${isEn ? 'Net / Effective' : 'صافي / فعال'}</div>
+              <div style="font-weight:800; font-size:15px; margin-top:4px; color:var(--primary);">${summarizeCurrencySegmentsHtml((net && net.currencies || []).map((g) => ({ code: g.code, amount: g.net })))}</div>
+            </div>
+          </div>
+        </div>` : ''}
+
+        <div class="card" style="padding:0; overflow:hidden;">
+          <div style="padding:14px 20px; border-bottom:1px solid var(--border-color); font-weight:700; font-size:14px; color:var(--text-main);">
+            ${isEn ? 'Correction records on the original' : 'سجلات التصحيحات على المسير الأصلي'}
+            <span class="badge badge-gray" style="margin-inline-start:8px;">${corrections.length}</span>
+          </div>
+          <div class="table-container" style="border:none;">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>${isEn ? 'Number' : 'الرقم'}</th>
+                  <th>${isEn ? 'Direction' : 'الاتجاه'}</th>
+                  <th>${isEn ? 'Rate source' : 'مصدر السعر'}</th>
+                  <th>${isEn ? 'Amount (signed)' : 'المبلغ (موقّع)'}</th>
+                  <th>${isEn ? 'Recovery' : 'الاسترداد'}</th>
+                  <th>${isEn ? 'Status' : 'الحالة'}</th>
+                  <th>${isEn ? 'Manual' : 'يدوي'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${corrections.length === 0
+                  ? `<tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-muted);">${isEn ? 'No correction records for this payroll.' : 'لا توجد سجلات تصحيحات لهذا المسير.'}</td></tr>`
+                  : corrections.map((c) => `
+                    <tr>
+                      <td><strong style="direction:ltr; unicode-bidi:embed;">${escapeHtml(c.displayNumber || c.correctionId)}</strong></td>
+                      <td><span class="badge ${c.direction === 'debit' ? 'badge-danger' : 'badge-success'}">${c.direction === 'debit' ? (isEn ? 'Debit' : 'خصم') : (isEn ? 'Credit' : 'إضافة')}</span></td>
+                      <td><span class="badge badge-gray">${rateSourceOf(c)}</span></td>
+                      <td style="font-weight:700;">${money(c)}</td>
+                      <td>${c.recovery && c.recovery.method ? escapeHtml(c.recovery.method) : '—'}</td>
+                      <td>${escapeHtml(statusText(c))}</td>
+                      <td>${c.manualEntry ? '✓' : '—'}</td>
+                    </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      reportArea.querySelector('#report-month-input')?.addEventListener('change', (e) => {
+        reportMonth = e.target.value;
+        renderReportContent();
+      });
+
+      reportArea.querySelector('#btn-export-rep-corrections')?.addEventListener('click', () => {
+        if (!can(storage.getActiveUser(), 'reports.export')) { // RBAC gate (C-5)
+          toast.error(isEn ? 'Insufficient permissions' : 'لا تملك صلاحية التصدير');
+          return;
+        }
+        const view = (c) => correctionFinancialView(c) || { currencies: [] };
+        const rows = [];
+        corrections.forEach((c) => {
+          const v = view(c);
+          (v.currencies || []).forEach((g) => {
+            rows.push({
+              [hd('رقم التصحيح', 'Correction Number')]: c.displayNumber || c.correctionId,
+              [hd('المسير الأصلي', 'Original Payroll')]: reportMonth,
+              [hd('الاتجاه', 'Direction')]: c.direction === 'debit' ? 'debit' : 'credit',
+              [hd('مصدر سعر الصرف', 'Rate Source')]: c.ratePolicy && c.ratePolicy.mode === 'current' ? 'current' : 'original',
+              [hd('العملة', 'Currency')]: g.code,
+              [hd('مبلغ التصحيح (موقع)', 'Signed Correction Amount')]: Number(g.amount).toFixed(2),
+              [hd('طريقة الاسترداد', 'Recovery')]: (c.recovery && c.recovery.method) || '',
+              [hd('الحالة', 'Status')]: statusText(c),
+              [hd('يدوي', 'Manual Entry')]: c.manualEntry ? 'yes' : 'no',
+            });
+          });
+        });
+        (net && net.currencies || []).forEach((g) => {
+          rows.push({
+            [hd('رقم التصحيح', 'Correction Number')]: isEn ? 'SUMMARY' : 'ملخص',
+            [hd('المسير الأصلي', 'Original Payroll')]: reportMonth,
+            [hd('الاتجاه', 'Direction')]: '',
+            [hd('مصدر سعر الصرف', 'Rate Source')]: '',
+            [hd('العملة', 'Currency')]: g.code,
+            [hd('مبلغ التصحيح (موقع)', 'Signed Correction Amount')]: '',
+            [hd('طريقة الاسترداد', 'Recovery')]: '',
+            [hd('الحالة', 'Status')]: isEn ? 'Net' : 'الصافي',
+            [hd('يدوي', 'Manual Entry')]: '',
+          });
+          rows.push({
+            [hd('رقم التصحيح', 'Correction Number')]: isEn ? 'SUMMARY' : 'ملخص',
+            [hd('المسير الأصلي', 'Original Payroll')]: reportMonth,
+            [hd('الاتجاه', 'Direction')]: '',
+            [hd('مصدر سعر الصرف', 'Rate Source')]: '',
+            [hd('العملة', 'Currency')]: g.code,
+            [hd('مبلغ التصحيح (موقع)', 'Signed Correction Amount')]: '',
+            [hd('طريقة الاسترداد', 'Recovery')]: '',
+            [hd('الحالة', 'Status')]: isEn ? `Net/Effective = ${Number(g.net).toFixed(2)}` : `الصافي/الفعال = ${Number(g.net).toFixed(2)}`,
+            [hd('يدوي', 'Manual Entry')]: '',
+          });
+        });
+        exportToXLSX(`Payroll_Corrections_${reportMonth}`, isEn ? 'Payroll_Corrections' : 'تصحيحات_الرواتب', rows);
+      });
     }
   }
 
@@ -1204,6 +1363,9 @@ return {
       <button type="button" class="tab-btn ${activeReportType === 'eosb' ? 'active' : ''}" id="rep-tab-eosb">
         ${Icons.award(16)} ${isEn ? 'EOSB Report' : 'تقرير نهاية الخدمة'}
       </button>
+      <button type="button" class="tab-btn ${activeReportType === 'corrections' ? 'active' : ''}" id="rep-tab-corrections">
+        ${Icons.refresh(16)} ${isEn ? 'Corrections' : 'التصحيحات'}
+      </button>
     </div>
 
     <!-- Report Container -->
@@ -1218,10 +1380,11 @@ return {
   const tabLeaves = container.querySelector('#rep-tab-leaves');
   const tabOt = container.querySelector('#rep-tab-ot');
   const tabEosb = container.querySelector('#rep-tab-eosb');
+  const tabCorrections = container.querySelector('#rep-tab-corrections');
 
   const updateTabSelection = (type, clickedBtn) => {
     activeReportType = type;
-    [tabAudit, tabComparison, tabPayroll, tabGosi, tabLeaves, tabOt, tabEosb].forEach((b) => b?.classList.remove('active'));
+    [tabAudit, tabComparison, tabPayroll, tabGosi, tabLeaves, tabOt, tabEosb, tabCorrections].forEach((b) => b?.classList.remove('active'));
     clickedBtn.classList.add('active');
     renderReportContent();
   };
@@ -1233,6 +1396,7 @@ return {
   tabLeaves?.addEventListener('click', () => updateTabSelection('leaves', tabLeaves));
   tabOt?.addEventListener('click', () => updateTabSelection('overtime', tabOt));
   tabEosb?.addEventListener('click', () => updateTabSelection('eosb', tabEosb));
+  tabCorrections?.addEventListener('click', () => updateTabSelection('corrections', tabCorrections));
 
   renderReportContent();
 }

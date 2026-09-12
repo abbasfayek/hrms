@@ -44,6 +44,14 @@ export const AUDIT_ACTIONS = {
   ARCHIVE: 'archive',          // archival stamp (paid -> archived view)
   UPDATED: 'updated',          // loan / non-workflow record edit
   CANCEL_PAYMENT: 'cancel_payment', // paid -> approved (payment cancelled)
+  // Phase 9: correction (p9) workflow events on an archived payroll.
+  CORRECTION_REQUEST: 'correction_request',      // correction record enters the system
+  CORRECTION_REJECTED: 'correction_rejected',    // under_audit -> rejected (Returned)
+  CORRECTION_CORRECTED: 'correction_corrected',  // edit recorded on a returned correction
+  CORRECTION_RESUBMITTED: 'correction_resubmitted', // rejected -> under_audit
+  CORRECTION_APPROVED: 'correction_approved',    // approval (dual: primary + co-approve)
+  CORRECTION_PAID: 'correction_paid',            // disburse / recovery applied
+  CORRECTION_ARCHIVED: 'correction_archived',    // terminal archival stamp
   EXCHANGE_RATE_SET: 'exchange_rate_set',
   EXCHANGE_RATE_UPDATED: 'exchange_rate_updated',
   EXCHANGE_RATE_LOCKED: 'exchange_rate_locked',
@@ -56,6 +64,7 @@ export const AUDIT_ACTIONS = {
 export const AUDIT_RECORD_TYPES = {
   PAYROLL: 'payroll',
   EOSB: 'eosb',
+  CORRECTION: 'correction',
   LOAN: 'loan',
   EXCHANGE_RATE: 'exchange_rate',
   SYSTEM: 'system',
