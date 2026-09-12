@@ -7,6 +7,7 @@ import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency, escapeHtml } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
 import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded } from '../engines/payrollAccess.js';
+import { disbursePayrollAtomic } from '../engines/payrollDisbursement.js';
 import { transitionCorrectionGuarded, coApproveCorrectionGuarded, archiveCorrectionGuarded } from '../engines/payrollCorrectionAccess.js';
 import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { openPayslipModal } from './PayslipModal.js';
@@ -326,52 +327,20 @@ export function renderPayrollView(container, options = {}) {
         companies,
         settings,
         onConfirm: () => {
-          // Settle the loan/advance installments withheld in this payroll run
-          // so advances are never deducted forever and close when fully paid.
-          try {
-            const allLoans = storage.getState().loans;
-            let changed = false;
-            batch.items.forEach((it) => {
-              const installment = Number(it.loanInstallment) || 0;
-              if (installment <= 0) return;
-              const loan = allLoans.find((l) => l.employeeId === it.employeeId && l.status !== 'settled' && Number(l.remainingAmount) > 0);
-              if (!loan) return;
-              const paidAmount = Math.min(installment, Number(loan.remainingAmount) || 0);
-              if (paidAmount <= 0) return;
-              loan.installments = loan.installments || [];
-              const scheduleEntry = loan.installments.find((x) => x.month === targetMonth && !x.isPaid);
-              if (scheduleEntry) {
-                scheduleEntry.isPaid = true;
-                scheduleEntry.paidAt = new Date().toISOString();
-              } else {
-                loan.installments.push({ month: targetMonth, amount: paidAmount, isPaid: true, paidAt: new Date().toISOString() });
-              }
-              loan.remainingAmount = Number((Number(loan.remainingAmount) - paidAmount).toFixed(2));
-              if (loan.remainingAmount <= 0) {
-                loan.remainingAmount = 0;
-                loan.status = 'settled';
-                loan.settledAt = new Date().toISOString();
-              }
-              changed = true;
-            });
-            if (changed) storage.saveLoans(allLoans);
-          } catch (e) {
-            console.error('Loan settlement on payroll release failed:', e);
-          }
-          // Phase 2 (Spec v1.0): payment runs ONLY through the guard stack —
-          // Payments Officer (payroll.disburse) + approved state + scope.
           const payerName = storage.getActiveUser()?.name || (isEn ? 'Payments Officer' : 'موظف الصرف المالي');
-          const payRes = transitionPayrollGuarded(storage.getActiveUser(), batch, 'paid', { by: payerName, context: getPayrollBranchContext() });
-          if (!payRes.ok) {
-            toast.error(isEn ? `Cannot execute payment: ${payRes.error}` : `تعذر تنفيذ الصرف: ${payRes.error}`);
+          const result = disbursePayrollAtomic({
+            user: storage.getActiveUser(),
+            batch,
+            storage,
+            context: getPayrollBranchContext(),
+            by: payerName,
+          });
+
+          if (!result.ok) {
+            toast.error(isEn ? `Cannot execute payment: ${result.error}` : `تعذر تنفيذ الصرف: ${result.error}`);
             return;
           }
-          const paid = payRes.batch;
-          paid.releasedAt = new Date().toISOString();
-          paid.releasedBy = payerName;
-          paid.items.forEach((it) => { it.isPaid = true; });
-          storage.addPayrollBatch(paid);
-          storage.addAudit('settle', 'payroll', `${targetMonth} → ${isEn ? 'released & paid' : 'تحرير وصرف'}`, paid.id);
+
           toast.success(tf('payroll.paymentRecordedSuccess', { month: targetMonth }));
           activeTab = 'disbursed';
           updateHeaderTabs();

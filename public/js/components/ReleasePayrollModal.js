@@ -109,7 +109,10 @@ export function openReleasePayrollModal({ batch, companies, settings, onConfirm 
     footerHtml,
     onOpen: (overlay, close) => {
       overlay.querySelector('.close-release-btn')?.addEventListener('click', close);
-      overlay.querySelector('.confirm-release-btn')?.addEventListener('click', () => {
+      const confirmBtn = overlay.querySelector('.confirm-release-btn');
+      confirmBtn?.addEventListener('click', () => {
+        if (confirmBtn.disabled) return;
+        confirmBtn.disabled = true;
         close();
         if (onConfirm) onConfirm();
       });
