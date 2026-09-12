@@ -4,6 +4,18 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import {
+  resolveAuthContext,
+  checkReadPerm,
+  checkWritePerm,
+  filterCollectionRead,
+  scopeValidateWrite,
+  maskPasswords,
+  mergeUsersPreservePassword,
+  isSuper,
+  READ_GATES,
+  WRITE_GATES,
+} from './server-authz.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -341,17 +353,22 @@ function recordSuccess(ip) { rate.delete(ip); }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Authorize a request against the server. A valid USER session (real login) is
-// always accepted everywhere. The master token / gate session apply only when
-// master protection is enabled. When protection is OFF, data still requires a
-// logged-in user session (the app protects itself via real authentication).
-function authorize(req) {
-  if (hasValidUserSession(req)) return { ok: true, via: 'user' };
-  const expected = getAccessToken();
-  if (!expected) return { ok: false, attempted: false, reason: 'login_required' };
-  if (hasValidGateSession(req)) return { ok: true, via: 'gate' };
-  if (hasValidAccessToken(req)) return { ok: true, via: 'master' };
-  return { ok: false, attempted: true, reason: 'access_token_required' };
+// Helpers for authz scope validation
+function getAllUsers() {
+  const fp = getCollectionFile('users');
+  if (!fs.existsSync(fp)) return [];
+  try { return JSON.parse(fs.readFileSync(fp, 'utf-8')) || []; } catch { return []; }
+}
+
+function getAllEmployees() {
+  const fp = getCollectionFile('employees');
+  if (!fs.existsSync(fp)) return [];
+  try { return JSON.parse(fs.readFileSync(fp, 'utf-8')) || []; } catch { return []; }
+}
+
+// Resolve auth context from session (replaces old authorize)
+async function getAuthContext(req) {
+  return resolveAuthContext(req, sessions, getAllUsers);
 }
 
 const MERGE_COLLECTIONS = new Set(
@@ -362,9 +379,49 @@ const MERGE_COLLECTIONS = new Set(
 async function handleAPI(req, res, urlParts, method) {
   const segment = urlParts[2]; // /api/<segment>/...
 
-  // POST /api/access-token — handled as a public-ish endpoint (see request handler).
+  // Resolve auth context for all protected endpoints
+  const authCtx = await getAuthContext(req);
+  if (!authCtx.ok) {
+    // Map internal reasons to public error codes for backward compatibility
+    const codeMap = {
+      no_session: 'login_required',
+      invalid_session: 'login_required',
+      expired: 'login_required',
+      user_not_found: 'login_required',
+      super_required: 'super_required',
+      permission_denied: 'permission_denied',
+      scope_violation: 'scope_violation',
+    };
+    const publicCode = codeMap[authCtx.reason] || authCtx.reason;
+    const message = authCtx.reason === 'super_required' ? 'Super admin required' : 'Forbidden';
+    return jsonResponse(res, { error: message, code: publicCode }, authCtx.status);
+  }
+  const { user, scope, perms } = authCtx;
+
+  // Helper to read collection data
+  async function readCollectionData(collection) {
+    const filePath = getCollectionFile(collection);
+    if (!fs.existsSync(filePath)) return null;
+    try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { return null; }
+  }
+
+  // POST /api/access-token — manage master token (super_admin only now)
   if (method === 'POST' && segment === 'access-token') {
-    return jsonResponse(res, { error: 'Use /api/access-token with authorization' }, 403);
+    const writeCheck = checkWritePerm(authCtx, 'access-token');
+    if (!writeCheck.ok) return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
+    try {
+      const body = await readBody(req);
+      const newToken = typeof body.token === 'string' ? body.token.trim() : '';
+      if (newToken !== '' && newToken.length < 8) {
+        return jsonResponse(res, { error: 'Token must be at least 8 characters' }, 400);
+      }
+      setAccessToken(newToken);
+      sessions.clear();
+      scheduleSessionSave();
+      return jsonResponse(res, { success: true, enabled: newToken !== '' });
+    } catch (e) {
+      return jsonResponse(res, { error: e.message }, 500);
+    }
   }
 
   // POST /api/auth/session — exchange the master token for a short-lived session.
@@ -387,54 +444,85 @@ async function handleAPI(req, res, urlParts, method) {
     return jsonResponse(res, { error: 'Use /api/auth/login without credentials' }, 405);
   }
 
-  // GET /api/data/:collection — Read data file
+  // GET /api/data/:collection — Read data file with permission & scope
   if (method === 'GET' && segment === 'data') {
     const collection = urlParts[3];
     if (!collection || !ALLOWED_COLLECTIONS.includes(collection)) {
       return jsonResponse(res, { error: 'Invalid collection' }, 400);
     }
-    const filePath = getCollectionFile(collection);
-    if (!fs.existsSync(filePath)) {
-      return jsonResponse(res, null, 200); // Return null if no file yet
+    // Check read permission
+    const readCheck = checkReadPerm(authCtx, collection);
+    if (!readCheck.ok) {
+      return jsonResponse(res, { error: readCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: readCheck.reason }, readCheck.status);
     }
     try {
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      return jsonResponse(res, data);
+      const data = await readCollectionData(collection);
+      if (data === null) return jsonResponse(res, null, 200);
+      // Apply scope filtering
+      const filtered = filterCollectionRead(collection, data, authCtx, getAllEmployees);
+      // Mask passwords on users collection
+      const output = collection === 'users' ? maskPasswords(filtered) : filtered;
+      return jsonResponse(res, output);
     } catch (e) {
       return jsonResponse(res, { error: 'Read error' }, 500);
     }
   }
 
-  // POST /api/data/:collection — Write data file
+  // POST /api/data/:collection — Write data file with permission & scope validation
   if (method === 'POST' && segment === 'data') {
     const collection = urlParts[3];
     if (!collection || !ALLOWED_COLLECTIONS.includes(collection)) {
       return jsonResponse(res, { error: 'Invalid collection' }, 400);
     }
+    // Check write permission
+    const writeCheck = checkWritePerm(authCtx, collection);
+    if (!writeCheck.ok) {
+      return jsonResponse(res, { error: writeCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: writeCheck.reason }, writeCheck.status);
+    }
     try {
       const body = await readBody(req);
-      if (collection === 'users' && Array.isArray(body)) {
-        // Preserve protected system accounts: can never be deleted or altered by API writes.
-        const filePath = getCollectionFile('users');
-        let stored = [];
-        if (fs.existsSync(filePath)) {
-          try { stored = JSON.parse(fs.readFileSync(filePath, 'utf-8')) || []; } catch (e) { stored = []; }
+      // For merge collections, payload must be an array; for non-merge (settings, etc.) objects are allowed
+      const isMergeCollection = MERGE_COLLECTIONS.has(collection);
+      if (isMergeCollection && !Array.isArray(body)) {
+        return jsonResponse(res, { error: 'Payload must be an array' }, 400);
+      }
+      const incomingArray = Array.isArray(body) ? body : [body];
+
+      // Scope validation for write (atomic: reject entire payload if any record out of scope)
+      if (WRITE_GATES[collection]?.scopeValidate) {
+        const scopeCheck = scopeValidateWrite(collection, incomingArray, authCtx, getAllEmployees);
+        if (!scopeCheck.ok) {
+          return jsonResponse(res, { error: 'Scope violation', code: 'scope_violation', recordId: scopeCheck.recordId }, 403);
         }
+      }
+
+      // Special handling for users: preserve passwords & protected accounts
+      if (collection === 'users') {
+        const stored = await readCollectionData('users') || [];
+        // Preserve protected accounts
         const protectedAccounts = stored.filter((u) => u && u.protected);
-        if (protectedAccounts.length > 0) {
-          const protectedIds = new Set(protectedAccounts.map((u) => u.id));
-          const merged = (body || []).filter((u) => u && !protectedIds.has(u.id));
-          protectedAccounts.forEach((sp) => {
-            const i = merged.findIndex((u) => u && u.id === sp.id);
-            if (i >= 0) merged.splice(i, 1);
-          });
-          writeCollection(collection, protectedAccounts.concat(merged));
-        } else {
-          writeCollection(collection, body);
+        const protectedIds = new Set(protectedAccounts.map((u) => u.id));
+        const nonProtectedIncoming = incomingArray.filter((u) => u && !protectedIds.has(u.id));
+        // Merge incoming with stored, preserving passwords where missing
+        const merged = mergeUsersPreservePassword(stored, nonProtectedIncoming);
+        // Ensure protected accounts are present
+        for (const pa of protectedAccounts) {
+          if (!merged.find(u => u.id === pa.id)) merged.push(pa);
         }
+        writeCollection(collection, merged);
+        return jsonResponse(res, { success: true });
+      }
+
+      // For merge collections, apply merge logic with scope-validated incoming
+      if (MERGE_COLLECTIONS.has(collection)) {
+        const stored = await readCollectionData(collection) || [];
+        const merged = mergeCollection(stored, incomingArray, collection);
+        writeCollection(collection, merged);
       } else {
-        const stored = readCollection(collection);
-        writeCollection(collection, mergeCollection(stored, body, collection));
+        // Full-replace collections (settings, etc.) - only super_admin reaches here
+        // For non-array payloads, write the object directly
+        const toWrite = Array.isArray(body) ? incomingArray : body;
+        writeCollection(collection, toWrite);
       }
       return jsonResponse(res, { success: true });
     } catch (e) {
@@ -442,85 +530,77 @@ async function handleAPI(req, res, urlParts, method) {
     }
   }
 
-  // --------------------------------------------------------------------------
-// Cross-device merge (multi-user sync)
-// --------------------------------------------------------------------------
-// The app writes whole collections per POST. When two people work at the same
-// time on different devices connected to the same tunnel/server, the LAST write
-// would otherwise silently wipe the OTHER person's fresh records. Instead of
-// replacing the file, merge per record:
-//   - records the sender knows about are upserted (newer updatedAt wins),
-//   - records the sender simply hadn't seen yet are KEPT (never lost),
-//   - records tombstoned in deleted_records.json are excluded (deletes still
-//     propagate), and a restore from the deletion log removes the tombstone.
-// deleted_records itself is EXCLUDED from merging: a restore removes upfront
-// tombstone entries, so that collection must keep full-replace semantics, and
-// its registry drives the merge for every other collection. MERGE_COLLECTIONS
-// itself sits at module scope above handleAPI.
-
-function readCollection(collection) {
-  try {
-    const fp = getCollectionFile(collection);
-    if (!fs.existsSync(fp)) return null;
-    return JSON.parse(fs.readFileSync(fp, 'utf-8'));
-  } catch (e) {
-    return null;
-  }
-}
-
-function stampValue(rec) {
-  const v = rec && (rec.updatedAt || rec.createdAt);
-  if (!v) return -Infinity;
-  const t = Date.parse(v);
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
-function deletedRegistry(collection) {
-  const set = new Set();
-  try {
-    const fp = getCollectionFile('deleted_records');
-    if (fs.existsSync(fp)) {
-      const list = JSON.parse(fs.readFileSync(fp, 'utf-8')) || [];
-      for (const rec of list) {
-        if (rec && rec.collection === collection && rec.data && rec.data.id) set.add(rec.data.id);
-      }
+  // Cross-device merge helpers (unchanged)
+  function readCollection(collection) {
+    try {
+      const fp = getCollectionFile(collection);
+      if (!fs.existsSync(fp)) return null;
+      return JSON.parse(fs.readFileSync(fp, 'utf-8'));
+    } catch (e) {
+      return null;
     }
-  } catch (e) { /* registry is advisory; ignore */ }
-  return set;
-}
+  }
 
-function mergeCollection(stored, incoming, collection) {
-  if (!Array.isArray(stored)) stored = [];
-  if (!Array.isArray(incoming)) incoming = incoming || [];
-  if (!MERGE_COLLECTIONS.has(collection)) {
-    // Single-object / admin-only collections (settings) and users keep their
-    // original full-replace semantics.
-    return incoming;
+  function stampValue(rec) {
+    const v = rec && (rec.updatedAt || rec.createdAt);
+    if (!v) return -Infinity;
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : -Infinity;
   }
-  const deleted = deletedRegistry(collection);
-  const merged = [];
-  const seen = new Set();
-  for (const rec of incoming) {
-    if (!rec || !rec.id || seen.has(rec.id) || deleted.has(rec.id)) continue;
-    seen.add(rec.id);
-    const prev = stored.find((s) => s && s.id === rec.id);
-    merged.push(prev && stampValue(prev) > stampValue(rec) ? prev : rec);
-  }
-  for (const rec of stored) {
-    if (!rec || !rec.id || seen.has(rec.id) || deleted.has(rec.id)) continue;
-    seen.add(rec.id);
-    merged.push(rec); // a sender that hasn't seen this record yet must not lose it
-  }
-return merged;
-}
 
+  function deletedRegistry(collection) {
+    const set = new Set();
+    try {
+      const fp = getCollectionFile('deleted_records');
+      if (fs.existsSync(fp)) {
+        const list = JSON.parse(fs.readFileSync(fp, 'utf-8')) || [];
+        for (const rec of list) {
+          if (rec && rec.collection === collection && rec.data && rec.data.id) set.add(rec.data.id);
+        }
+      }
+    } catch (e) { /* registry is advisory; ignore */ }
+    return set;
+  }
+
+  function mergeCollection(stored, incoming, collection) {
+    if (!Array.isArray(stored)) stored = [];
+    if (!Array.isArray(incoming)) incoming = incoming || [];
+    if (!MERGE_COLLECTIONS.has(collection)) {
+      // Single-object / admin-only collections (settings) and users keep their
+      // original full-replace semantics.
+      return incoming;
+    }
+    const deleted = deletedRegistry(collection);
+    const merged = [];
+    const seen = new Set();
+    for (const rec of incoming) {
+      if (!rec || !rec.id || seen.has(rec.id) || deleted.has(rec.id)) continue;
+      seen.add(rec.id);
+      const prev = stored.find((s) => s && s.id === rec.id);
+      merged.push(prev && stampValue(prev) > stampValue(rec) ? prev : rec);
+    }
+    for (const rec of stored) {
+      if (!rec || !rec.id || seen.has(rec.id) || deleted.has(rec.id)) continue;
+      seen.add(rec.id);
+      merged.push(rec); // a sender that hasn't seen this record yet must not lose it
+    }
+    return merged;
+  }
+
+  // GET /api/backup — Full backup (super_admin only, masks passwords)
   if (method === 'GET' && segment === 'backup') {
+    const backupCheck = checkReadPerm(authCtx, 'backup');
+    if (!backupCheck.ok) {
+      return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
+    }
     try {
       const backup = {};
       for (const col of ALLOWED_COLLECTIONS) {
         const fp = getCollectionFile(col);
         if (fs.existsSync(fp)) {
-          backup[col] = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+          const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+          // Mask passwords in users collection
+          backup[col] = col === 'users' ? maskPasswords(data) : data;
         }
       }
       res.writeHead(200, {
@@ -534,8 +614,12 @@ return merged;
     return;
   }
 
-  // POST /api/restore — Restore backup from JSON
+  // POST /api/restore — Restore backup from JSON (super_admin only)
   if (method === 'POST' && segment === 'restore') {
+    const restoreCheck = checkWritePerm(authCtx, 'restore');
+    if (!restoreCheck.ok) {
+      return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
+    }
     try {
       const body = await readBody(req);
       for (const [col, data] of Object.entries(body)) {
@@ -549,8 +633,12 @@ return merged;
     }
   }
 
-  // POST /api/import-employees — Import employees from JSON array (parsed from Excel on frontend)
+  // POST /api/import-employees — Import employees (employees.add + scope)
   if (method === 'POST' && segment === 'import-employees') {
+    const impCheck = checkWritePerm(authCtx, 'import-employees');
+    if (!impCheck.ok) {
+      return jsonResponse(res, { error: impCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: impCheck.reason }, impCheck.status);
+    }
     try {
       const body = await readBody(req);
       const { employees: newEmps = [], mode = 'append' } = body;
@@ -561,6 +649,10 @@ return merged;
       }
       let result;
       if (mode === 'replace') {
+        // replace mode: super_admin only
+        if (!isSuper(authCtx.user)) {
+          return jsonResponse(res, { error: 'Replace mode requires super admin', code: 'super_required' }, 403);
+        }
         result = newEmps;
       } else {
         // Merge: update by employeeNumber if exists, else add
@@ -569,6 +661,11 @@ return merged;
         newEmps.forEach(e => { map[e.employeeNumber] = { ...map[e.employeeNumber], ...e }; });
         result = Object.values(map);
       }
+      // Scope validation for imported employees
+      const scopeCheck = scopeValidateWrite('employees', result, authCtx, getAllEmployees);
+      if (!scopeCheck.ok) {
+        return jsonResponse(res, { error: 'Scope violation in imported data', code: 'scope_violation', recordId: scopeCheck.recordId }, 403);
+      }
       writeCollection('employees', result);
       return jsonResponse(res, { success: true, imported: newEmps.length, total: result.length });
     } catch (e) {
@@ -576,7 +673,7 @@ return merged;
     }
   }
 
-  // GET /api/download-template — Download comprehensive Excel template
+  // GET /api/download-template — Download comprehensive Excel template (public)
   if (method === 'GET' && segment === 'download-template') {
     const rawUrl = req.url;
     const qsIndex = rawUrl.indexOf('?');
@@ -821,47 +918,17 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // Public-ish endpoint: manage the optional master protection. Authorized by
-    // the logged-in user session OR the current master token.
+    // Public-ish endpoint: manage the optional master protection. Now handled in handleAPI.
     if (method === 'POST' && urlParts[2] === 'access-token') {
-      if (!hasValidAccessToken(req) && !hasValidUserSession(req)) {
-        await sleep(400);
-        return jsonResponse(res, { error: 'Current access token required', code: 'access_token_required' }, 401);
-      }
       try {
-        const body = await readBody(req);
-        const newToken = typeof body.token === 'string' ? body.token.trim() : '';
-        if (newToken !== '' && newToken.length < 8) {
-          return jsonResponse(res, { error: 'Token must be at least 8 characters' }, 400);
-        }
-        setAccessToken(newToken);
-        sessions.clear(); // rotating or disabling the token kills every live session
-        scheduleSessionSave();
-        return jsonResponse(res, { success: true, enabled: newToken !== '' });
+        await handleAPI(req, res, urlParts, method);
       } catch (e) {
-        return jsonResponse(res, { error: e.message }, 500);
+        jsonResponse(res, { error: 'Server error: ' + e.message }, 500);
       }
+      return;
     }
 
-    // Everything else must be authorized: a logged-in user session always works;
-    // the master token / gate session apply too while master protection is on.
-    const auth = authorize(req);
-    if (!auth.ok) {
-      // Log real brute-force attempts (a master token was supplied); plain
-      // browsing with no credentials is treated anonymously.
-      if (auth.attempted) {
-        recordFailure(ip);
-        await sleep(400); // slow down guessing
-      }
-      if (checkLocked(ip)) {
-        return jsonResponse(res, { error: 'Too many attempts. Try again later.', code: 'rate_limited' }, 429);
-      }
-      const expected = getAccessToken();
-      return jsonResponse(res, {
-        error: expected ? 'Access token required' : 'Login required',
-        code: expected ? 'access_token_required' : 'login_required'
-      }, 401);
-    }
+    // Everything else goes through handleAPI which resolves auth context internally
     try {
       await handleAPI(req, res, urlParts, method);
     } catch (e) {

@@ -22,7 +22,7 @@ export async function runPartB({ ROOT, ok, PORT }) {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hrms-release-'));
   const copySync = (from, to) => fs.cpSync(from, to, { recursive: true });
-  for (const f of ['server.js', 'index.html']) fs.copyFileSync(path.join(ROOT, f), path.join(tmpDir, f));
+  for (const f of ['server.js', 'index.html', 'server-authz.mjs']) fs.copyFileSync(path.join(ROOT, f), path.join(tmpDir, f));
   copySync(path.join(ROOT, 'public'), path.join(tmpDir, 'public'));
   copySync(path.join(ROOT, 'data'), path.join(tmpDir, 'data'));
   const BASE = `http://localhost:${PORT}`;
@@ -121,12 +121,12 @@ export async function runPartB({ ROOT, ok, PORT }) {
     ok('disallowed origin gets NO Access-Control-Allow-Origin', blockedRes.headers.get('access-control-allow-origin') === null);
     ok('server never returns ACAO *', (allowedRes.headers.get('access-control-allow-origin') || '') !== '*');
 
-    // 6) Backup works under a session and already reflects hashed passwords.
+    // 6) Backup works under a session and masks password hashes (security hardening).
     const backup = await fetch(`${BASE}/api/backup`, { headers: { 'X-Session-Token': session } });
     ok('backup downloadable under session (200)', backup.status === 200);
     const backupData = await backup.json();
     ok('backup contains users collection', Array.isArray(backupData.users) && backupData.users.length > 0);
-    ok('backup users are PBKDF2-hashed (no plaintext)', backupData.users.every((u) => typeof u.password === 'string' && u.password.startsWith('pbkdf2$')));
+    ok('backup users have passwords masked (no password field)', backupData.users.every((u) => !('password' in u)));
 
     // 7) Restore works under a session and survives a restart.
     const sentinel = [{ id: 'comp-sentinel', nameAr: 'Restore-Test-Co', branches: [] }];
