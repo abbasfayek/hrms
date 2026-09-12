@@ -423,7 +423,7 @@ export function filterCollectionRead(collection, data, ctx, getAllEmployees, que
 }
 
 // ----- Write scope validation -----
-export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees) {
+export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees, storedData = null) {
   if (!Array.isArray(incoming)) return { ok: false, reason: 'payload_not_array', status: 400 };
   if (isSuper(ctx.user)) return { ok: true };
   if (incoming.length === 0) return { ok: true };
@@ -462,6 +462,31 @@ export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees) {
             const itemBranch = it.branchId || empScope.branchId;
             return isItemPermitted({ companyId: itemComp, branchId: itemBranch }, scope);
           });
+
+          // F-06 / F-07: Workflow state & history protection on existing payrolls
+          if (ok && storedData && Array.isArray(storedData)) {
+            const existing = storedData.find(b => b && b.id === rec.id);
+            if (existing) {
+              // Paid batches cannot be rolled back or mutated without super admin
+              if (existing.status === 'paid' && rec.status !== 'paid') {
+                return { ok: false, reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
+              }
+              // Cannot bypass financial audit after rejection
+              if (existing.status === 'rejected' && (rec.status === 'approved' || rec.status === 'paid')) {
+                return { ok: false, reason: 'illegal_workflow_transition', status: 403, recordId: rec.id };
+              }
+              // Cannot jump from draft directly to approved or paid
+              if (existing.status === 'draft' && (rec.status === 'approved' || rec.status === 'paid')) {
+                return { ok: false, reason: 'illegal_workflow_transition', status: 403, recordId: rec.id };
+              }
+              // Rejection history cannot be deleted or truncated
+              if (Array.isArray(existing.rejectionHistory) && existing.rejectionHistory.length > 0) {
+                if (!Array.isArray(rec.rejectionHistory) || rec.rejectionHistory.length < existing.rejectionHistory.length) {
+                  return { ok: false, reason: 'history_tampering_detected', status: 403, recordId: rec.id };
+                }
+              }
+            }
+          }
         }
         break;
       }

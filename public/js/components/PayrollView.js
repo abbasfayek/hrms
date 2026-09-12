@@ -1062,6 +1062,29 @@ export function renderPayrollView(container, options = {}) {
           </div>
         </div>
 
+        ${(() => {
+          const deltas = selectedAuditBatch.resubmissionDeltas || [];
+          if (!deltas.length) return '';
+          const lastDelta = deltas[deltas.length - 1];
+          return `
+            <div class="card" style="margin-bottom:20px; padding:16px 20px; background:rgba(79, 70, 229, 0.05); border:1px solid rgba(79, 70, 229, 0.25); border-radius:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                <div>
+                  <strong style="color:var(--primary); font-size:14px;">🔁 ${isEn ? 'Resubmitted Version' : 'مسير مُعاد إرساله بعد التصحيح'} (Revision ${selectedAuditBatch.revision || (lastDelta.toRevision || 2)})</strong>
+                  <div style="font-size:12px; color:var(--text-muted); margin-top:3px;">
+                    ${isEn ? 'Corrected by' : 'صححه'}: <strong>${lastDelta.correctedBy || lastDelta.resubmittedBy || 'HR'}</strong> • ${formatDate(lastDelta.correctedAt || lastDelta.resubmittedAt)}
+                    ${lastDelta.correctionNotes ? ` — <em>"${lastDelta.correctionNotes}"</em>` : ''}
+                  </div>
+                </div>
+                <div style="font-size:12px; display:flex; gap:16px;">
+                  <span>${isEn ? 'Net salary delta' : 'فارق صافي الرواتب'}: <strong style="color:${lastDelta.netDifference >= 0 ? 'var(--success)' : 'var(--danger)'};">${lastDelta.netDifference >= 0 ? '+' : ''}${lastDelta.netDifference}</strong></span>
+                  <span>${isEn ? 'Modified employees' : 'موظفون تأثروا'}: <strong>${(lastDelta.affectedEmployeeIds || []).length}</strong></span>
+                </div>
+              </div>
+            </div>
+          `;
+        })()}
+
         <!-- Audit Action Controls -->
         <div class="card" style="margin-bottom:20px; padding:20px;">
           <div style="font-weight:700; font-size:15px; margin-bottom:12px; color:var(--text-main); display:flex; justify-content:space-between; align-items:center;">

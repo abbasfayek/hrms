@@ -435,7 +435,18 @@ export function transitionPayroll(batch, to, opts = {}) {
     if (opts.auditNotes) {
       next.auditNotes = next.auditNotes ? `${next.auditNotes}\n${opts.auditNotes}` : opts.auditNotes;
     }
-    next.rejectedSnapshot = snapshotBatch(next);
+    const snap = snapshotBatch(next);
+    next.rejectedSnapshot = snap;
+    // F-06: Preserve immutable rejection history chain across revisions
+    const prevRejectionHistory = Array.isArray(batch.rejectionHistory) ? batch.rejectionHistory.slice() : [];
+    next.rejectionHistory = prevRejectionHistory.concat([{
+      revision: batch.revision || 0,
+      rejectedAt: now,
+      rejectedBy: actor,
+      reason: opts.rejectionReason || note,
+      auditNotes: opts.auditNotes || '',
+      snapshot: snap,
+    }]);
   } else if (to === 'paid') {
     next.paidBy = actor;
     next.paidAt = now;
@@ -445,6 +456,14 @@ export function transitionPayroll(batch, to, opts = {}) {
   next.status = to;
   next.revision = revision;
   next.updatedAt = now;
+
+  // Carry over F-06 historical logs if present on input batch
+  if (Array.isArray(batch.rejectionHistory) && !next.rejectionHistory) {
+    next.rejectionHistory = batch.rejectionHistory.slice();
+  }
+  if (Array.isArray(batch.resubmissionDeltas)) {
+    next.resubmissionDeltas = batch.resubmissionDeltas.slice();
+  }
 
   // Phase 3 additive data-model stamps (no behavior change): schema marker,
   // sealed original values on the first submission, and approval/payment
@@ -508,7 +527,7 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
   // ---------------------------------------------------------------
   next.id = next.id || prev.id;
   next.month = next.month || prev.month;
-  ['baselineSnapshot', 'rejectedSnapshot'].forEach((field) => {
+  ['baselineSnapshot', 'rejectedSnapshot', 'rejectionHistory', 'resubmissionDeltas'].forEach((field) => {
     if (next[field] === undefined || next[field] === null) next[field] = prev[field];
   });
   // Version chain: a correction may only EXTEND the returned batch's
@@ -528,17 +547,34 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
   const changes = [];
   const srcItems = (base.items || []).filter((s) => s.employeeId);
   const toItems = next.items || [];
+  const affectedEmployeeSet = new Set();
+
   srcItems.forEach((snap) => {
     const cur = toItems.find((it) => it.employeeId === snap.employeeId);
     if (!cur) return;
+    let empChanged = false;
     MONETARY_FIELDS.forEach((f) => {
       const oldV = Number(snap[f]) || 0;
       const newV = Number(cur[f]) || 0;
       if (Math.abs(oldV - newV) > 0.0001) {
         changes.push({ employeeId: snap.employeeId, employeeName: snap.employeeName, field: f, oldValue: oldV, newValue: newV });
+        empChanged = true;
       }
     });
+    if (empChanged) affectedEmployeeSet.add(snap.employeeId);
   });
+
+  toItems.forEach((cur) => {
+    if (!srcItems.some((s) => s.employeeId === cur.employeeId)) {
+      affectedEmployeeSet.add(cur.employeeId);
+      changes.push({ employeeId: cur.employeeId, employeeName: cur.employeeName, field: 'itemAdded', oldValue: 0, newValue: Number(cur.netSalary) || 0 });
+    }
+  });
+
+  const oldTotalNet = Number(base.totalNet) || 0;
+  const newTotalNet = Number(next.totalNet) || 0;
+  const netDifference = Math.round((newTotalNet - oldTotalNet) * 100) / 100;
+
   const revision = (next.revision || 0) + 1;
   next.status = 'rejected';
   next.returnState = 'corrected';
@@ -554,6 +590,21 @@ export function recordPayrollCorrection(prev, next, opts = {}) {
     fromVersion: prev.revision || 0,
     toVersion: revision,
   });
+
+  // F-06: Explicit delta summary between rejected version and corrected version
+  const deltaEntry = {
+    fromRevision: prev.revision || 0,
+    toRevision: revision,
+    correctedAt: now,
+    correctedBy: opts.by || '',
+    correctionNotes: opts.reason || 'correction after audit return',
+    netDifference,
+    affectedEmployeeIds: Array.from(affectedEmployeeSet),
+    changes,
+  };
+  next.resubmissionDeltas = Array.isArray(prev.resubmissionDeltas) ? prev.resubmissionDeltas.slice() : [];
+  next.resubmissionDeltas.push(deltaEntry);
+
   next.versions = pushVersion(next, { type: 'corrected', version: revision, status: 'rejected', by: opts.by || '', at: now, reason: opts.reason || 'correction after audit return' });
   next.auditHistory = Array.isArray(prev.auditHistory) ? prev.auditHistory.slice() : [];
   next.auditHistory.push({ action: 'corrected', from: prev.status, to: 'rejected', by: opts.by || '', at: now, reason: opts.reason || '', revision });

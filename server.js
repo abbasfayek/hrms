@@ -492,9 +492,10 @@ async function handleAPI(req, res, urlParts, method) {
 
       // Scope validation for write (atomic: reject entire payload if any record out of scope)
       if (WRITE_GATES[collection]?.scopeValidate) {
-        const scopeCheck = scopeValidateWrite(collection, incomingArray, authCtx, getAllEmployees);
+        const storedForValidation = isMergeCollection ? (await readCollectionData(collection) || []) : null;
+        const scopeCheck = scopeValidateWrite(collection, incomingArray, authCtx, getAllEmployees, storedForValidation);
         if (!scopeCheck.ok) {
-          return jsonResponse(res, { error: 'Scope violation', code: 'scope_violation', recordId: scopeCheck.recordId }, 403);
+          return jsonResponse(res, { error: 'Scope violation', code: 'scope_violation', reason: scopeCheck.reason, recordId: scopeCheck.recordId }, scopeCheck.status || 403);
         }
       }
 
