@@ -107,12 +107,35 @@ export function getScope(user) {
   if (!user) return { companyId: null, branchId: null, compScoped: false, branchScoped: false };
   const assignedCompanyId = user.assignedCompanyId || 'all';
   const assignedBranchId = user.assignedBranchId || 'all';
+  const assignedBranchesList = Array.isArray(user.assignedBranches)
+    ? user.assignedBranches
+    : (Array.isArray(user.assignedBranchIds) ? user.assignedBranchIds : null);
+
   const compScoped = !isSuper(user) &&
     (COMPANY_SCOPED_ROLES.has(user.role) || (assignedCompanyId !== 'all' && assignedCompanyId !== ''));
-  const branchScoped = compScoped && assignedBranchId !== 'all' && assignedBranchId !== '';
+
+  let branchScoped = false;
+  let allowedBranchIds = null;
+  let branchId = 'all';
+
+  if (compScoped) {
+    if (assignedBranchesList && assignedBranchesList.length > 0) {
+      if (!assignedBranchesList.includes('all')) {
+        branchScoped = true;
+        allowedBranchIds = new Set(assignedBranchesList);
+        branchId = assignedBranchesList[0] || 'all';
+      }
+    } else if (assignedBranchId !== 'all' && assignedBranchId !== '') {
+      branchScoped = true;
+      allowedBranchIds = new Set([assignedBranchId]);
+      branchId = assignedBranchId;
+    }
+  }
+
   return {
     companyId: compScoped ? assignedCompanyId : 'all',
-    branchId: branchScoped ? assignedBranchId : 'all',
+    branchId,
+    allowedBranchIds,
     compScoped,
     branchScoped,
   };
@@ -126,7 +149,13 @@ export function isItemPermitted(item, scope) {
   }
   if (scope.branchScoped) {
     const itemBranch = item?.branchId || 'all';
-    if (itemBranch !== 'all' && itemBranch !== scope.branchId) return false;
+    if (itemBranch !== 'all') {
+      if (scope.allowedBranchIds && scope.allowedBranchIds.size > 0) {
+        if (!scope.allowedBranchIds.has(itemBranch)) return false;
+      } else if (scope.branchId && scope.branchId !== 'all' && itemBranch !== scope.branchId) {
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -238,11 +267,22 @@ export function checkWritePerm(ctx, collection) {
 }
 
 // ----- Read filtering -----
-export function filterCollectionRead(collection, data, ctx, getAllEmployees) {
+export function filterCollectionRead(collection, data, ctx, getAllEmployees, queryParams = {}) {
   // Keep ctx reference to ensure we use the exact same user object
   const authCtx = ctx;
   const { user, scope } = ctx;
-  if (isSuper(user)) return data;
+  if (isSuper(user)) {
+    if (collection === 'payrolls' && queryParams && Object.keys(queryParams).length > 0) {
+      if (Array.isArray(data)) {
+        return data.filter(batch => {
+          if (queryParams.status && batch.status !== queryParams.status) return false;
+          if (queryParams.branchId && queryParams.branchId !== 'all' && batch.branchId !== queryParams.branchId) return false;
+          return true;
+        });
+      }
+    }
+    return data;
+  }
 
   const employees = getAllEmployees ? getAllEmployees() : [];
 
@@ -263,17 +303,74 @@ export function filterCollectionRead(collection, data, ctx, getAllEmployees) {
       }
       break;
 
-    case 'payrolls':
-      // batch visible only if ALL items are in scope
+    case 'payrolls': {
+      // Requested branch / status filter from query params, if provided
+      const reqBranch = queryParams?.branchId || null;
+      const reqStatus = queryParams?.status || null;
+
+      // If user attempted spoofing a branch outside their scope:
+      if (reqBranch && reqBranch !== 'all') {
+        if (scope.branchScoped) {
+          if (scope.allowedBranchIds && !scope.allowedBranchIds.has(reqBranch)) {
+            // Spoofing attempt blocked: user has no access to this branch
+            filtered = [];
+            break;
+          }
+          if (!scope.allowedBranchIds && scope.branchId !== 'all' && scope.branchId !== reqBranch) {
+            filtered = [];
+            break;
+          }
+        }
+      }
+
       filtered = workingData.filter(batch => {
-        const items = batch.items || [];
-        if (!items.length) return true;
-        return items.every(it => {
-          const empScope = resolveEmpScope(it.employeeId, employees);
-          return isItemPermitted({ companyId: empScope.companyId, branchId: empScope.branchId }, scope);
-        });
+        if (!batch || typeof batch !== 'object') return false;
+
+        // Status filter if requested (e.g. status=paid)
+        if (reqStatus && batch.status !== reqStatus) return false;
+
+        const items = Array.isArray(batch.items) ? batch.items : [];
+        const batchBranch = batch.branchId || (items[0] && items[0].branchId) || null;
+        const batchComp = batch.companyId || (items[0] && items[0].companyId) || null;
+
+        // If explicit branch requested, match it
+        if (reqBranch && reqBranch !== 'all') {
+          if (batchBranch && batchBranch !== reqBranch) return false;
+        }
+
+        // 1. Batch level check: companyId & branchId must be permitted
+        if (batchComp && scope.compScoped && batchComp !== scope.companyId && batchComp !== 'all') {
+          return false;
+        }
+        if (batchBranch && scope.branchScoped) {
+          if (scope.allowedBranchIds && !scope.allowedBranchIds.has(batchBranch) && batchBranch !== 'all') {
+            return false;
+          }
+          if (!scope.allowedBranchIds && scope.branchId !== 'all' && batchBranch !== scope.branchId && batchBranch !== 'all') {
+            return false;
+          }
+        }
+
+        // If batch carries no branch identity when branchScoped is active, do not leak
+        if (!items.length && scope.branchScoped && !batchBranch) {
+          return false;
+        }
+
+        // 2. Item level check: ALL items in batch must be in scope
+        if (items.length > 0) {
+          const allItemsInScope = items.every(it => {
+            const empScope = resolveEmpScope(it.employeeId, employees);
+            const itemComp = it.companyId || empScope.companyId;
+            const itemBranch = it.branchId || empScope.branchId;
+            return isItemPermitted({ companyId: itemComp, branchId: itemBranch }, scope);
+          });
+          if (!allItemsInScope) return false;
+        }
+
+        return true;
       });
       break;
+    }
 
     case 'audit_trail': {
       // envelope { events: [...] } - filter events, fail-closed for globals
@@ -344,17 +441,30 @@ export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees) {
         ok = rec.id === scope.companyId;
         break;
 
-      case 'payrolls':
-        // batch must have companyId in scope AND all items in scope
-        if (rec.companyId && rec.companyId !== scope.companyId) ok = false;
-        else {
+      case 'payrolls': {
+        // batch must have companyId and branchId in scope AND all items in scope
+        let compOk = true;
+        let branchOk = true;
+        if (scope.compScoped && rec.companyId && rec.companyId !== scope.companyId && rec.companyId !== 'all') {
+          compOk = false;
+        }
+        if (scope.branchScoped && rec.branchId && rec.branchId !== 'all') {
+          if (scope.allowedBranchIds && !scope.allowedBranchIds.has(rec.branchId)) branchOk = false;
+          else if (!scope.allowedBranchIds && scope.branchId !== 'all' && rec.branchId !== scope.branchId) branchOk = false;
+        }
+        if (!compOk || !branchOk) {
+          ok = false;
+        } else {
           const items = rec.items || [];
           ok = items.length === 0 || items.every(it => {
             const empScope = resolveEmpScope(it.employeeId, employees);
-            return isItemPermitted({ companyId: empScope.companyId, branchId: empScope.branchId }, scope);
+            const itemComp = it.companyId || empScope.companyId;
+            const itemBranch = it.branchId || empScope.branchId;
+            return isItemPermitted({ companyId: itemComp, branchId: itemBranch }, scope);
           });
         }
         break;
+      }
 
       case 'deleted_records':
         // tombstone data.companyId/branchId/employeeId

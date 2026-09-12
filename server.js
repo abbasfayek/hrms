@@ -458,8 +458,10 @@ async function handleAPI(req, res, urlParts, method) {
     try {
       const data = await readCollectionData(collection);
       if (data === null) return jsonResponse(res, null, 200);
-      // Apply scope filtering
-      const filtered = filterCollectionRead(collection, data, authCtx, getAllEmployees);
+      // Apply scope filtering with query parameters
+      const qsIndex = req.url.indexOf('?');
+      const queryParams = qsIndex >= 0 ? Object.fromEntries(new URLSearchParams(req.url.slice(qsIndex))) : {};
+      const filtered = filterCollectionRead(collection, data, authCtx, getAllEmployees, queryParams);
       // Mask passwords on users collection
       const output = collection === 'users' ? maskPasswords(filtered) : filtered;
       return jsonResponse(res, output);

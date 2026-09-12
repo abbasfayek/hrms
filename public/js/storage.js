@@ -708,6 +708,7 @@ class StorageService {
     // A payroll batch is only visible when it belongs entirely to the current
     // company/branch scope (every item is one of the permitted employees).
     const filteredPayrolls = allPayrolls.filter((b) => {
+      if (!isItemPermitted(b)) return false;
       const batchItems = b.items || [];
       if (!batchItems.length) return true;
       return batchItems.every((it) => permittedEmpIds.has(it.employeeId));
