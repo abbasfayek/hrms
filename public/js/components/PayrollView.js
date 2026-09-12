@@ -296,6 +296,7 @@ export function renderPayrollView(container, options = {}) {
       return;
     }
 
+    const isFullyReturned = Boolean(currentBatch?.fullReturn?.completed);
     const isPaid = currentBatch ? currentBatch.status === 'paid' : false;
     const isUnderAudit = currentBatch ? currentBatch.status === 'under_audit' : false;
     const isApproved = currentBatch ? currentBatch.status === 'approved' : false;
@@ -521,23 +522,27 @@ export function renderPayrollView(container, options = {}) {
             <div>
               <div style="display:flex; align-items:center; gap:10px;">
                 <h3 style="font-size:18px; font-weight:800; color:var(--text-main);">${currentBatch.title}</h3>
-                <span class="badge ${isPaid ? 'badge-success' : isApproved ? 'badge-success' : isUnderAudit ? 'badge-info' : 'badge-warning'}">
-                  ${isPaid ? (isEn ? 'Paid & Disbursed' : 'تم الصرف بنجاح') : isApproved ? (isEn ? 'Audit Approved 🔒' : 'معتمد من التدقيق 🔒') : isUnderAudit ? (isEn ? 'Under Financial Audit 🔒' : 'قيد التدقيق المالي 🔒') : (isEn ? 'Draft (Editable)' : 'مسودة قابلة للتعديل')}
+                <span class="badge ${isFullyReturned ? 'badge-danger' : isPaid ? 'badge-success' : isApproved ? 'badge-success' : isUnderAudit ? 'badge-info' : 'badge-warning'}">
+                  ${isFullyReturned ? (isEn ? 'Fully Returned' : 'تم ترجيع المسير بالكامل') : isPaid ? (isEn ? 'Paid & Disbursed' : 'تم الصرف بنجاح') : isApproved ? (isEn ? 'Audit Approved 🔒' : 'معتمد من التدقيق 🔒') : isUnderAudit ? (isEn ? 'Under Financial Audit 🔒' : 'قيد التدقيق المالي 🔒') : (isEn ? 'Draft (Editable)' : 'مسودة قابلة للتعديل')}
                 </span>
               </div>
               <p style="font-size:12.5px; color:var(--text-muted); margin-top:2px;">
                 ${tf('payroll.batchSummary', { count: currentBatch.employeesCount, date: formatDate(currentBatch.issueDate) })}
               </p>
               ${
-                isReleased || isPaid
-                  ? `<div style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.35); padding:5px 12px; border-radius:8px; font-size:12px; font-weight:800; color:var(--success);">
-                      ✅ ${isEn ? 'Released on' : 'تم التحرير رسمياً بتاريخ'}: ${formatDate(currentBatch.releasedAt || currentBatch.paidAt)} ${isEn ? 'by' : 'بواسطة'} ${currentBatch.releasedBy || currentBatch.paidBy || (isEn ? 'Finance Manager' : 'المدير المالي')}
+                isFullyReturned
+                  ? `<div style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.35); padding:5px 12px; border-radius:8px; font-size:12px; font-weight:800; color:var(--danger);">
+                      ↩️ ${isEn ? 'Fully returned on' : 'تم ترجيع المسير بالكامل بتاريخ'}: ${formatDate(currentBatch.fullReturn.at)} ${isEn ? 'by' : 'بواسطة'} ${escapeHtml(currentBatch.fullReturn.by || '')}
                     </div>`
-                  : currentBatch.releaseDate
-                    ? `<div style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; background:rgba(79,70,229,0.08); border:1px solid rgba(79,70,229,0.25); padding:5px 12px; border-radius:8px; font-size:12px; font-weight:800; color:var(--primary);">
-                        📅 ${isEn ? 'Scheduled release (payday)' : 'موعد تحرير الرواتب (يوم الصرف)'}: <span style="direction:ltr; unicode-bidi:embed;">${currentBatch.releaseDate}</span> • ${isEn ? 'day' : 'يوم'} ${currentBatch.releasePayDay || 25} ${isEn ? 'of each month (branch setting)' : 'من كل شهر (حسب إعداد الفرع)'}
+                  : isReleased || isPaid
+                    ? `<div style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.35); padding:5px 12px; border-radius:8px; font-size:12px; font-weight:800; color:var(--success);">
+                        ✅ ${isEn ? 'Released on' : 'تم التحرير رسمياً بتاريخ'}: ${formatDate(currentBatch.releasedAt || currentBatch.paidAt)} ${isEn ? 'by' : 'بواسطة'} ${currentBatch.releasedBy || currentBatch.paidBy || (isEn ? 'Finance Manager' : 'المدير المالي')}
                       </div>`
-                    : ''
+                    : currentBatch.releaseDate
+                      ? `<div style="display:inline-flex; align-items:center; gap:6px; margin-top:6px; background:rgba(79,70,229,0.08); border:1px solid rgba(79,70,229,0.25); padding:5px 12px; border-radius:8px; font-size:12px; font-weight:800; color:var(--primary);">
+                          📅 ${isEn ? 'Scheduled release (payday)' : 'موعد تحرير الرواتب (يوم الصرف)'}: <span style="direction:ltr; unicode-bidi:embed;">${currentBatch.releaseDate}</span> • ${isEn ? 'day' : 'يوم'} ${currentBatch.releasePayDay || 25} ${isEn ? 'of each month (branch setting)' : 'من كل شهر (حسب إعداد الفرع)'}
+                        </div>`
+                      : ''
               }
             </div>
 
@@ -644,7 +649,17 @@ export function renderPayrollView(container, options = {}) {
         </div>
         ` : ''}
 
-        ${isPaid ? `
+        ${isFullyReturned ? `
+        <div class="alert-box alert-danger" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:14px 18px; border-radius:8px;">
+          <div>
+            <strong style="color:#dc2626; font-size:13.5px;">↩️ ${isEn ? `Salaries for ${currentBatch.month} have been fully returned.` : `تم ترجيع مسير رواتب ${currentBatch.month} بالكامل.`}</strong>
+            <div style="font-size:12px; margin-top:3px; color:var(--text-muted);">
+              ${isEn ? 'Reason for return' : 'سبب الترجيع'}: <strong>${escapeHtml(currentBatch.fullReturn.reason || '')}</strong>
+            </div>
+          </div>
+          <span class="badge badge-danger">${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span>
+        </div>
+        ` : isPaid ? `
         <div class="alert-box alert-success" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
           <div>
             <strong>✅ ${isEn ? 'Salaries for this month have been disbursed.' : 'تم صرف رواتب هذا الشهر بنجاح ونقلها إلى سجل الرواتب المصروفة.'}</strong>
@@ -1019,8 +1034,11 @@ export function renderPayrollView(container, options = {}) {
         if (!currentBatch || !canCreateCorrection) return;
         openFullReturnModal({
           batch: currentBatch,
-          onCompleted: () => {
-            activeTab = 'corrections';
+          onCompleted: (finalCorrection, updatedBatch) => {
+            const target = updatedBatch || currentBatch;
+            currentMonth = target.month;
+            currentBatch = target;
+            activeTab = 'payroll';
             updateHeaderTabs();
             renderTabContent();
           },
@@ -1386,7 +1404,9 @@ export function renderPayrollView(container, options = {}) {
                             ${b.archived ? `
                             <span class="badge badge-purple">${isEn ? 'Archived' : 'مؤرشف'}</span>
                             ` : ''}
-                            ${canCreateCorrection ? `
+                            ${b.fullReturn?.completed ? `
+                            <span class="badge badge-danger">${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span>
+                            ` : canCreateCorrection ? `
                             <button type="button" class="btn btn-sm btn-danger btn-full-return-batch" title="${isEn ? 'Full Return' : 'ترجيع كامل'}">
                               ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
                             </button>
@@ -1438,8 +1458,11 @@ export function renderPayrollView(container, options = {}) {
           if (!b || !canCreateCorrection) return;
           openFullReturnModal({
             batch: b,
-            onCompleted: () => {
-              activeTab = 'corrections';
+            onCompleted: (finalCorrection, updatedBatch) => {
+              const target = updatedBatch || b;
+              currentMonth = target.month;
+              currentBatch = target;
+              activeTab = 'payroll';
               updateHeaderTabs();
               renderTabContent();
             },
@@ -1802,7 +1825,17 @@ export function renderPayrollView(container, options = {}) {
         const sel = contentArea.querySelector('#pc-new-batch');
         const batch = archivedBatches.find((b) => b.id === (sel ? sel.value : ''));
         if (!batch) return;
-        openFullReturnModal({ batch, onCompleted: () => renderTabContent() });
+        openFullReturnModal({
+          batch,
+          onCompleted: (finalCorrection, updatedBatch) => {
+            const target = updatedBatch || batch;
+            currentMonth = target.month;
+            currentBatch = target;
+            activeTab = 'payroll';
+            updateHeaderTabs();
+            renderTabContent();
+          },
+        });
       });
 
       contentArea.querySelector('#btn-new-correction')?.addEventListener('click', () => {

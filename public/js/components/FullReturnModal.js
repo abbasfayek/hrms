@@ -24,6 +24,11 @@ export function openFullReturnModal({ batch, onCompleted }) {
     return;
   }
 
+  if (batch.fullReturn?.completed) {
+    toast.info(isEn ? 'This payroll has already been fully returned.' : 'تم ترجيع هذا المسير بالكامل مسبقاً.');
+    return;
+  }
+
   if (!can(state.currentUser, 'payroll.correction.create')) {
     toast.error(isEn ? 'Permission denied: cannot create correction/return.' : 'لا تملك صلاحية إجراء ترجيع/تصحيح.');
     return;
@@ -144,7 +149,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
           return;
         }
 
-        // Advance to under_audit (financial audit queue) seamlessly
+        // Advance to under_audit (financial audit queue) seamlessly in background
         const subRes = transitionCorrectionGuarded(state.currentUser, res.correction, 'under_audit', {
           by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية'),
           context: branchContext,
@@ -152,6 +157,21 @@ export function openFullReturnModal({ batch, onCompleted }) {
         const finalCorrection = subRes.ok ? subRes.correction : res.correction;
 
         storage.addPayrollCorrection(finalCorrection);
+
+        // Update target batch with full return metadata
+        const updatedBatch = {
+          ...targetBatch,
+          fullReturn: {
+            completed: true,
+            reason: reason,
+            correctionId: finalCorrection.correctionId,
+            displayNumber: finalCorrection.displayNumber || null,
+            at: new Date().toISOString(),
+            by: storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية'),
+          },
+        };
+        storage.addPayrollBatch(updatedBatch);
+
         storage.addAudit(
           'correction',
           'payroll',
@@ -161,9 +181,9 @@ export function openFullReturnModal({ batch, onCompleted }) {
           finalCorrection.correctionId
         );
 
-        toast.success(isEn ? 'Full return executed successfully.' : 'تم تنفيذ الترجيع الكامل بنجاح.');
+        toast.success(isEn ? 'Payroll full return executed successfully.' : 'تم ترجيع المسير بالكامل بنجاح.');
         close();
-        if (onCompleted) onCompleted(finalCorrection);
+        if (onCompleted) onCompleted(finalCorrection, updatedBatch);
       });
     },
   });
