@@ -589,22 +589,16 @@ export function renderPayrollView(container, options = {}) {
             <strong style="color:#dc2626; font-size:14px;">🔁 ${isEn ? 'Returned / Needs Correction — Financial Audit returned this payroll.' : 'عودة / بحاجة تصحيح — أُعيد هذا المسير من التدقيق المالي.'}</strong>
             <div style="font-size:12px; color:var(--text-muted); margin-top:2px; line-height:1.6;">
               ${isEn
-                ? `All amounts are PRESERVED (nothing was zeroed). Review the rejection reason below, correct the payroll, then press <strong>Resubmit</strong> to send it back to Financial Audit.`
-                : `جميع المبالغ محفوظة (لم يُصفَّر شيء). راجع سبب الرفض أدناه، صحّح المسير، ثم اضغط <strong>إعادة الإرسال</strong> لإعادته إلى التدقيق المالي.`}
+                ? `Review the rejection reason below, update any necessary data, then press <strong>Correct & Resubmit</strong> to send it back to Financial Audit.`
+                : `راجع سبب الرفض أدناه، عدّل البيانات المطلوبة، ثم اضغط <strong>تصحيح وإعادة إرسال</strong> لإعادته إلى التدقيق المالي.`}
             </div>
-            ${currentBatch.rejectionReason ? `<div style="font-size:12px; margin-top:4px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); padding:6px 10px; border-radius:6px; color:var(--text-main);">${isEn ? 'Rejection reason' : 'سبب الرفض'}: <strong>${currentBatch.rejectionReason}</strong></div>` : ''}
+            ${currentBatch.rejectionReason ? `<div style="font-size:12.5px; margin-top:6px; background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.25); padding:8px 12px; border-radius:6px; color:var(--text-main);">⚠️ ${isEn ? 'Rejection reason' : 'سبب الرفض'}: <strong>${currentBatch.rejectionReason}</strong></div>` : ''}
             ${currentBatch.rejectedBy ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">${isEn ? 'Returned by' : 'أعاده'}: <strong>${currentBatch.rejectedBy}</strong> • ${formatDate(currentBatch.rejectedAt)}</div>` : ''}
-            ${currentBatch.corrections && currentBatch.corrections.length ? `<div style="font-size:11.5px; margin-top:4px; color:var(--text-muted);">✏️ ${isEn ? 'Corrections recorded' : 'تصحيحات مسجلة'}: <strong>${currentBatch.corrections.length}</strong> (${formatDate(currentBatch.corrections[currentBatch.corrections.length - 1].at)})</div>` : ''}
           </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            ${canManagePayroll ? `
-            <button type="button" class="btn btn-sm btn-warning" id="btn-recalc-returned">
-              ${Icons.refresh(14)} ${isEn ? 'Recalculate & Record Correction' : 'إعادة الاحتساب وتسجيل التصحيح'}
-            </button>
-            ` : ''}
-            ${canSubmitAudit ? `
-            <button type="button" class="btn btn-sm btn-success" id="btn-resubmit-payroll">
-              ${Icons.upload(14)} ${isEn ? 'Resubmit to Financial Audit' : 'إعادة الإرسال للتدقيق المالي'}
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            ${(canManagePayroll || canSubmitAudit) ? `
+            <button type="button" class="btn btn-sm btn-success" id="btn-correct-resubmit-payroll">
+              ${Icons.upload(14)} ${isEn ? 'Correct & Resubmit' : 'تصحيح وإعادة إرسال'}
             </button>
             ` : ''}
           </div>
@@ -972,6 +966,25 @@ export function renderPayrollView(container, options = {}) {
       };
       contentArea.querySelector('#btn-transfer-to-audit')?.addEventListener('click', () => submitToAudit());
       contentArea.querySelector('#btn-resubmit-payroll')?.addEventListener('click', () => submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح'));
+      contentArea.querySelector('#btn-correct-resubmit-payroll')?.addEventListener('click', () => {
+        const prev = currentBatch;
+        const regenerated = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
+        computePayrollReleaseSchedule(regenerated, companies);
+        const actor = storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب');
+        const corr = recordPayrollCorrectionGuarded(state.currentUser, prev, regenerated, {
+          by: actor,
+          context: getPayrollBranchContext(),
+          reason: isEn ? 'Corrected and resubmitted after audit return' : 'تصحيح وإعادة إرسال بعد إعادة التدقيق',
+        });
+        if (!corr.ok) {
+          toast.error(isEn ? `Cannot record correction: ${corr.error}` : `تعذر تسجيل التصحيح: ${corr.error}`);
+          renderTabContent();
+          return;
+        }
+        currentBatch = corr.batch;
+        storage.addPayrollBatch(currentBatch);
+        submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح');
+      });
 
       // Go to audit shortcut
       contentArea.querySelector('#btn-go-to-audit')?.addEventListener('click', () => {
@@ -1724,6 +1737,11 @@ export function renderPayrollView(container, options = {}) {
                       <td>
                         <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end; flex-wrap:wrap;">
                           ${c.status === 'draft' && canCreateCorrection ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="submit">${isEn ? 'Submit' : 'إرسال'}</button>` : ''}
+                          ${c.status === 'rejected' && canCreateCorrection ? `
+                            <button type="button" class="btn btn-sm btn-primary" data-pc-act="resubmit-dialog">
+                              ${Icons.refresh(14)} ${isEn ? 'Correct & Resubmit' : 'تصحيح وإعادة إرسال'}
+                            </button>
+                          ` : ''}
                           ${c.status === 'under_audit' && c.coApprovePending && canCoApproveCorrection ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="coApprove">${isEn ? 'Co-Approve' : 'الموافقة الثانية'}</button>` : ''}
                           ${c.status === 'under_audit' && !c.coApprovePending && canApprove ? `<button type="button" class="btn btn-sm btn-primary" data-pc-act="approve">${isEn ? 'Approve' : 'اعتماد'}</button>` : ''}
                           ${c.status === 'under_audit' && !c.coApprovePending && canRejectAudit ? `<button type="button" class="btn btn-sm btn-outline" data-pc-act="reject" style="color:var(--danger);">${isEn ? 'Return' : 'إعادة'}</button>` : ''}
@@ -1750,6 +1768,11 @@ export function renderPayrollView(container, options = {}) {
       const byName = () => storage.getActiveUser()?.name || '';
 
       const runCorrectionAction = (correction, act) => {
+        if (act === 'resubmit-dialog') {
+          const batch = archivedBatches.find((b) => b.id === correction.originalTransactionId) || { id: correction.originalTransactionId, month: correction.payrollPeriodId, items: [] };
+          openPayrollCorrectionModal({ original: batch, existingCorrection: correction, onSaved: () => renderTabContent() });
+          return;
+        }
         if (act === 'coApprove') {
           const res = coApproveCorrectionGuarded(state.currentUser, correction, { by: byName(), context: getPayrollBranchContext() });
           if (!res.ok) { toast.error(isEn ? `Cannot co-approve: ${res.error}` : `تعذر الاعتماد الثاني: ${res.error}`); return; }

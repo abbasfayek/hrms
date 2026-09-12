@@ -9,17 +9,18 @@
 
 import { storage } from '../storage.js';
 import { createModal } from './Modal.js';
-import { formatAmountWithCode, escapeHtml, can } from '../types.js';
+import { formatAmountWithCode, escapeHtml, can, formatDate } from '../types.js';
 import { t, i18n } from '../i18n.js';
 import { toast } from './Toast.js';
 import { COMPONENT_CATALOG, correctionDisplayNumber } from '../engines/payrollCorrectionModel.js';
 import { createCorrection, computeNetEffective } from '../engines/payrollCorrectionEngine.js';
 import { createPayrollCorrectionGuarded } from '../engines/payrollCorrectionAccess.js';
 
-export function openPayrollCorrectionModal({ original, onSaved }) {
+export function openPayrollCorrectionModal({ original, onSaved, existingCorrection = null }) {
   const state = storage.getState();
   const { settings } = state;
   const isEn = i18n.getLang() === 'en';
+  const isResubmit = Boolean(existingCorrection);
 
   if (!original || original.archived !== true || original.status !== 'paid') {
     toast.error(isEn ? 'Corrections can only be created on an archived, paid payroll.' : 'يمكن إنشاء التصحيحات على مسيرات مؤرشفة ومصروفة فقط.');
@@ -47,11 +48,20 @@ export function openPayrollCorrectionModal({ original, onSaved }) {
     return html;
   };
 
-  const initialSeq = storage.getCorrections(original.id).length + 1;
-  const nextNumber = correctionDisplayNumber(original.id, initialSeq);
+  const nextNumber = isResubmit
+    ? (existingCorrection.displayNumber || existingCorrection.correctionId)
+    : correctionDisplayNumber(original.id, storage.getCorrections(original.id).length + 1);
 
   const bodyHtml = `
     <form id="pc-form">
+      ${isResubmit ? `
+      <div class="alert-box" style="margin-bottom:14px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:12px 16px; border-radius:8px;">
+        <div style="font-weight:700; color:#dc2626; font-size:13.5px;">⚠️ ${isEn ? 'Rejection Reason / Auditor Note:' : 'سبب الرفض / ملاحظة التدقيق:'}</div>
+        <div style="font-size:13px; color:var(--text-main); margin-top:4px; font-weight:600;">${escapeHtml(existingCorrection.rejectionReason || (isEn ? 'Returned for revision' : 'أُعيد للمراجعة والتصحيح'))}</div>
+        ${existingCorrection.rejectedBy ? `<div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">${isEn ? 'Returned by' : 'أعاده'}: <strong>${escapeHtml(existingCorrection.rejectedBy)}</strong> • ${formatDate(existingCorrection.rejectedAt)}</div>` : ''}
+      </div>
+      ` : ''}
+
       <div class="card" style="padding:12px 14px; background:var(--bg-card-hover); border:1px solid var(--border-color); margin-bottom:14px;">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <div>
@@ -60,7 +70,7 @@ export function openPayrollCorrectionModal({ original, onSaved }) {
               ${original.month} — ${formatAmountWithCode(Number(original.totalNet) || 0, (original.totalsByCurrency && original.totalsByCurrency.length === 1 && original.totalsByCurrency[0].code) || '')}
             </div>
           </div>
-          <span class="badge badge-purple">${isEn ? 'Next number' : 'الرقم التالي'}: <strong style="direction:ltr; unicode-bidi:embed;">${nextNumber}</strong></span>
+          <span class="badge badge-purple">${isResubmit ? (isEn ? 'Correction number' : 'رقم التصحيح') : (isEn ? 'Next number' : 'الرقم التالي')}: <strong style="direction:ltr; unicode-bidi:embed;">${escapeHtml(nextNumber)}</strong></span>
         </div>
       </div>
 
@@ -133,7 +143,7 @@ export function openPayrollCorrectionModal({ original, onSaved }) {
 
   const footerHtml = `
     <button type="button" class="btn btn-secondary close-modal-btn">${t('cancel')}</button>
-    <button type="button" class="btn btn-primary submit-pc-btn">${isEn ? 'Create Correction Request' : 'إنشاء طلب تصحيح'}</button>
+    <button type="button" class="btn ${isResubmit ? 'btn-success' : 'btn-primary'} submit-pc-btn">${isResubmit ? (isEn ? 'Resubmit' : 'إعادة إرسال') : (isEn ? 'Create Correction Request' : 'إنشاء طلب تصحيح')}</button>
   `;
 
   function rowHtml(row, i) {
@@ -245,16 +255,51 @@ export function openPayrollCorrectionModal({ original, onSaved }) {
   }
 
   createModal({
-    title: `${isEn ? 'New Correction Request' : 'طلب تصحيح جديد'} — ${original.month}`,
+    title: isResubmit
+      ? `${isEn ? 'Correct & Resubmit Request' : 'تصحيح وإعادة إرسال طلب التصحيح'} — ${escapeHtml(nextNumber)}`
+      : `${isEn ? 'New Correction Request' : 'طلب تصحيح جديد'} — ${original.month}`,
     size: 'lg',
     bodyHtml,
     footerHtml,
     onOpen: (overlay, close) => {
       overlayEl = overlay;
       overlay.querySelector('.close-modal-btn').addEventListener('click', close);
-      pushRow();
+
+      if (isResubmit && Array.isArray(existingCorrection.components) && existingCorrection.components.length > 0) {
+        existingCorrection.components.forEach((c) => {
+          rows.push({
+            employeeId: c.employeeId,
+            componentCode: c.componentCode && c.componentCode.startsWith('OTHER_') ? '__OTHER__' : c.componentCode,
+            quantity: c.quantity != null ? c.quantity : 1,
+            rate: c.rateOrRuleRef != null ? c.rateOrRuleRef : '',
+            reason: c.reason || '',
+            sourceRef: c.sourceRef || '',
+            sourceOther: c.componentCode && c.componentCode.startsWith('OTHER_') ? c.componentCode : '',
+            manual: Boolean(c.manualEntry),
+          });
+        });
+      } else {
+        pushRow();
+      }
+
       renderRows();
       rows.forEach((_, i) => wireRow(i));
+
+      if (isResubmit) {
+        if (existingCorrection.direction) overlay.querySelector('#pc-direction').value = existingCorrection.direction;
+        const wrap = overlay.querySelector('#pc-recovery-wrap');
+        if (wrap) wrap.style.display = existingCorrection.direction === 'debit' ? 'block' : 'none';
+        if (existingCorrection.recovery?.method && overlay.querySelector('#pc-recovery')) {
+          overlay.querySelector('#pc-recovery').value = existingCorrection.recovery.method;
+        }
+        if (existingCorrection.ratePolicy?.mode && overlay.querySelector('#pc-rate-policy')) {
+          overlay.querySelector('#pc-rate-policy').value = existingCorrection.ratePolicy.mode;
+        }
+        if (existingCorrection.reason && overlay.querySelector('#pc-reason')) {
+          overlay.querySelector('#pc-reason').value = existingCorrection.reason;
+        }
+      }
+
       updatePreview();
 
       overlay.querySelector('#pc-direction').addEventListener('change', (e) => {
@@ -279,6 +324,83 @@ export function openPayrollCorrectionModal({ original, onSaved }) {
         }
         const input = buildInput();
         const hasManual = input.manualEntry;
+
+        if (isResubmit) {
+          const built = createCorrection(input, { original, settings, user: state.currentUser });
+          if (!built.ok) {
+            toast.error(built.error || (isEn ? 'Correction refused.' : 'رُفض التصحيح.'));
+            return;
+          }
+          const now = new Date().toISOString();
+          const actor = storage.getActiveUser()?.name || (isEn ? 'HR Officer' : 'مسؤول الموارد البشرية');
+          const newRevision = (Number(existingCorrection.revision) || 1) + 1;
+
+          // Snapshot of rejected state
+          const prevSnapshot = {
+            revision: existingCorrection.revision || 1,
+            rejectedAt: existingCorrection.rejectedAt || now,
+            rejectedBy: existingCorrection.rejectedBy || '',
+            rejectionReason: existingCorrection.rejectionReason || '',
+            direction: existingCorrection.direction,
+            reason: existingCorrection.reason,
+            components: existingCorrection.components,
+          };
+
+          // Track deltas (differences)
+          const changes = [];
+          const oldComps = existingCorrection.components || [];
+          const newComps = built.correction.components || [];
+          newComps.forEach((nc, idx) => {
+            const oc = oldComps[idx];
+            if (!oc || oc.calculatedAmount !== nc.calculatedAmount || oc.componentCode !== nc.componentCode) {
+              changes.push({
+                employeeId: nc.employeeId,
+                componentCode: nc.componentCode,
+                oldAmount: oc ? oc.calculatedAmount : 0,
+                newAmount: nc.calculatedAmount,
+              });
+            }
+          });
+
+          const updatedCorrection = {
+            ...existingCorrection,
+            direction: input.direction,
+            recovery: input.recovery,
+            ratePolicy: input.ratePolicy,
+            reason: input.reason,
+            components: built.correction.components,
+            manualEntry: input.manualEntry,
+            revision: newRevision,
+            status: 'under_audit',
+            returnState: 'resubmitted',
+            resubmittedBy: actor,
+            resubmittedAt: now,
+            correctedBy: actor,
+            correctedAt: now,
+            rejectionHistory: [
+              ...(Array.isArray(existingCorrection.rejectionHistory) ? existingCorrection.rejectionHistory : []),
+              prevSnapshot,
+            ],
+            resubmissionDeltas: [
+              ...(Array.isArray(existingCorrection.resubmissionDeltas) ? existingCorrection.resubmissionDeltas : []),
+              {
+                fromRevision: existingCorrection.revision || 1,
+                toRevision: newRevision,
+                correctedAt: now,
+                correctedBy: actor,
+                changes,
+              },
+            ],
+          };
+
+          storage.addPayrollCorrection(updatedCorrection);
+          storage.addAudit('resubmit', 'payroll', `${updatedCorrection.displayNumber || updatedCorrection.correctionId} → ${isEn ? 'resubmitted after correction' : 'أُعيد إرساله بعد التصحيح'}`, updatedCorrection.correctionId);
+          toast.success(isEn ? 'Correction request corrected and resubmitted to Financial Audit.' : 'تم تصحيح طلب التصحيح وإعادة إرساله للتدقيق المالي.');
+          close();
+          if (onSaved) onSaved(updatedCorrection);
+          return;
+        }
+
         if (!can(state.currentUser, 'payroll.correction.create')) {
           toast.error(isEn ? 'You need the create-correction permission.' : 'تحتاج صلاحية إنشاء التصحيح.');
           return;
