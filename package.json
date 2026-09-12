@@ -19,6 +19,8 @@
     "p4:test": "node scripts/p4-tests.mjs",
     "p6:test": "node scripts/p6-tests.mjs",
     "p9:test": "node scripts/p9-tests.mjs",
+    "p101:test": "node scripts/p10-1-tests.mjs",
+    "p102:test": "node scripts/p10-2-tests.mjs",
     "branch:isolation": "node scripts/final-branch-isolation-gate.mjs"
   },
   "dependencies": {

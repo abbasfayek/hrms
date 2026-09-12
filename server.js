@@ -642,6 +642,16 @@ async function handleAPI(req, res, urlParts, method) {
     try {
       const body = await readBody(req);
       const { employees: newEmps = [], mode = 'append' } = body;
+      if (!Array.isArray(newEmps)) {
+        return jsonResponse(res, { error: 'employees must be an array' }, 400);
+      }
+
+      // Atomic scope validation for incoming employees
+      const scopeCheck = scopeValidateWrite('employees', newEmps, authCtx, getAllEmployees);
+      if (!scopeCheck.ok) {
+        return jsonResponse(res, { error: 'Scope violation in imported data', code: 'scope_violation', recordId: scopeCheck.recordId }, 403);
+      }
+
       const filePath = getCollectionFile('employees');
       let existing = [];
       if (fs.existsSync(filePath)) {
@@ -655,16 +665,21 @@ async function handleAPI(req, res, urlParts, method) {
         }
         result = newEmps;
       } else {
-        // Merge: update by employeeNumber if exists, else add
-        const map = {};
-        existing.forEach(e => { map[e.employeeNumber] = e; });
-        newEmps.forEach(e => { map[e.employeeNumber] = { ...map[e.employeeNumber], ...e }; });
-        result = Object.values(map);
-      }
-      // Scope validation for imported employees
-      const scopeCheck = scopeValidateWrite('employees', result, authCtx, getAllEmployees);
-      if (!scopeCheck.ok) {
-        return jsonResponse(res, { error: 'Scope violation in imported data', code: 'scope_violation', recordId: scopeCheck.recordId }, 403);
+        // Append mode: merge safely by companyId + employeeNumber so tenants cannot overwrite each other
+        const callerScope = authCtx.scope;
+        const map = new Map();
+        for (const e of existing) {
+          if (!e) continue;
+          const key = `${e.companyId || ''}::${e.employeeNumber || e.id}`;
+          map.set(key, e);
+        }
+        for (const ne of newEmps) {
+          if (!ne) continue;
+          const key = `${ne.companyId || callerScope.companyId || ''}::${ne.employeeNumber || ne.id}`;
+          const prev = map.get(key);
+          map.set(key, prev ? { ...prev, ...ne } : ne);
+        }
+        result = Array.from(map.values());
       }
       writeCollection('employees', result);
       return jsonResponse(res, { success: true, imported: newEmps.length, total: result.length });
@@ -916,6 +931,38 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         return jsonResponse(res, { error: e.message }, 500);
       }
+    }
+
+    // Public endpoint: exchange the master access token for a short-lived gate session
+    if (method === 'POST' && urlParts[2] === 'auth' && urlParts[3] === 'session') {
+      if (checkLocked(ip)) {
+        return jsonResponse(res, { error: 'Too many attempts. Try again later.', code: 'rate_limited' }, 429);
+      }
+      if (!hasValidAccessToken(req)) {
+        recordFailure(ip);
+        await sleep(400);
+        return jsonResponse(res, { error: 'Invalid access token', code: 'invalid_token' }, 401);
+      }
+      recordSuccess(ip);
+      return jsonResponse(res, { session: createSession(ip, 'gate'), expiresIn: SESSION_TTL_MS });
+    }
+
+    // Public endpoint: download comprehensive Excel template
+    if (method === 'GET' && urlParts[2] === 'download-template') {
+      const rawUrl = req.url;
+      const qsIndex = rawUrl.indexOf('?');
+      const qs = qsIndex >= 0 ? rawUrl.slice(qsIndex + 1) : '';
+      const params = Object.fromEntries(qs.split('&').filter(Boolean).map(p => p.split('=')));
+      const lang = (params.lang || 'ar').toLowerCase();
+      const isEn = lang === 'en';
+      const excelContent = generateExcelTemplate(lang);
+
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.ms-excel; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${isEn ? 'Employee_Import_Template.xls' : 'Employee_Template_AR.xls'}"`
+      });
+      res.end(Buffer.from('\uFEFF' + excelContent, 'utf-8'));
+      return;
     }
 
     // Public-ish endpoint: manage the optional master protection. Now handled in handleAPI.
