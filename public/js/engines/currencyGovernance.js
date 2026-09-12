@@ -374,6 +374,23 @@ export function stampPayrollBatch(batch, settings = {}, opts = {}) {
   const distinctCurrencies = new Set((batch.items || []).map((it) => String(it.currency || base)));
   const nonBase = [...distinctCurrencies].filter((c) => c !== base);
 
+  const rateMap = {};
+  (batch.items || []).forEach((it) => {
+    if (it && it.currency && it.exchangeRate) {
+      rateMap[it.currency] = it.exchangeRate;
+    }
+  });
+  if (!batch.ratesSnapshot || isWorkingCopy) {
+    batch.ratesSnapshot = rateMap;
+    batch.ratesSnapshotDate = at;
+  }
+
+  if (!isWorkingCopy) {
+    (batch.items || []).forEach((it) => {
+      delete it.snapshotDraft;
+    });
+  }
+
   batch.governance = {
     schema: GOVERNANCE_SCHEMA,
     baseCurrency: base,
@@ -382,6 +399,7 @@ export function stampPayrollBatch(batch, settings = {}, opts = {}) {
     // merged into one currency-blind number — it is flagged as mixed.
     mixedCurrencies: distinctCurrencies.size > 1,
     currencies: [...distinctCurrencies],
+    ratesSnapshot: rateMap,
     resolvedAt: at,
   };
   batch.currencyModel = GOVERNANCE_SCHEMA;

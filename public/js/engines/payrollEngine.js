@@ -361,6 +361,11 @@ const MONETARY_FIELDS = [
   'otherDeductions', 'penaltiesDeduction', 'totalDeductions', 'netSalary',
 ];
 
+const CURRENCY_SNAPSHOT_FIELDS = [
+  'currency', 'salaryCurrency', 'exchangeRate', 'exchangeRateDate',
+  'baseCurrency', 'baseAmount', 'exchangeRateStatus',
+];
+
 function cloneBatch(batch) {
   return { ...batch, items: (batch.items || []).map((it) => ({ ...it })) };
 }
@@ -374,10 +379,15 @@ function snapshotBatch(batch) {
     totalGosi: batch.totalGosi,
     totalCompanyGosi: batch.totalCompanyGosi,
     totalEOSB: batch.totalEOSB,
+    ratesSnapshot: batch.ratesSnapshot ? { ...batch.ratesSnapshot } : null,
+    ratesSnapshotDate: batch.ratesSnapshotDate || null,
+    governance: batch.governance ? { ...batch.governance } : null,
+    currencyModel: batch.currencyModel || null,
     totalsByCurrency: (batch.totalsByCurrency || []).map((g) => ({ ...g })),
     items: (batch.items || []).map((it) => {
       const snap = { employeeId: it.employeeId, employeeName: it.employeeName };
       MONETARY_FIELDS.forEach((f) => { snap[f] = it[f]; });
+      CURRENCY_SNAPSHOT_FIELDS.forEach((f) => { if (it[f] !== undefined) snap[f] = it[f]; });
       return snap;
     }),
   };
@@ -451,6 +461,18 @@ export function transitionPayroll(batch, to, opts = {}) {
     next.paidBy = actor;
     next.paidAt = now;
     next.releaseStatus = 'released';
+    // F-07: Seal historical exchange rate snapshot on paid status
+    if (!next.ratesSnapshot) {
+      const rateMap = {};
+      (next.items || []).forEach((it) => {
+        if (it && it.currency && it.exchangeRate) rateMap[it.currency] = it.exchangeRate;
+      });
+      next.ratesSnapshot = rateMap;
+      next.ratesSnapshotDate = now;
+    }
+    (next.items || []).forEach((it) => {
+      delete it.snapshotDraft;
+    });
   }
 
   next.status = to;

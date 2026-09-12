@@ -468,8 +468,24 @@ export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees, s
             const existing = storedData.find(b => b && b.id === rec.id);
             if (existing) {
               // Paid batches cannot be rolled back or mutated without super admin
-              if (existing.status === 'paid' && rec.status !== 'paid') {
-                return { ok: false, reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
+              if (existing.status === 'paid' && !isSuper(ctx.user)) {
+                if (rec.status !== 'paid') {
+                  return { ok: false, reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
+                }
+                // F-07: Verify ratesSnapshot and item-level exchange rate & baseAmount cannot be tampered
+                if (existing.ratesSnapshot && rec.ratesSnapshot && JSON.stringify(existing.ratesSnapshot) !== JSON.stringify(rec.ratesSnapshot)) {
+                  return { ok: false, reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
+                }
+                const existingItems = existing.items || [];
+                const incomingItems = rec.items || [];
+                for (const inItem of incomingItems) {
+                  const exItem = existingItems.find(it => it && it.employeeId === inItem.employeeId);
+                  if (exItem && exItem.exchangeRate !== undefined && exItem.exchangeRate !== null) {
+                    if (inItem.exchangeRate !== exItem.exchangeRate || inItem.baseAmount !== exItem.baseAmount) {
+                      return { ok: false, reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
+                    }
+                  }
+                }
               }
               // Cannot bypass financial audit after rejection
               if (existing.status === 'rejected' && (rec.status === 'approved' || rec.status === 'paid')) {
