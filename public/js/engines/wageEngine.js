@@ -98,3 +98,56 @@ export function getMinuteRate(employee, settings = {}, options = {}) {
   const hourly = getHourlyRate(employee, settings, options);
   return hourly / 60;
 }
+
+/**
+ * Unified report-level prorated salary calculation driven by wageEngine SSOT.
+ * Guarantees report figures match the payroll engine and honor settings.dailyRateMethod.
+ *
+ * @param {Object} employee
+ * @param {Object} settings
+ * @param {Object} [options]
+ * @param {string} [options.month]
+ * @param {number} [options.payableDays]
+ * @param {number} [options.absenceDays]
+ * @param {number} [options.lateMinutes]
+ * @param {Object} [options.storedItem]
+ * @param {boolean} [options.isCurrentMonth]
+ * @returns {number}
+ */
+export function computeReportProratedSalary(employee, settings = {}, options = {}) {
+  if (options.storedItem && typeof options.storedItem.netSalary === 'number' && !options.isCurrentMonth) {
+    return Number(options.storedItem.netSalary) || 0;
+  }
+  if (!employee) return 0;
+
+  const month = options.month || '';
+  const dayMatch = /^(\d{4})-(\d{1,2})/.exec(month);
+  const calendarDays = dayMatch ? new Date(Number(dayMatch[1]), Number(dayMatch[2]), 0).getDate() : 30;
+
+  const method = resolveRateMethod(settings, options);
+  const totalGross = (Number(employee.basicSalary) || 0) +
+                     (Number(employee.housingAllowance) || 0) +
+                     (Number(employee.transportAllowance) || 0) +
+                     (Number(employee.otherAllowances) || 0);
+
+  const divisor = (method === 'calendarDays' || method === 'basicCalendar')
+    ? calendarDays
+    : (method === 'fixed30' ? 30 : (Number(settings.workingDaysPerMonth) || 30));
+
+  const dailyWage = getDailyRate(employee, settings, { month, defaultMethod: 'workingDays' });
+  const minuteWage = getMinuteRate(employee, settings, { month, defaultMethod: 'workingDays' });
+
+  const payableDays = options.payableDays !== undefined && options.payableDays !== null ? options.payableDays : divisor;
+
+  let earnedGross;
+  if (payableDays >= divisor) {
+    earnedGross = totalGross;
+  } else {
+    earnedGross = divisor > 0 ? (totalGross / divisor) * payableDays : 0;
+  }
+
+  const absenceCost = (Number(options.absenceDays) || 0) * dailyWage;
+  const lateCost = (Number(options.lateMinutes) || 0) * minuteWage;
+
+  return parseFloat(Math.max(0, earnedGross - absenceCost - lateCost).toFixed(2));
+}

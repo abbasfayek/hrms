@@ -7,6 +7,7 @@ import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, STATUS_LABELS, LEAVE_TYPE_LABELS, 
 getCurrentMonth, can, countAbsenceDays, formatAmountWithCode, summarizeCurrencySegments, summarizeCurrencySegmentsHtml, escapeHtml } from '../types.js';
 import { calculateLeaveBalance } from '../engines/leaveEngine.js';
+import { computeReportProratedSalary } from '../engines/wageEngine.js';
 import { computeNetEffective } from '../engines/payrollCorrectionEngine.js';
 import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { toast } from './Toast.js';
@@ -210,17 +211,19 @@ export function renderReportsView(container, options = {}) {
         const absenceDays = countAbsenceDays(empAtt);
         const lateMinutes = empAtt.reduce((sum, a) => sum + (Number(a.lateMinutes) || 0), 0);
 
-        // Prorated Salary to Date
-        const totalGross =
-          (Number(emp?.basicSalary) || 0) +
-          (Number(emp?.housingAllowance) || 0) +
-          (Number(emp?.transportAllowance) || 0) +
-          (Number(emp?.otherAllowances) || 0);
+        // Prorated Salary to Date (unified with wageEngine SSOT)
         const [reportYear, reportMonthNumber] = reportMonth.split('-').map(Number);
         const isCurrentMonth = reportYear === new Date().getFullYear() && reportMonthNumber === new Date().getMonth() + 1;
         const daysInReportMonth = new Date(reportYear, reportMonthNumber, 0).getDate();
         const payableDays = isCurrentMonth ? new Date().getDate() : daysInReportMonth;
-        const proratedSalaryToDate = parseFloat(((totalGross / daysInReportMonth) * payableDays).toFixed(2));
+        const proratedSalaryToDate = computeReportProratedSalary(emp, settings, {
+          month: reportMonth,
+          payableDays,
+          absenceDays,
+          lateMinutes,
+          storedItem: it,
+          isCurrentMonth,
+        });
 
 return {
            emp,
