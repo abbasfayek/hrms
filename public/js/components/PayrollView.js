@@ -19,7 +19,7 @@ import { openLoanReceiptModal } from './LoanReceiptModal.js';
 import { openDeductionBonusModal, openDeductionsBonusesListModal } from './DeductionBonusModal.js';
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
 import { openPayrollCorrectionModal } from './PayrollCorrectionModal.js';
-import { openFullReturnModal } from './FullReturnModal.js';
+
 import { toast } from './Toast.js';
 import { showConfirmDialog, createModal } from './Modal.js';
 import { t, tf, i18n } from '../i18n.js';
@@ -299,9 +299,6 @@ export function renderPayrollView(container, options = {}) {
         </button>
         <button type="button" class="btn btn-sm ${activeStatus === 'paid' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="paid">
           ${isEn ? 'Disbursed' : 'مصروف'}
-        </button>
-        <button type="button" class="btn btn-sm ${activeStatus === 'fully_returned' ? 'btn-danger' : 'btn-outline'} btn-status-filter" data-status="fully_returned" id="btn-status-fully-returned">
-          ↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'} (${fullyReturnedCount()})
         </button>
       </div>
     `;
@@ -673,6 +670,37 @@ export function renderPayrollView(container, options = {}) {
     const todayStr = new Date().toISOString().slice(0, 10);
     const isReleased = currentBatch ? currentBatch.releaseStatus === 'released' : false;
     const releaseDue = currentBatch ? (!!currentBatch.releaseDate && !isPaid && todayStr >= currentBatch.releaseDate) : false;
+
+    // Full return = plain removal: the payroll leaves the archive for good, a
+    // tombstone stays in the deletion log. No corrections, no state machines.
+    const performPayrollFullReturn = (batch, onDone) => {
+      if (!batch) return;
+      if (!canCreateCorrection) {
+        toast.error(isEn ? 'Insufficient permissions to remove this payroll.' : 'لا تملك صلاحية حذف هذا المسير.');
+        return;
+      }
+      if (!requireBranchForAction()) return;
+      showConfirmDialog({
+        title: isEn ? 'Remove Payroll from Archive' : 'حذف المسير من الأرشيف',
+        message: isEn
+          ? `<strong>${batch.month}</strong> — the payroll will be removed from the archive and deleted permanently. A record of the deletion stays in the log.`
+          : `<strong>${batch.month}</strong> — سيُحذف هذا المسير نهائياً من الأرشيف. يبقى أثر العملية في سجل الحذف.`,
+        confirmText: isEn ? 'Yes, Delete Payroll' : 'نعم، حذف المسير',
+        onConfirm: () => {
+          const res = storage.deletePayrollBatch(batch.id);
+          if (!res.ok) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
+          const byName = storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام');
+          storage.addAudit('full_return', 'payroll', isEn
+            ? `Payroll ${batch.month} removed from archive (full return)`
+            : `تم حذف مسير ${batch.month} من الأرشيف (ترجيع كامل)`, batch.id);
+          toast.success(isEn ? 'Payroll removed from archive.' : 'تم حذف المسير من الأرشيف.');
+          if (onDone) onDone();
+        },
+      });
+    };
 
     // Disburse & Pay Salaries (Dual Release: final review preview + manager confirmation).
     // Shared so both the approved batch (payroll tab) and the approved batch
@@ -1422,18 +1450,12 @@ export function renderPayrollView(container, options = {}) {
 
       contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
         if (!currentBatch || !canCreateCorrection) return;
-        openFullReturnModal({
-          batch: currentBatch,
-          onCompleted: (finalCorrection, updatedBatch) => {
-            const target = updatedBatch || currentBatch;
-            currentMonth = target.month;
-            currentBatch = target;
-            activeTab = 'payroll';
-            statusFilter = 'fully_returned';
-            selectedReturnedBatchMonth = target.month;
-            updateHeaderTabs();
-            renderTabContent();
-          },
+        performPayrollFullReturn(currentBatch, () => {
+          currentMonth = currentBatch?.month || currentMonth;
+          currentBatch = null;
+          statusFilter = 'paid';
+          updateHeaderTabs();
+          renderTabContent();
         });
       });
 
@@ -1863,19 +1885,7 @@ export function renderPayrollView(container, options = {}) {
 
         row.querySelector('.btn-full-return-batch')?.addEventListener('click', () => {
           if (!b || !canCreateCorrection) return;
-          openFullReturnModal({
-            batch: b,
-            onCompleted: (finalCorrection, updatedBatch) => {
-              const target = updatedBatch || b;
-              currentMonth = target.month;
-              currentBatch = target;
-              activeTab = 'payroll';
-              statusFilter = 'fully_returned';
-              selectedReturnedBatchMonth = target.month;
-              updateHeaderTabs();
-              renderTabContent();
-            },
-          });
+          performPayrollFullReturn(b, () => renderTabContent());
         });
 
         row.querySelector('.btn-correct-batch')?.addEventListener('click', () => {
@@ -2234,18 +2244,8 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-quick-full-return')?.addEventListener('click', () => {
         const sel = contentArea.querySelector('#pc-new-batch');
         const batch = archivedBatches.find((b) => b.id === (sel ? sel.value : ''));
-        if (!batch) return;
-        openFullReturnModal({
-          batch,
-          onCompleted: (finalCorrection, updatedBatch) => {
-            const target = updatedBatch || batch;
-            currentMonth = target.month;
-            currentBatch = target;
-            activeTab = 'payroll';
-            updateHeaderTabs();
-            renderTabContent();
-          },
-        });
+        if (!batch || !canCreateCorrection) return;
+        performPayrollFullReturn(batch, () => renderTabContent());
       });
 
       contentArea.querySelector('#btn-new-correction')?.addEventListener('click', () => {
@@ -2386,9 +2386,6 @@ export function renderPayrollView(container, options = {}) {
     ` : ''}
       <button type="button" class="tab-btn ${activeTab === 'disbursed' ? 'active' : ''}" data-tab="disbursed" id="tab-payroll-disbursed">
         ${Icons.award(16)} ${isEn ? 'Disbursed Payrolls' : 'الرواتب المصروفة والمؤرشفة'} (${getPaidBatches().length})
-      </button>
-      <button type="button" class="tab-btn ${activeTab === 'fully_returned' ? 'active' : ''}" data-tab="fully_returned" id="tab-payroll-fully-returned">
-        ↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'} (${fullyReturnedCount()})
       </button>
       <button type="button" class="tab-btn ${activeTab === 'corrections' ? 'active' : ''}" data-tab="corrections" id="tab-payroll-corrections">
         ${Icons.refresh(16)} ${isEn ? 'Post-Payment Corrections' : 'التصحيحات اللاحقة للصرف'} (${correctionCount()})

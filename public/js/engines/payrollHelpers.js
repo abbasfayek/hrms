@@ -6,8 +6,7 @@
 
 /**
  * SSOT: Determine if a payroll batch has undergone a completed full return.
- * This is the single source of truth used by PayrollView, FullReturnModal,
- * and all test suites.
+ * This is the single source of truth used by PayrollView and test suites.
  *
  * @param {object} batch - Payroll batch object from storage
  * @returns {boolean}

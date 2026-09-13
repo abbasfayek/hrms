@@ -901,9 +901,11 @@ export function renderSettingsView(container) {
         if (result && result.ok === true) {
           toast.success(isEn ? 'All data cleared successfully (device & server).' : 'تم تفريغ كافة البيانات بنجاح (الجهاز والخادم).');
         } else if (result && result.offline === true) {
-          toast.success(isEn ? 'Data cleared locally. The server will sync when it is reachable.' : 'تم تفريغ البيانات محلياً، وسيُتزامن الخادم عند إمكانية الوصول إليه.');
+          toast.warning(isEn ? 'Data cleared locally. The server cleanup will finish automatically when the server is reachable again.' : 'تم تفريغ البيانات محلياً. سيُكمل النظام تنظيف الخادم تلقائياً عند إمكانية الوصول إليه.');
+        } else if (result && (result.code === 'super_required' || result.code === 'scope_violation')) {
+          toast.error(isEn ? `Server refused the wipe: ${result.code}. Check the account roles on the server.` : `رفض الخادم عملية التفريغ: ${result.code}. تحقق من صلاحيات الحساب على الخادم.`);
         } else {
-          toast.error(isEn ? `Clear failed: ${(result && result.code) || 'server rejected'}` : `فشل التفريغ: ${(result && result.code) || 'رفض الخادم الطلب'}`);
+          toast.warning(isEn ? 'Data cleared locally. The server could not be reached yet — cleanup will retry on next load.' : 'تم تفريغ البيانات محلياً. لم يصل الطلب للخادم بعد — سيُعاد تنظيف الخادم عند التحميل التالي.');
         }
         renderSettingsView(container);
       },

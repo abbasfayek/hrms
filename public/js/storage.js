@@ -224,6 +224,21 @@ class StorageService {
     if (!localStorage.getItem(STORAGE_KEYS.COMPANIES)) {
       this.seedIfMissing();
     }
+    // Complete a deferred server clear before pulling data back: the user wiped
+    // everything while offline earlier, so the server must be emptied BEFORE any
+    // sync can re-pollute this (or any other) device.
+    if (this._takePendingClear() !== null) {
+      try {
+        const r = await this._clearServerAll();
+        if (r.ok !== true && r && ['super_required', 'branch_required', 'scope_violation'].includes(r.code)) {
+          this._dropPendingClear(); // permanent denial — stop retrying silently
+        } else if (r.ok !== true) {
+          this._setPendingClear(); // transient — retry next boot
+        }
+      } catch (e) {
+        this._setPendingClear(); // still offline — retry next boot
+      }
+    }
     // Attempt to sync from backend server files
     await this.syncFromServer();
   }
@@ -541,18 +556,50 @@ class StorageService {
     // the stored records, which is why "تصفير" used to do nothing). A
     // super_admin-only /api/clear-all performs the reset; the local wipe above
     // stays synchronous so existing (non-awaited) callers never block on the
-    // network. Offline → the next sync carries the cleared state up.
-    return this._clearServerAll().catch(() => ({ ok: false, offline: true }));
+    // network. If the server could not be reached, the wipe is remembered so
+    // the next boot completes it BEFORE pulling data back (no resurrection).
+    return (async () => {
+      const r = await this._clearServerAll().catch(() => ({ ok: false, offline: true }));
+      if (r && r.ok !== true && !(r.code && ['super_required', 'branch_required', 'scope_violation'].includes(r.code))) {
+        this._setPendingClear();
+      }
+      return r;
+    })();
   }
 
   async _clearServerAll() {
+    // Let any queued collection POSTs (the local wipe triggers them) settle so
+    // the server clear always runs last and one-shot.
+    await Promise.resolve(this._postChain).catch(() => {});
     const res = await this.apiFetch('/api/clear-all', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Branch-Id': this.getSelectedBranchId() || 'all' },
     });
+    if (!res.ok) {
+      return { ok: false, code: (await res.json().catch(() => ({}))).code || 'unknown' };
+    }
+    // Only a real JSON success counts: a dev-server SPA fallback answers with
+    // HTML (status 200) and must never be reported as "server cleared".
+    const contentType = (res.headers && res.headers.get) ? (res.headers.get('content-type') || '') : '';
+    if (!contentType.includes('application/json')) return { ok: false, code: 'server_not_cleared' };
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, code: data.code || 'unknown' };
+    if (!data || data.success !== true) return { ok: false, code: 'server_not_cleared' };
     return { ok: true };
+  }
+
+  // Remembers that a full clear still needs to be applied on the server.
+  _setPendingClear() {
+    try { localStorage.setItem('hrms_pending_clear', String(Date.now())); } catch (e) {}
+  }
+  _dropPendingClear() {
+    try { localStorage.removeItem('hrms_pending_clear'); } catch (e) {}
+  }
+  _takePendingClear() {
+    try {
+      const v = localStorage.getItem('hrms_pending_clear');
+      if (v) { localStorage.removeItem('hrms_pending_clear'); return v; }
+    } catch (e) {}
+    return null;
   }
 
   get(key, fallback = null) {
@@ -1466,6 +1513,21 @@ class StorageService {
         view: payrollFinancialView(batch),
       });
     }
+  }
+
+  // Full-return is a plain DELETE: the payroll is removed from the archive and
+  // the system entirely (a tombstone lands in the deletion log for traceability).
+  deletePayrollBatch(batchId) {
+    if (!batchId) return { ok: false, error: 'invalid_record' };
+    const list = this.get(STORAGE_KEYS.PAYROLLS, []);
+    const removed = list.filter((b) => b && b.id === batchId);
+    if (!removed.length) return { ok: false, error: 'not_found' };
+    this.archiveDeletedRecords('payrolls', removed, 'full_return');
+    this.set(STORAGE_KEYS.PAYROLLS, list.filter((b) => !(b && b.id === batchId)));
+    removed.forEach((b) => {
+      if (b && b.month) this._payrollBaselines.delete(`${b.month}|${b.companyId}|${b.branchId}`);
+    });
+    return { ok: true, removed };
   }
 
   // EOSB Mutators

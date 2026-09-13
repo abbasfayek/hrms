@@ -196,6 +196,55 @@ async function main() {
     // 5) No server-side data leak: normal user still works after clear
     const readBack = await request(BASE, '/api/data/employees', { session: hr2 });
     ok('C-10 limited user reads clean employee file after clear', readBack.status === 200, `status=${readBack.status}`);
+
+    // 6) Pending-clear: a wipe made while OFFLINE completes on the NEXT BOOT
+    // before any sync can pull the stale server data back (no resurrection).
+    const realFetch = globalThis.fetch;
+    const wrapper = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      return realFetch(url.startsWith('/') ? `${BASE}${url}` : url, init);
+    };
+    const memStore = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (memStore.has(k) ? memStore.get(k) : null),
+      setItem: (k, v) => memStore.set(k, String(v)),
+      removeItem: (k) => memStore.delete(k),
+      clear: () => memStore.clear(),
+    };
+    globalThis.fetch = wrapper;
+    globalThis.window = { dispatchEvent: () => {}, addEventListener: () => {}, removeEventListener: () => {}, localStorage: undefined };
+    if (typeof globalThis.CustomEvent !== 'function') {
+      globalThis.CustomEvent = class CustomEvent {
+        constructor(type, opts = {}) { this.type = type; this.detail = opts.detail; }
+      };
+    }
+    const { storage } = await import(new URL('public/js/storage.js', `file://${ROOT}/`.replace(/\\/g, '/')).href);
+    await new Promise((r) => setTimeout(r, 200));
+
+    const loginRes = await storage.serverLogin('system', superPw);
+    ok('C-11 client storage server-login ok', loginRes.ok === true, JSON.stringify(loginRes));
+    storage.setActiveUser('system');
+
+    // Break the network: the client attempts the server wipe, goes offline.
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    const offlineRes = await storage.clearAllData();
+    ok('C-12 offline clear reports offline (never crashes)', offlineRes && offlineRes.offline === true, JSON.stringify(offlineRes));
+    ok('C-13 offline clear leaves local employees wiped', Array.isArray(storage.getState().employees) && storage.getState().employees.length === 0, `len=${Array.isArray(storage.getState().employees) ? storage.getState().employees.length : 'n/a'}`);
+    ok('C-14 pending-clear flag remembered for next boot', memStore.get('hrms_pending_clear') != null);
+
+    // Server still holds the pre-wipe row at this point
+    const staleBefore = readJSON(tmp, 'employees.json');
+    ok('C-15 server NOT wiped while offline (expected)', Array.isArray(staleBefore) && staleBefore.some((e) => e.id === 'emp-new'), `rows=${Array.isArray(staleBefore) ? staleBefore.length : 'n/a'}`);
+
+    // Reconnect: the boot-time clear runs BEFORE syncFromServer pulls data.
+    globalThis.fetch = wrapper;
+    await storage.init();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const staleAfter = readJSON(tmp, 'employees.json');
+    ok('C-16 reconnect completes the server wipe (no resurrection)', Array.isArray(staleAfter) && staleAfter.length === 0, `rows=${Array.isArray(staleAfter) ? staleAfter.length : 'n/a'}`);
+    ok('C-17 local employees still empty after reconnect sync', Array.isArray(storage.getState().employees) && storage.getState().employees.length === 0, `len=${Array.isArray(storage.getState().employees) ? storage.getState().employees.length : 'n/a'}`);
+    globalThis.fetch = realFetch;
   } finally {
     await stopServer(server);
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
