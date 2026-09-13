@@ -563,11 +563,19 @@ export function openEmployeeModal(employee = null, onSaved) {
         };
 
         if (isEdit) {
-          storage.updateEmployee(empObject);
+          const res = storage.updateEmployee(empObject);
+          if (res && res.ok === false) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
           storage.addAudit('edit', 'employee', `${empObject.fullName}`, empObject.id || formData.get('employeeNumber'));
           toast.success(tf('employeeModal.employeeUpdated',{name:empObject.fullName}));
         } else {
-          storage.addEmployee(empObject);
+          const res = storage.addEmployee(empObject);
+          if (res && res.ok === false) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
           storage.addAudit('add', 'employee', `${empObject.fullName}`, empObject.id);
           toast.success(tf('employeeModal.employeeAdded',{name:empObject.fullName}));
         }

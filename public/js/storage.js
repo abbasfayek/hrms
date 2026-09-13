@@ -313,7 +313,7 @@ class StorageService {
     this._pendingWrites.add(collection);
     const req = () => this.apiFetch(`/api/data/${collection}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Branch-Id': this.getSelectedBranchId() || 'all' },
       body: JSON.stringify(value),
       keepalive: true,
     });
@@ -535,6 +535,24 @@ class StorageService {
     // Phase 5: record the wipe in the (preserved) audit trail so it can never
     // be mistaken for silent data loss.
     this._auditSystem(AUDIT_ACTIONS.RECORDS_CLEARED, { reason: 'all data cleared', newValue: { clearedAt: now, by: user ? (user.username || user.id) : 'system' } });
+
+    // The server is the source of truth, so a clear must also wipe the server
+    // files — POSTing [] per collection is NOT enough (the server merge keeps
+    // the stored records, which is why "تصفير" used to do nothing). A
+    // super_admin-only /api/clear-all performs the reset; the local wipe above
+    // stays synchronous so existing (non-awaited) callers never block on the
+    // network. Offline → the next sync carries the cleared state up.
+    return this._clearServerAll().catch(() => ({ ok: false, offline: true }));
+  }
+
+  async _clearServerAll() {
+    const res = await this.apiFetch('/api/clear-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Branch-Id': this.getSelectedBranchId() || 'all' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, code: data.code || 'unknown' };
+    return { ok: true };
   }
 
   get(key, fallback = null) {
@@ -696,6 +714,36 @@ class StorageService {
     return validation.branchId;
   }
 
+  /**
+   * Gate for interactive CRUD writes. Mirrors the server's X-Branch-Id policy:
+   * a multi-branch company user (company_hr / payroll_admin / audit_reviewer /
+   * payments_officer assigned 'all', or several branches) must have selected a
+   * concrete branch before any record write — "لا يستطيع فعل أي شيء حتى يتم
+   * تحديد الفرع". Single-branch company users are auto-scoped (server policy
+   * agrees). Super admin and branch_hr are exempt.
+   * Returns null when the write may proceed, or an error result to return.
+   */
+  branchWriteGuard() {
+    const user = this.getActiveUser();
+    if (!user) return { ok: false, error: 'no_user', message: i18n.getLang() === 'en' ? 'No active user session.' : 'لا يوجد مستخدم نشط.' };
+    const v = this.validateBranchContext();
+    if (v.ok) return null;
+    const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
+    if (companyScopedRoles.includes(user.role)) {
+      const assigned = Array.isArray(user.assignedBranches) && user.assignedBranches.length
+        ? user.assignedBranches
+        : [user.assignedBranchId || 'all'];
+      if (!assigned.includes('all') && assigned.length === 1) return null;
+    }
+    return {
+      ok: false,
+      error: 'branch_required',
+      message: i18n.getLang() === 'en'
+        ? 'Please select a branch first before performing this operation.'
+        : 'يرجى تحديد الفرع أولاً قبل تنفيذ العملية.',
+    };
+  }
+
   getState() {
     const user = this.getActiveUser();
     const companies = this.get(STORAGE_KEYS.COMPANIES, defaultCompanies);
@@ -848,12 +896,16 @@ class StorageService {
 
   // Employee Mutators
   addEmployee(emp) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.EMPLOYEES, []);
     list.unshift(emp);
     this.set(STORAGE_KEYS.EMPLOYEES, list);
   }
 
   updateEmployee(emp) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.EMPLOYEES, []);
     const idx = list.findIndex((e) => e.id === emp.id);
     if (idx !== -1) {
@@ -863,6 +915,8 @@ class StorageService {
   }
 
   deleteEmployee(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.EMPLOYEES, []);
     const removed = list.filter((e) => e && e.id === id);
     if (removed.length) this.archiveDeletedRecords('employees', removed, 'deleted');
@@ -1026,6 +1080,7 @@ class StorageService {
       invalid_range: isEn ? 'Invalid date range or day count.' : 'نطاق التواريخ أو عدد الأيام غير صحيح.',
       invalid_record: isEn ? 'Invalid record.' : 'سجل غير صالح.',
       not_found: isEn ? 'Record not found.' : 'السجل غير موجود.',
+      branch_required: isEn ? 'Please select a branch before performing this action.' : 'يرجى تحديد الفرع أولاً قبل تنفيذ هذا الإجراء.',
     };
     return map[code] || (isEn ? 'Unable to save record.' : 'تعذر حفظ السجل.');
   }
@@ -1090,6 +1145,8 @@ class StorageService {
   // Attendance Mutators
   saveAttendance(att) { this.set(STORAGE_KEYS.ATTENDANCE, att); }
   addAttendance(att) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const check = this.validateAttendanceRecord(att);
     if (!check.ok) return { ok: false, error: check.error };
     if (!att.id) att.id = `att-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -1104,6 +1161,8 @@ class StorageService {
     return { ok: true, saved: att };
   }
   updateAttendance(att) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const check = this.validateAttendanceRecord(att);
     if (!check.ok) return { ok: false, error: check.error };
     const list = this.get(STORAGE_KEYS.ATTENDANCE, []);
@@ -1115,6 +1174,8 @@ class StorageService {
     return { ok: true, saved: att };
   }
   deleteAttendance(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.ATTENDANCE, []);
     const removed = list.filter((a) => a && a.id === id);
     if (removed.length) this.archiveDeletedRecords('attendance', removed, 'deleted');
@@ -1124,6 +1185,8 @@ class StorageService {
   // Leaves Mutators
   saveLeaves(leaves) { this.set(STORAGE_KEYS.LEAVES, leaves); }
   addLeave(leave) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const check = this.validateLeaveRecord(leave);
     if (!check.ok) return { ok: false, error: check.error };
     if (!leave.id) leave.id = `leave-${Date.now()}`;
@@ -1134,6 +1197,8 @@ class StorageService {
     return { ok: true, saved: leave };
   }
   updateLeave(leave) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const check = this.validateLeaveRecord(leave, { excludeId: leave.id });
     if (!check.ok) return { ok: false, error: check.error };
     this.attachEmployeeScope(leave);
@@ -1146,6 +1211,8 @@ class StorageService {
     return { ok: true, saved: leave };
   }
   deleteLeave(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.LEAVES, []);
     const removed = list.filter((l) => l && l.id === id);
     if (removed.length) this.archiveDeletedRecords('leaves', removed, 'deleted');
@@ -1155,6 +1222,8 @@ class StorageService {
   // Hourly Leaves Mutators (إجازات الساعات)
   saveHourlyLeaves(leaves) { this.set(STORAGE_KEYS.HOURLY_LEAVES, leaves); }
   addHourlyLeave(hl) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const check = this.validateHourlyLeaveRecord(hl);
     if (!check.ok) return { ok: false, error: check.error };
     if (!hl.id) hl.id = `hl-${Date.now()}`;
@@ -1165,6 +1234,8 @@ class StorageService {
     return { ok: true, saved: hl };
   }
   updateHourlyLeave(hl) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.HOURLY_LEAVES, []);
     const idx = list.findIndex((x) => x.id === hl.id);
     if (idx !== -1) {
@@ -1173,6 +1244,8 @@ class StorageService {
     }
   }
   deleteHourlyLeave(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.HOURLY_LEAVES, []);
     const removed = list.filter((x) => x && x.id === id);
     if (removed.length) this.archiveDeletedRecords('hourly_leaves', removed, 'deleted');
@@ -1182,12 +1255,16 @@ class StorageService {
   // Overtime Mutators
   saveOvertime(ot) { this.set(STORAGE_KEYS.OVERTIME, ot); }
   addOvertime(ot) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     this.attachEmployeeScope(ot);
     const list = this.get(STORAGE_KEYS.OVERTIME, []);
     list.unshift(ot);
     this.set(STORAGE_KEYS.OVERTIME, list);
   }
   updateOvertime(ot) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     if (!ot || !ot.id) return { ok: false, error: 'invalid_record' };
     const emp = this._findEmployee(ot.employeeId);
     if (!emp) return { ok: false, error: 'employee_not_found' };
@@ -1200,6 +1277,8 @@ class StorageService {
     return { ok: true, saved: ot };
   }
   deleteOvertime(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.OVERTIME, []);
     const removed = list.filter((o) => o && o.id === id);
     if (removed.length) this.archiveDeletedRecords('overtime', removed, 'deleted');
@@ -1250,6 +1329,8 @@ class StorageService {
     return (cur && cur.symbol) || st.settings.currencySymbol || '';
   }
   addLoan(loan) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     loan.currency = this._loanCurrencyOf(loan);
     loan.currencySymbol = loan.currencySymbol || this._loanSymbolOf(loan.currency);
     this.attachEmployeeScope(loan);
@@ -1270,6 +1351,8 @@ class StorageService {
     });
   }
   updateLoan(loan) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     if (!loan || !loan.id) return { ok: false, error: 'invalid_record' };
     const emp = this._findEmployee(loan.employeeId);
     if (!emp) return { ok: false, error: 'employee_not_found' };
@@ -1313,6 +1396,8 @@ class StorageService {
     return { ok: true, saved: loan };
   }
   deleteLoan(loanId) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.LOANS, []);
     const removed = list.filter((l) => l && l.id === loanId);
     if (removed.length) this.archiveDeletedRecords('loans', removed, 'deleted');
@@ -1322,6 +1407,8 @@ class StorageService {
   // Increments Mutators
   saveIncrements(inc) { this.set(STORAGE_KEYS.INCREMENTS, inc); }
   addIncrement(inc) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     this.attachEmployeeScope(inc);
     const list = this.get(STORAGE_KEYS.INCREMENTS, []);
     list.unshift(inc);
@@ -1490,11 +1577,15 @@ class StorageService {
   // Holidays Mutators
   saveHolidays(holidays) { this.set(STORAGE_KEYS.HOLIDAYS, holidays); }
   addHoliday(hol) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.HOLIDAYS, []);
     list.unshift(hol);
     this.set(STORAGE_KEYS.HOLIDAYS, list);
   }
   deleteHoliday(id) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
     const list = this.get(STORAGE_KEYS.HOLIDAYS, []);
     const removed = list.filter((h) => h && h.id === id);
     if (removed.length) this.archiveDeletedRecords('holidays', removed, 'deleted');

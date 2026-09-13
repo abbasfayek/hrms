@@ -261,11 +261,19 @@ export function openLoanModal(defaultEmployeeId = null, onSaved, existingLoan = 
 
         const auditLabel = `${empName(empId)} — ${totalAmount} ${currency}`;
         if (isEdit) {
-          storage.updateLoan(baseRecord);
+          const res = storage.updateLoan(baseRecord);
+          if (res && res.ok === false) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
           storage.addAudit('update', 'loan', auditLabel, baseRecord.id);
           toast.success(isEn ? 'Advance record updated successfully' : 'تم تحديث سجل السلفة بنجاح');
         } else {
-          storage.addLoan(baseRecord);
+          const res = storage.addLoan(baseRecord);
+          if (res && res.ok === false) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
           storage.addAudit('add', 'loan', auditLabel, baseRecord.id);
           toast.success(isEn ? `Advance of ${formatAmountWithCode(totalAmount, currency)} granted successfully` : `تم تسجيل السلفة بقيمة ${formatAmountWithCode(totalAmount, currency)} بنجاح`);
         }

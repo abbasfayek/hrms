@@ -516,9 +516,10 @@ export function renderSettingsView(container) {
             ${Icons.upload(16)} ${t('importBackupBtn')}
           </button>
 
+          ${isSuperAdmin ? `
           <button type="button" class="btn btn-danger" id="btn-clear-all-data">
             ${Icons.trash(16)} ${t('clearAllDataBtn')}
-          </button>
+          </button>` : ''}
         </div>
       </div>
     </div>
@@ -887,13 +888,23 @@ export function renderSettingsView(container) {
 
   // Clear All Data
   container.querySelector('#btn-clear-all-data')?.addEventListener('click', () => {
+    if (!isSuperAdmin) {
+      toast.error(isEn ? 'Only the super admin can clear all data.' : 'لا يمكن تفريغ البيانات إلا بواسطة المدير العام فقط.');
+      return;
+    }
     showConfirmDialog({
       title: isEn ? 'Clear All Data (Clean Slate)' : 'تفريغ كافة البيانات',
-      message: isEn ? 'Are you sure you want to clear all employee & transaction records to start with a completely clean system?' : 'هل أنت متأكد من تفريغ كافة سجلات الموظفين والعمليات للبدء بنظام نظيف تماماً؟',
+      message: isEn ? 'Are you sure you want to clear all employee & transaction records on this device AND the server to start with a completely clean system?' : 'هل أنت متأكد من تفريغ كافة سجلات الموظفين والعمليات من الجهاز والخادم للبدء بنظام نظيف تماماً؟',
       confirmText: isEn ? 'Yes, clear all data' : 'نعم، تفريغ كافة البيانات',
-      onConfirm: () => {
-        storage.clearAllData();
-        toast.success(isEn ? 'All data cleared successfully!' : 'تم تفريغ كافة البيانات بنجاح!');
+      onConfirm: async () => {
+        const result = await storage.clearAllData();
+        if (result && result.ok === true) {
+          toast.success(isEn ? 'All data cleared successfully (device & server).' : 'تم تفريغ كافة البيانات بنجاح (الجهاز والخادم).');
+        } else if (result && result.offline === true) {
+          toast.success(isEn ? 'Data cleared locally. The server will sync when it is reachable.' : 'تم تفريغ البيانات محلياً، وسيُتزامن الخادم عند إمكانية الوصول إليه.');
+        } else {
+          toast.error(isEn ? `Clear failed: ${(result && result.code) || 'server rejected'}` : `فشل التفريغ: ${(result && result.code) || 'رفض الخادم الطلب'}`);
+        }
         renderSettingsView(container);
       },
     });

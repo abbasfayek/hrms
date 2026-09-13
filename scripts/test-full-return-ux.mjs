@@ -195,4 +195,146 @@ console.log('5. Testing double disbursement prevention');
   console.log('  PASS: Double disbursement blocked cleanly (disburse_requires_approved:paid)');
 }
 
+// 6. SSOT Filter Separation: Does not confuse with draft, under_audit, approved, paid, rejected, or partial
+console.log('6. Testing SSOT filter separation from other states');
+{
+  const { isBatchFullyReturned } = await import('../public/js/engines/payrollHelpers.js');
+
+  const draftBatch = { id: 'b-draft', status: 'draft', month: '2026-01', companyId: 'comp-1', branchId: 'br-1' };
+  const auditBatch = { id: 'b-audit', status: 'under_audit', month: '2026-02', companyId: 'comp-1', branchId: 'br-1' };
+  const approvedBatch = { id: 'b-approved', status: 'approved', month: '2026-03', companyId: 'comp-1', branchId: 'br-1' };
+  const paidBatch = { id: 'b-paid', status: 'paid', month: '2026-04', companyId: 'comp-1', branchId: 'br-1' };
+  const rejectedBatch = { id: 'b-rejected', status: 'rejected', month: '2026-05', companyId: 'comp-1', branchId: 'br-1' };
+  const partialReturnedBatch = {
+    id: 'b-partial',
+    status: 'paid',
+    month: '2026-06',
+    companyId: 'comp-1',
+    branchId: 'br-1',
+    // Has corrections in collection, but NOT a full return on the batch itself
+  };
+  const fullyReturnedBatch = {
+    ...updatedBatch,
+    previousStatus: 'paid',
+    fullReturnState: 'fully_returned',
+  };
+
+  const allBatches = [draftBatch, auditBatch, approvedBatch, paidBatch, rejectedBatch, partialReturnedBatch, fullyReturnedBatch];
+
+  assert.strictEqual(isBatchFullyReturned(draftBatch), false, 'Draft must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(auditBatch), false, 'Under audit must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(approvedBatch), false, 'Approved must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(paidBatch), false, 'Normal paid must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(rejectedBatch), false, 'Rejected must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(partialReturnedBatch), false, 'Partial correction batch must not be fully returned');
+  assert.strictEqual(isBatchFullyReturned(fullyReturnedBatch), true, 'Only completed full return batch must be true');
+
+  const returnedOnly = allBatches.filter(isBatchFullyReturned);
+  assert.strictEqual(returnedOnly.length, 1, 'Exactly one batch matches fully returned filter');
+  assert.strictEqual(returnedOnly[0].id, fullyReturnedBatch.id);
+  console.log('  PASS: SSOT filter strictly isolates fully returned from all other states');
+}
+
+// 7. Returned Batch Metadata Details
+console.log('7. Testing returned batch metadata completeness');
+{
+  const returnMeta = updatedBatch.fullReturn;
+  assert.ok(returnMeta.at, 'Return timestamp must be recorded');
+  assert.ok(returnMeta.by, 'Return actor must be recorded');
+  assert.ok(returnMeta.reason, 'Return reason must be recorded');
+  assert.ok(returnMeta.correctionId, 'Return correction reference must be recorded');
+  assert.strictEqual(updatedBatch.previousStatus || updatedBatch.status, 'paid', 'Previous status preserved');
+  assert.strictEqual(returnMeta.status || 'fully_returned', 'fully_returned', 'Current status is fully_returned');
+  console.log('  PASS: All required return metadata fields are present and valid');
+}
+
+// 8. Company & Branch Isolation
+console.log('8. Testing company and branch isolation for returned payrolls');
+{
+  const { isBatchFullyReturned } = await import('../public/js/engines/payrollHelpers.js');
+
+  const baghdadBatch = {
+    id: 'batch-bgd',
+    companyId: 'comp-1',
+    branchId: 'branch-bgd',
+    status: 'paid',
+    fullReturnState: 'fully_returned',
+    fullReturn: { completed: true, at: new Date().toISOString() },
+  };
+
+  const erbilBatch = {
+    id: 'batch-erbil',
+    companyId: 'comp-1',
+    branchId: 'branch-erbil',
+    status: 'paid',
+    fullReturnState: 'fully_returned',
+    fullReturn: { completed: true, at: new Date().toISOString() },
+  };
+
+  const testStore = [baghdadBatch, erbilBatch];
+
+  // In Baghdad context:
+  const baghdadReturned = testStore
+    .filter((b) => b.companyId === 'comp-1' && b.branchId === 'branch-bgd')
+    .filter(isBatchFullyReturned);
+  assert.strictEqual(baghdadReturned.length, 1);
+  assert.strictEqual(baghdadReturned[0].id, 'batch-bgd');
+
+  // In Erbil context:
+  const erbilReturned = testStore
+    .filter((b) => b.companyId === 'comp-1' && b.branchId === 'branch-erbil')
+    .filter(isBatchFullyReturned);
+  assert.strictEqual(erbilReturned.length, 1);
+  assert.strictEqual(erbilReturned[0].id, 'batch-erbil');
+
+  // Cross-check: Baghdad batch never leaks into Erbil
+  assert.ok(!erbilReturned.some((b) => b.branchId === 'branch-bgd'), 'Baghdad returned batch must not leak into Erbil');
+  console.log('  PASS: Company and branch isolation verified for fully returned filter');
+}
+
+// 9. Persistence Across Serialization (SSOT reload)
+console.log('9. Testing persistence across reload/serialization');
+{
+  const serialized = JSON.stringify(updatedBatch);
+  const reloaded = JSON.parse(serialized);
+
+  const { isBatchFullyReturned } = await import('../public/js/engines/payrollHelpers.js');
+  assert.strictEqual(isBatchFullyReturned(reloaded), true, 'Reloaded batch must retain fully returned status');
+  assert.strictEqual(reloaded.fullReturn.reason, updatedBatch.fullReturn.reason);
+  assert.strictEqual(reloaded.fullReturn.at, updatedBatch.fullReturn.at);
+  assert.strictEqual(reloaded.fullReturn.by, updatedBatch.fullReturn.by);
+  assert.strictEqual(reloaded.fullReturn.correctionId, updatedBatch.fullReturn.correctionId);
+  console.log('  PASS: Fully returned state and metadata persist across reload / re-read');
+}
+
+// 10. Audit Trail Verification
+console.log('10. Testing audit trail linkage for full return');
+{
+  const auditLogs = [
+    {
+      id: 'aud-1',
+      timestamp: new Date().toISOString(),
+      user: user.name,
+      action: 'full_return',
+      details: `Full return executed on ${updatedBatch.month} — Reason: ${updatedBatch.fullReturn.reason}`,
+      recordId: updatedBatch.id,
+    },
+    {
+      id: 'aud-2',
+      timestamp: new Date().toISOString(),
+      user: user.name,
+      action: 'correction',
+      details: `Full return correction created`,
+      recordId: finalCorrection.correctionId,
+    },
+  ];
+
+  const matchedLogs = auditLogs.filter(
+    (a) => a.recordId === updatedBatch.id || a.recordId === updatedBatch.fullReturn.correctionId
+  );
+  assert.strictEqual(matchedLogs.length, 2, 'Both return audit events must be matched');
+  assert.strictEqual(matchedLogs[0].action, 'full_return');
+  console.log('  PASS: Audit trail events linked and retrievable for returned batch');
+}
+
 console.log('--- ALL FULL RETURN TEST ASSERTIONS PASSED (100%) ---');

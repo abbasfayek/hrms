@@ -1,9 +1,11 @@
 // =========================================================
-// Full Return Modal — Simplified 1-Step Reversal Workflow
+// Full Return Modal — One-Tap Simplified Reversal Workflow
 // =========================================================
-// Flow: Select Batch → Enter Reason → Confirm → Execute → Success → Back to Payroll
-// Zero manual amount typing, zero complex multi-step forms.
-// All backend validation, audit trail, and state machine rules preserved.
+// Flow: Confirm → Execute → Success → Back to Payroll
+// Zero typing, zero manual amounts, zero multi-step forms. The
+// reason is auto-stamped ("ترجيع راتب / Salary return") like a
+// normal payroll reversal. All backend validation, audit trail,
+// and state-machine rules are preserved.
 // =========================================================
 
 import { storage } from '../storage.js';
@@ -18,6 +20,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
   const isEn = i18n.getLang() === 'en';
   const state = storage.getState();
   const { settings } = state;
+  const DEFAULT_REASON = isEn ? 'Salary return' : 'ترجيع راتب';
 
   // Pre-validation
   if (!batch || batch.status !== 'paid') {
@@ -67,17 +70,17 @@ export function openFullReturnModal({ batch, onCompleted }) {
             : `ترجيع كامل لكافة موظفي مسير شهر ${escapeHtml(batch.month)} (${items.length} موظفاً)`}
         </div>
       </div>
-
-      <div class="form-group" style="margin-bottom:0;">
-        <label class="form-label" style="font-weight:700;">${isEn ? 'Reason for Return (Mandatory)' : 'سبب الترجيع (إلزامي)'} *</label>
-        <textarea class="form-input" id="full-return-reason" rows="3" required placeholder="${isEn ? 'Why is this full return required?' : 'اكتب سبب الترجيع هنا...'}"></textarea>
+      <div style="font-size:13px; color:var(--text-muted); border-top:1px dashed var(--border); padding-top:12px;">
+        ${isEn
+          ? `<strong>Reason (auto):</strong> ${escapeHtml(DEFAULT_REASON)} — no further input is needed.`
+          : `<strong>السبب (تلقائي):</strong> ${escapeHtml(DEFAULT_REASON)} — لا حاجة لأي إدخال إضافي.`}
       </div>
     </div>
   `;
 
   const footerHtml = `
     <button type="button" class="btn btn-secondary full-return-cancel-btn">${t('cancel')}</button>
-    <button type="button" class="btn btn-danger full-return-confirm-btn" style="font-weight:700;">${isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل'}</button>
+    <button type="button" class="btn btn-danger full-return-confirm-btn" style="font-weight:700;">${isEn ? 'Confirm Full Return' : 'تأكيد الترجيع الكامل'}</button>
   `;
 
   createModal({
@@ -87,16 +90,9 @@ export function openFullReturnModal({ batch, onCompleted }) {
     footerHtml,
     onOpen: (overlay, close) => {
       overlay.querySelector('.full-return-cancel-btn').addEventListener('click', close);
-      const reasonInput = overlay.querySelector('#full-return-reason');
-      setTimeout(() => reasonInput?.focus(), 60);
 
       overlay.querySelector('.full-return-confirm-btn').addEventListener('click', async () => {
-        const reason = (reasonInput?.value || '').trim();
-        if (!reason) {
-          toast.warning(isEn ? 'Please enter the reason for return.' : 'يرجى كتابة سبب الترجيع للمتابعة.');
-          reasonInput?.focus();
-          return;
-        }
+        const reason = DEFAULT_REASON;
 
         // Disable button during processing
         const confirmBtn = overlay.querySelector('.full-return-confirm-btn');
@@ -164,7 +160,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
             const errorMsg = errorMap[res.error] || (isEn ? `Could not process full return: ${res.error}` : `تعذر تنفيذ الترجيع الكامل: ${res.error}`);
             toast.error(errorMsg);
             confirmBtn.disabled = false;
-            confirmBtn.innerHTML = isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل';
+            confirmBtn.innerHTML = isEn ? 'Confirm Full Return' : 'تأكيد الترجيع الكامل';
             return;
           }
 
@@ -230,7 +226,7 @@ export function openFullReturnModal({ batch, onCompleted }) {
           toast.error(isEn ? 'An unexpected error occurred.' : 'حدث خطأ غير متوقع.');
         } finally {
           confirmBtn.disabled = false;
-          confirmBtn.innerHTML = isEn ? 'Execute Full Return' : 'تنفيذ الترجيع الكامل';
+          confirmBtn.innerHTML = isEn ? 'Confirm Full Return' : 'تأكيد الترجيع الكامل';
         }
       });
     },

@@ -404,8 +404,41 @@ async function runAllTests() {
       id: 'emp-c2-1', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'EMP-C2-1',
       fullName: 'Emp 2 BranchA - Updated', basicSalary: 7500, status: 'active', updatedAt: new Date().toISOString(),
     };
-    const legitWriteRes = await api('/api/data/employees', { method: 'POST', session: hr2, body: [legitEmp] });
+    const legitWriteRes = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' }, body: [legitEmp] });
     ok('SEC-03-Scoped-Write-PositiveControl: Scoped legitimate write succeeds (200)', legitWriteRes.status === 200, `status=${legitWriteRes.status}`);
+
+    // 1.4 Mandatory branch declaration for multi-branch company users
+    const legitEmpB = {
+      id: 'emp-br-probe', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'BR-PROBE',
+      fullName: 'Branch Gate Probe', basicSalary: 7000, status: 'active', updatedAt: new Date().toISOString(),
+    };
+    const noBranchRes = await api('/api/data/employees', { method: 'POST', session: hr2, body: [legitEmpB] });
+    ok('SEC-BR-1-MissingHeader: multi-branch company_hr write without X-Branch-Id rejected (403/branch_required)',
+      noBranchRes.status === 403 && noBranchRes.data && noBranchRes.data.code === 'branch_required', `status=${noBranchRes.status} code=${noBranchRes.data && noBranchRes.data.code}`);
+
+    const allBranchRes = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'all' }, body: [legitEmpB] });
+    ok('SEC-BR-1-AllHeader: X-Branch-Id "all" treated as unselected (403/branch_required)',
+      allBranchRes.status === 403 && allBranchRes.data && allBranchRes.data.code === 'branch_required', `status=${allBranchRes.status} code=${allBranchRes.data && allBranchRes.data.code}`);
+
+    const foreignBranchRes = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-1' }, body: [legitEmpB] });
+    ok('SEC-BR-2-ForeignBranch: branch of another company rejected (403/scope_violation)',
+      foreignBranchRes.status === 403 && foreignBranchRes.data && foreignBranchRes.data.code === 'scope_violation', `status=${foreignBranchRes.status} code=${foreignBranchRes.data && foreignBranchRes.data.code}`);
+
+    const ghostBranchRes = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-zz' }, body: [legitEmpB] });
+    ok('SEC-BR-3-GhostBranch: non-existent branch rejected (403)',
+      ghostBranchRes.status === 403, `status=${ghostBranchRes.status}`);
+
+    const validBranchRes = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' }, body: [legitEmpB] });
+    ok('SEC-BR-4-ValidBranch: valid company branch accepted (200)',
+      validBranchRes.status === 200, `status=${validBranchRes.status}`);
+
+    // Single-branch users stay auto-scoped (no header needed)
+    const brWriteNoHeader = await api('/api/data/employees', { method: 'POST', session: brHr1b, body: [{
+      id: 'emp-c1b-x', companyId: 'comp-1', branchId: 'br-1b', employeeNumber: 'EMP-C1B-X',
+      fullName: 'Branch Auto Scoped', basicSalary: 8000, status: 'active', updatedAt: new Date().toISOString(),
+    }] });
+    ok('SEC-BR-5-SingleBranchAuto: single-branch branch_hr write succeeds without header (200)',
+      brWriteNoHeader.status === 200, `status=${brWriteNoHeader.status}`);
 
     const diskEmpsAfter = readJSON(tmp, 'employees.json') || [];
     const legitOnDisk = diskEmpsAfter.find(e => e.id === 'emp-c2-1');
@@ -752,7 +785,7 @@ async function runAllTests() {
         { id: 'imp-c2-good', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'IMP-C2-GOOD', fullName: 'Imported Good C2', basicSalary: 8000, status: 'active' },
       ],
     };
-    const goodImportRes = await api('/api/import-employees', { method: 'POST', session: hr2, body: goodImportPayload });
+    const goodImportRes = await api('/api/import-employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' }, body: goodImportPayload });
     ok('SEC-25-ImportEmployees-PositiveControl: Valid scoped import append succeeds (200)',
       goodImportRes.status === 200, `status=${goodImportRes.status}`);
 
@@ -769,7 +802,7 @@ async function runAllTests() {
         { id: 'emp-c2-coll', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'EMP-C1-1', fullName: 'Comp2 Collision Emp', basicSalary: 4444, status: 'active' },
       ],
     };
-    const collisionRes = await api('/api/import-employees', { method: 'POST', session: hr2, body: collisionImportPayload });
+    const collisionRes = await api('/api/import-employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' }, body: collisionImportPayload });
     ok('REG-01-ImportCollision-Allowed: Scoped import with duplicate employeeNumber in different company allowed',
       collisionRes.status === 200, `status=${collisionRes.status}`);
 
@@ -879,7 +912,7 @@ async function runAllTests() {
         employeeNumber: `C2-CONC-${i}`, fullName: `Concurrent Emp ${i}`,
         basicSalary: 5000 + i * 100, status: 'active', updatedAt: new Date(Date.now() + i * 100).toISOString(),
       }];
-      writePromises.push(api('/api/data/employees', { method: 'POST', session: token, body: payload }));
+      writePromises.push(api('/api/data/employees', { method: 'POST', session: token, headers: { 'X-Branch-Id': 'br-2a' }, body: payload }));
     }
     const writeResults = await Promise.all(writePromises);
     ok('SEC-32-Concurrent-Writes-Status: All 5 parallel writes succeed with 200',
@@ -932,7 +965,7 @@ async function runAllTests() {
 
     // 9.3 Test Scope Violation 403 response
     const badWriteRes = await api('/api/data/employees', {
-      method: 'POST', session: hr2,
+      method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' },
       body: [{ id: 'emp-c1-1', companyId: 'comp-1', employeeNumber: 'HACK' }],
     });
     const scopeErr = typeof badWriteRes.data === 'object' ? badWriteRes.data : {};

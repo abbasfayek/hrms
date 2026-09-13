@@ -182,7 +182,11 @@ export function openHolidayModal(holiday = null, onSaved) {
           storage.saveHolidays(updated);
           toast.success(isEn ? `Holiday ${newHol.name} updated successfully` : `تم تعديل العطلة ${newHol.name} بنجاح`);
         } else {
-          storage.addHoliday(newHol);
+          const res = storage.addHoliday(newHol);
+          if (res && res.ok === false) {
+            toast.error(storage.recordErrorText(res.error, isEn));
+            return;
+          }
           toast.success(isEn ? `Official holiday ${newHol.name} added successfully` : `تمت إضافة العطلة الرسمية ${newHol.name} بنجاح`);
         }
 

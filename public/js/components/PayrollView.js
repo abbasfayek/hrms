@@ -24,6 +24,8 @@ import { toast } from './Toast.js';
 import { showConfirmDialog, createModal } from './Modal.js';
 import { t, tf, i18n } from '../i18n.js';
 import { can } from '../types.js';
+import { isBatchFullyReturned } from '../engines/payrollHelpers.js';
+export { isBatchFullyReturned } from '../engines/payrollHelpers.js';
 
 // Persist the active payroll tab across auto-sync re-renders so a background
 // data refresh never resets the user back to the first tab.
@@ -80,7 +82,9 @@ export function renderPayrollView(container, options = {}) {
   const canCreateCorrection = can(state.currentUser, 'payroll.correction.create');
   const canCoApproveCorrection = can(state.currentUser, 'payroll.correction.coApprove');
 
-  let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'loans' | 'increments'
+  let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'fully_returned' | 'loans' | 'increments' | 'corrections'
+  let statusFilter = options.statusFilter || 'all'; // 'all' | 'draft' | 'under_audit' | 'approved' | 'paid' | 'fully_returned'
+  let selectedReturnedBatchMonth = options.returnedMonth || null;
 
   // Standard payday = day 25 of each month (or the branch payDay configured in
   // Companies/Branches). The calcuation is scoped to the selected company/branch
@@ -106,22 +110,16 @@ export function renderPayrollView(container, options = {}) {
     return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
   };
 
-  // A payroll month may only be generated / reviewed once its payday arrived.
-  function isMonthAvailable(month) {
-    const batch = getLivePayrolls().find((b) => b.month === month);
-    let payDay = defaultPayDay();
-    if (batch) {
-      // Released batches keep their historical data; pending draft/audit/approved
-      // batches are re-scheduled from the (possibly edited) branch payDay each time.
-      if (batch.releaseStatus === 'released') {
-        payDay = Number(batch.releasePayDay) || payDay;
-      } else {
-        const scheduled = computePayrollReleaseSchedule(batch, companies);
-        payDay = Number(scheduled.releasePayDay) || payDay;
-      }
+  const formatDateTime = (dateString) => {
+    if (!dateString) return '-';
+    try {
+      const d = new Date(dateString);
+      if (isNaN(d.getTime())) return dateString;
+      return d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return dateString;
     }
-    return localTodayStr() >= `${month}-${String(payDay).padStart(2, '0')}`;
-  }
+  };
 
   // Get the current branch context for payroll operations
   function getPayrollBranchContext() {
@@ -132,13 +130,31 @@ export function renderPayrollView(container, options = {}) {
     };
   }
 
+  // Every explicit payroll action is blocked until a concrete branch is selected
+  function requireBranchForAction() {
+    const check = storage.validateBranchContext();
+    if (!check.ok) {
+      toast.error(check.message || (isEn ? 'Please select a branch before performing this action.' : 'يرجى تحديد الفرع أولاً قبل تنفيذ هذا الإجراء.'));
+      return false;
+    }
+    return true;
+  }
+
   // Get live payrolls filtered by current branch context
   function getBranchPayrolls() {
     const { companyId, branchId } = getPayrollBranchContext();
-    return getLivePayrolls().filter((b) => 
-      b.companyId === companyId && b.branchId === branchId
-    );
+    return getLivePayrolls().filter((b) => {
+      const matchComp = !companyId || companyId === 'all' || b.companyId === companyId;
+      const matchBr = !branchId || branchId === 'all' || b.branchId === branchId;
+      return matchComp && matchBr;
+    });
   }
+
+  // Get fully returned payrolls (SSOT verified)
+  function getFullyReturnedBatches() {
+    return getBranchPayrolls().filter((b) => isBatchFullyReturned(b));
+  }
+  const fullyReturnedCount = () => getFullyReturnedBatches().length;
 
   // A payroll month may only be generated / reviewed once its payday arrived.
   function isMonthAvailable(month) {
@@ -264,6 +280,349 @@ export function renderPayrollView(container, options = {}) {
     const itCur = (it) => it.currency || settings.currency || 'USD';
     const segCol = (fn, sign) => summarizeCurrencySegmentsHtml((currentBatch?.items || []).map((it) => ({ code: itCur(it), amount: Number(fn(it)) || 0 })), { sign });
 
+    const renderStatusFilterBarHtml = (activeStatus) => `
+      <div class="payroll-status-filter-bar" style="display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap; background:var(--bg-card); padding:10px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <span style="font-size:12.5px; font-weight:700; color:var(--text-muted); display:flex; align-items:center; gap:4px;">
+          🔍 ${isEn ? 'Filter by Status:' : 'فلترة المسيرات حسب الحالة:'}
+        </span>
+        <button type="button" class="btn btn-sm ${activeStatus === 'all' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="all">
+          ${isEn ? 'All' : 'الكل'}
+        </button>
+        <button type="button" class="btn btn-sm ${activeStatus === 'draft' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="draft">
+          ${isEn ? 'Draft' : 'مسودة'}
+        </button>
+        <button type="button" class="btn btn-sm ${activeStatus === 'under_audit' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="under_audit">
+          ${isEn ? 'Under Audit' : 'قيد التدقيق'}
+        </button>
+        <button type="button" class="btn btn-sm ${activeStatus === 'approved' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="approved">
+          ${isEn ? 'Approved' : 'معتمد'}
+        </button>
+        <button type="button" class="btn btn-sm ${activeStatus === 'paid' ? 'btn-primary' : 'btn-outline'} btn-status-filter" data-status="paid">
+          ${isEn ? 'Disbursed' : 'مصروف'}
+        </button>
+        <button type="button" class="btn btn-sm ${activeStatus === 'fully_returned' ? 'btn-danger' : 'btn-outline'} btn-status-filter" data-status="fully_returned" id="btn-status-fully-returned">
+          ↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'} (${fullyReturnedCount()})
+        </button>
+      </div>
+    `;
+
+    const attachStatusFilterListeners = (el) => {
+      el.querySelectorAll('.btn-status-filter').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const st = btn.getAttribute('data-status');
+          statusFilter = st;
+          if (st === 'fully_returned') {
+            activeTab = 'fully_returned';
+            updateHeaderTabs();
+            renderFullyReturnedView(contentArea);
+          } else if (st === 'under_audit') {
+            activeTab = 'audit';
+            updateHeaderTabs();
+            renderTabContent();
+          } else if (st === 'paid') {
+            activeTab = 'disbursed';
+            updateHeaderTabs();
+            renderTabContent();
+          } else {
+            activeTab = 'payroll';
+            renderTabContent();
+          }
+        });
+      });
+    };
+
+    function renderFullyReturnedView(targetArea) {
+      const returnedBatches = getFullyReturnedBatches();
+      const activeReturnedMonth = selectedReturnedBatchMonth || (returnedBatches[0]?.month) || null;
+      const selectedBatch = returnedBatches.find((b) => b.month === activeReturnedMonth) || returnedBatches[0];
+
+      // Find audit trail entries matching this batch or its return correction
+      const allAudit = storage.getState().audit_trail || [];
+      const relatedAudit = selectedBatch ? allAudit.filter((a) => {
+        const matchRec = a.recordId === selectedBatch.id || (selectedBatch.fullReturn?.correctionId && a.recordId === selectedBatch.fullReturn.correctionId);
+        const matchDet = a.details && a.details.includes(selectedBatch.month);
+        return matchRec || matchDet;
+      }) : [];
+
+      const segReturned = (k, sign) => selectedBatch ? summarizeCurrencySegmentsHtml((selectedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })), { sign }) : '-';
+
+      targetArea.innerHTML = `
+        ${renderStatusFilterBarHtml('fully_returned')}
+
+        <!-- Header Card -->
+        <div class="card" style="margin-bottom:20px; padding:18px 24px; background:linear-gradient(135deg, rgba(239, 68, 68, 0.08) 0%, rgba(220, 38, 38, 0.02) 100%); border:1px solid rgba(239, 68, 68, 0.3);">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <h3 style="font-size:18px; font-weight:800; color:var(--text-main);">${isEn ? 'Fully Returned Payrolls' : 'مسيرات الرواتب المرجعة بالكامل'}</h3>
+                <span class="badge badge-danger" style="font-size:12px; font-weight:800; padding:4px 10px;">
+                  ↩️ ${returnedBatches.length} ${isEn ? 'Batches Returned' : 'مسيرات تم ترجيعها بالكامل'}
+                </span>
+              </div>
+              <p style="font-size:12.5px; color:var(--text-muted); margin-top:4px;">
+                ${isEn
+                  ? 'Review all payroll batches that have been fully returned/reversed, their return metadata, and official audit log.'
+                  : 'استعراض ومراجعة كافة مسيرات الرواتب التي اكتملت عليها عملية الترجيع بالكامل، مع كافة بيانات الترجيع وسجل التدقيق المرتبط.'}
+              </p>
+            </div>
+            <div>
+              <button type="button" class="btn btn-outline btn-sm" id="btn-back-to-active-payroll">
+                ⏪ ${isEn ? 'Back to Active Payroll' : 'العودة لمسير الرواتب النشط'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        ${returnedBatches.length === 0 ? `
+          <div class="card" style="padding:40px; text-align:center;">
+            <div style="font-size:36px; margin-bottom:10px;">↩️</div>
+            <h4 style="font-size:16px; font-weight:700; color:var(--text-main);">${isEn ? 'No fully returned payrolls found' : 'لا توجد مسيرات تم ترجيعها بالكامل'}</h4>
+            <p style="font-size:13px; color:var(--text-muted); margin-top:6px;">
+              ${isEn
+                ? 'No payroll batches have been fully returned in this branch.'
+                : 'لم يتم إجراء ترجيع كامل لأي مسير رواتب في هذا الفرع حتى الآن.'}
+            </p>
+          </div>
+        ` : `
+          <!-- Table of Fully Returned Batches -->
+          <div class="card" style="padding:0; overflow:hidden; margin-bottom:24px;">
+            <div style="padding:14px 20px; border-bottom:1px solid var(--border-color); background:var(--bg-card-hover); font-weight:800; font-size:14px;">
+              📋 ${isEn ? 'List of Fully Returned Batches' : 'قائمة المسيرات المرجعة بالكامل'}
+            </div>
+            <div class="table-container" style="border:none;">
+              <table class="table" style="font-size:12.5px;">
+                <thead>
+                  <tr>
+                    <th>${isEn ? 'Month' : 'شهر المسير'}</th>
+                    <th>${isEn ? 'Employees' : 'عدد الموظفين'}</th>
+                    <th>${isEn ? 'Returned Net' : 'صافي المبلغ المرجع'}</th>
+                    <th>${isEn ? 'Return Date & Time' : 'تاريخ ووقت الترجيع'}</th>
+                    <th>${isEn ? 'Returned By' : 'المستخدم المنفذ'}</th>
+                    <th>${isEn ? 'Reference' : 'رقم المرجع'}</th>
+                    <th>${isEn ? 'Previous Status' : 'الحالة السابقة'}</th>
+                    <th>${isEn ? 'Current Status' : 'الحالة الحالية'}</th>
+                    <th style="text-align:left;">${isEn ? 'Actions' : 'إجراءات'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${returnedBatches.map((b) => {
+                    const isSelected = selectedBatch && selectedBatch.month === b.month;
+                    const segB = (k, sign) => summarizeCurrencySegmentsHtml((b.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })), { sign });
+                    const prevStatus = b.fullReturn?.previousStatus || b.previousStatus || 'paid';
+                    const prevLabel = prevStatus === 'paid' ? (isEn ? 'Paid' : 'مصروف') : prevStatus === 'approved' ? (isEn ? 'Approved' : 'معتمد') : prevStatus;
+                    return `
+                      <tr data-returned-month="${b.month}" style="${isSelected ? 'background:rgba(239,68,68,0.05); font-weight:600;' : ''}">
+                        <td><strong>${b.month}</strong></td>
+                        <td>${b.employeesCount || (b.items ? b.items.length : 0)} ${isEn ? 'employees' : 'موظف'}</td>
+                        <td><strong style="color:var(--danger); font-size:14px;">${segB('net')}</strong></td>
+                        <td>${formatDateTime(b.fullReturn?.at)}</td>
+                        <td><span class="badge badge-gray">${escapeHtml(b.fullReturn?.by || '-')}</span></td>
+                        <td><span style="font-family:monospace; background:var(--bg-input); padding:2px 6px; border-radius:4px;">${escapeHtml(b.fullReturn?.displayNumber || b.fullReturn?.correctionId || '-')}</span></td>
+                        <td><span class="badge badge-success">${prevLabel}</span></td>
+                        <td><span class="badge badge-danger">↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span></td>
+                        <td>
+                          <div style="display:flex; justify-content:flex-end;">
+                            <button type="button" class="btn btn-sm ${isSelected ? 'btn-danger' : 'btn-outline'} btn-select-returned-batch" data-month="${b.month}">
+                              ${Icons.fileText ? Icons.fileText(14) : '📄'} ${isEn ? 'View Details' : 'عرض التفاصيل'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          ${selectedBatch ? `
+            <!-- Selected Batch Return Details Card -->
+            <div class="card" style="margin-bottom:24px; padding:20px 24px; border:2px solid rgba(239,68,68,0.4); background:var(--bg-card);">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px; border-bottom:1px solid var(--border-color); padding-bottom:16px; margin-bottom:16px;">
+                <div>
+                  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <h4 style="font-size:17px; font-weight:800; color:var(--text-main); margin:0;">
+                      ${selectedBatch.title || `${isEn ? 'Payroll Batch' : 'مسير رواتب شهر'} ${selectedBatch.month}`}
+                    </h4>
+                    <span class="badge badge-danger" style="font-size:13px; font-weight:800; padding:6px 14px;">
+                      ↩️ ${isEn ? 'Current Status: Fully Returned' : 'الحالة الحالية: تم الترجيع بالكامل'}
+                    </span>
+                    <span class="badge badge-success" style="font-size:12px; padding:6px 12px;">
+                      ${isEn ? 'Previous Status: Paid' : `الحالة السابقة: ${selectedBatch.fullReturn?.previousStatus === 'paid' || selectedBatch.previousStatus === 'paid' ? 'مصروف' : 'معتمد'}`}
+                    </span>
+                  </div>
+                  <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+                    ${isEn ? 'Batch ID:' : 'معرف المسير:'} <code>${escapeHtml(selectedBatch.id || '')}</code>
+                  </div>
+                </div>
+                <div style="display:flex; gap:8px;">
+                  <button type="button" class="btn btn-outline btn-sm btn-print-returned-payslips" data-month="${selectedBatch.month}">
+                    ${Icons.printer ? Icons.printer(14) : '🖨️'} ${isEn ? 'Print Payslips' : 'طباعة الوصولات'}
+                  </button>
+                </div>
+              </div>
+
+              <!-- 4-Stat Box of Return Metadata -->
+              <div class="grid grid-cols-4" style="gap:12px; margin-bottom:16px;">
+                <div style="background:var(--bg-card-hover); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+                  <div style="font-size:11.5px; color:var(--text-muted); font-weight:700;">🕒 ${isEn ? 'Return Date & Time' : 'تاريخ ووقت الترجيع'}</div>
+                  <div style="font-size:13.5px; font-weight:800; color:var(--text-main); margin-top:4px;">
+                    ${formatDateTime(selectedBatch.fullReturn?.at)}
+                  </div>
+                </div>
+
+                <div style="background:var(--bg-card-hover); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+                  <div style="font-size:11.5px; color:var(--text-muted); font-weight:700;">👤 ${isEn ? 'Executed By' : 'المستخدم المنفذ للترجيع'}</div>
+                  <div style="font-size:13.5px; font-weight:800; color:var(--text-main); margin-top:4px;">
+                    ${escapeHtml(selectedBatch.fullReturn?.by || '-')}
+                  </div>
+                </div>
+
+                <div style="background:var(--bg-card-hover); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+                  <div style="font-size:11.5px; color:var(--text-muted); font-weight:700;">🔖 ${isEn ? 'Return Reference / ID' : 'رقم/مرجع عملية الترجيع'}</div>
+                  <div style="font-size:13.5px; font-weight:800; color:var(--primary); margin-top:4px; font-family:monospace;">
+                    ${escapeHtml(selectedBatch.fullReturn?.displayNumber || selectedBatch.fullReturn?.correctionId || '-')}
+                  </div>
+                </div>
+
+                <div style="background:var(--bg-card-hover); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+                  <div style="font-size:11.5px; color:var(--text-muted); font-weight:700;">💰 ${isEn ? 'Total Returned Amount' : 'المبلغ الإجمالي المسترد'}</div>
+                  <div style="font-size:14px; font-weight:800; color:var(--danger); margin-top:4px;">
+                    ${segReturned('net')}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Reason Box -->
+              <div style="background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.25); padding:12px 16px; border-radius:8px; margin-bottom:18px;">
+                <div style="font-size:12px; font-weight:800; color:var(--danger); margin-bottom:4px;">
+                  📝 ${isEn ? 'Recorded Reason for Full Return:' : 'سبب الترجيع المسجل:'}
+                </div>
+                <div style="font-size:13px; color:var(--text-main); line-height:1.6;">
+                  ${escapeHtml(selectedBatch.fullReturn?.reason || (isEn ? 'No reason recorded' : 'لا يوجد سبب مسجل'))}
+                </div>
+              </div>
+
+              <!-- Associated Audit Trail Section -->
+              <div style="margin-bottom:20px;">
+                <div style="font-size:14px; font-weight:800; color:var(--text-main); margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                  🛡️ ${isEn ? 'Associated Audit Trail Log:' : 'سجل التدقيق المرتبط بالعملية:'}
+                  <span class="badge badge-info" style="font-size:11px;">${relatedAudit.length} ${isEn ? 'Events' : 'أحداث تدقيق'}</span>
+                </div>
+                <div class="table-container" style="max-height:220px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px;">
+                  <table class="table" style="font-size:11.5px; margin:0;">
+                    <thead>
+                      <tr style="background:var(--bg-card-hover);">
+                        <th>${isEn ? 'Timestamp' : 'الوقت والتاريخ'}</th>
+                        <th>${isEn ? 'User' : 'المستخدم'}</th>
+                        <th>${isEn ? 'Action' : 'العملية'}</th>
+                        <th>${isEn ? 'Details' : 'التفاصيل'}</th>
+                        <th>${isEn ? 'Reference' : 'المرجع'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${relatedAudit.length === 0 ? `
+                        <tr><td colspan="5" style="text-align:center; padding:16px; color:var(--text-muted);">${isEn ? 'No audit events found.' : 'لا توجد سجلات تدقيق مرتبطة.'}</td></tr>
+                      ` : relatedAudit.map((a) => `
+                        <tr>
+                          <td>${formatDateTime(a.timestamp)}</td>
+                          <td><strong>${escapeHtml(a.userName || a.user || '-')}</strong></td>
+                          <td><span class="badge badge-primary">${escapeHtml(a.action || '-')}</span></td>
+                          <td>${escapeHtml(a.details || '-')}</td>
+                          <td><code style="font-size:10.5px;">${escapeHtml(a.recordId || '-')}</code></td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Employee Breakdown Table -->
+              <div>
+                <div style="font-size:14px; font-weight:800; color:var(--text-main); margin-bottom:8px;">
+                  👥 ${isEn ? 'Employee Items & Returned Amounts:' : 'كشف الموظفين والمبالغ المستردة:'}
+                </div>
+                <div class="table-container" style="border:1px solid var(--border-color); border-radius:6px;">
+                  <table class="table" style="font-size:12px; margin:0;">
+                    <thead>
+                      <tr>
+                        <th>${isEn ? 'Employee' : 'الموظف'}</th>
+                        <th>${isEn ? 'Department' : 'القسم'}</th>
+                        <th>${isEn ? 'Basic Salary' : 'الراتب الأساسي'}</th>
+                        <th>${isEn ? 'Allowances' : 'البدلات'}</th>
+                        <th>${isEn ? 'Deductions' : 'الاستقطاعات'}</th>
+                        <th>${isEn ? 'Returned Net Salary' : 'صافي الراتب المرجع'}</th>
+                        <th style="text-align:left;">${isEn ? 'Payslip' : 'الوصل'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${(selectedBatch.items || []).map((it) => {
+                        const cur = itCur(it);
+                        const allowances = (it.housingAllowance || 0) + (it.transportAllowance || 0) + (it.overtimeAmount || 0) + (it.bonuses || 0);
+                        const deds = (it.gosiEmployeeDeduction || 0) + (it.loanInstallment || 0) + (it.absenceDeduction || 0) + (it.lateDeduction || 0) + (it.penaltiesDeduction || 0) + (it.otherDeductions || 0);
+                        return `
+                          <tr>
+                            <td>
+                              <strong>${escapeHtml(it.employeeName || '')}</strong>
+                              <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(it.employeeNumber || '')}</div>
+                            </td>
+                            <td>${escapeHtml(it.department || '-')}</td>
+                            <td>${formatAmountWithCode(it.basicSalary, cur)}</td>
+                            <td><span style="color:var(--primary);">+ ${formatAmountWithCode(allowances, cur)}</span></td>
+                            <td><span style="color:var(--danger);">- ${formatAmountWithCode(deds, cur)}</span></td>
+                            <td><strong style="color:var(--danger); font-size:13.5px;">${formatAmountWithCode(it.netSalary, cur)}</strong></td>
+                            <td>
+                              <button type="button" class="btn btn-sm btn-outline btn-view-returned-item-payslip" data-emp-id="${it.employeeId}">
+                                ${Icons.printer ? Icons.printer(12) : '🖨️'} ${isEn ? 'Payslip' : 'الوصل'}
+                              </button>
+                            </td>
+                          </tr>
+                        `;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          ` : ''}
+        `}
+      `;
+
+      attachStatusFilterListeners(targetArea);
+
+      targetArea.querySelector('#btn-back-to-active-payroll')?.addEventListener('click', () => {
+        statusFilter = 'all';
+        activeTab = 'payroll';
+        updateHeaderTabs();
+        renderTabContent();
+      });
+
+      targetArea.querySelectorAll('.btn-select-returned-batch').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectedReturnedBatchMonth = btn.getAttribute('data-month');
+          renderFullyReturnedView(targetArea);
+        });
+      });
+
+      targetArea.querySelector('.btn-print-returned-payslips')?.addEventListener('click', () => {
+        if (selectedBatch) openBatchPayslipsPrintModal(selectedBatch, settings, null, companies);
+      });
+
+      targetArea.querySelectorAll('.btn-view-returned-item-payslip').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const empId = btn.getAttribute('data-emp-id');
+          const item = selectedBatch?.items?.find((i) => i.employeeId === empId);
+          if (item) openPayslipModal(item, selectedBatch, settings, null, companies);
+        });
+      });
+    }
+
+    if (activeTab === 'fully_returned' || (activeTab === 'payroll' && statusFilter === 'fully_returned')) {
+      renderFullyReturnedView(contentArea);
+      return;
+    }
+
     // A month without a batch (not due yet / no employees) must never crash the
     // audit, loans, increments or disbursed tabs. Only the batches-dependant
     // tabs (payroll + audit) show the "no batch" notice; the rest render fine.
@@ -323,6 +682,7 @@ export function renderPayrollView(container, options = {}) {
         toast.error(isEn ? 'Insufficient permissions to disburse payroll' : 'لا تملك صلاحية صرف الرواتب');
         return;
       }
+      if (!requireBranchForAction()) return;
       const targetMonth = batch.month;
       openReleasePayrollModal({
         batch,
@@ -516,15 +876,23 @@ export function renderPayrollView(container, options = {}) {
       }
 
       contentArea.innerHTML = `
+        <!-- Status Filter Bar -->
+        ${renderStatusFilterBarHtml(statusFilter)}
+
         <!-- Payroll Month & Batch Header Card -->
         <div class="card" style="margin-bottom:20px; padding:18px 24px; background:linear-gradient(135deg, rgba(79, 70, 229, 0.06) 0%, rgba(16, 185, 129, 0.06) 100%); border-color:rgba(99, 102, 241, 0.2);">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
             <div>
-              <div style="display:flex; align-items:center; gap:10px;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                 <h3 style="font-size:18px; font-weight:800; color:var(--text-main);">${currentBatch.title}</h3>
                 <span class="badge ${isFullyReturned ? 'badge-danger' : isPaid ? 'badge-success' : isApproved ? 'badge-success' : isUnderAudit ? 'badge-info' : 'badge-warning'}">
-                  ${isFullyReturned ? (isEn ? 'Fully Returned' : 'تم ترجيع المسير بالكامل') : isPaid ? (isEn ? 'Paid & Disbursed' : 'تم الصرف بنجاح') : isApproved ? (isEn ? 'Audit Approved 🔒' : 'معتمد من التدقيق 🔒') : isUnderAudit ? (isEn ? 'Under Financial Audit 🔒' : 'قيد التدقيق المالي 🔒') : (isEn ? 'Draft (Editable)' : 'مسودة قابلة للتعديل')}
+                  ${isFullyReturned ? (isEn ? 'Current: Fully Returned' : 'الحالة الحالية: تم الترجيع بالكامل') : isPaid ? (isEn ? 'Paid & Disbursed' : 'تم الصرف بنجاح') : isApproved ? (isEn ? 'Audit Approved 🔒' : 'معتمد من التدقيق 🔒') : isUnderAudit ? (isEn ? 'Under Financial Audit 🔒' : 'قيد التدقيق المالي 🔒') : (isEn ? 'Draft (Editable)' : 'مسودة قابلة للتعديل')}
                 </span>
+                ${isFullyReturned ? `
+                  <span class="badge badge-success" style="font-size:11.5px;">
+                    ${isEn ? 'Previous: Paid' : `الحالة السابقة: ${currentBatch.fullReturn?.previousStatus === 'paid' || currentBatch.previousStatus === 'paid' ? 'مصروف' : 'معتمد'}`}
+                  </span>
+                ` : ''}
               </div>
               <p style="font-size:12.5px; color:var(--text-muted); margin-top:2px;">
                 ${tf('payroll.batchSummary', { count: currentBatch.employeesCount, date: formatDate(currentBatch.issueDate) })}
@@ -650,14 +1018,27 @@ export function renderPayrollView(container, options = {}) {
         ` : ''}
 
         ${isFullyReturned ? `
-        <div class="alert-box alert-danger" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:14px 18px; border-radius:8px;">
-          <div>
-            <strong style="color:#dc2626; font-size:13.5px;">↩️ ${isEn ? `Salaries for ${currentBatch.month} have been fully returned.` : `تم ترجيع مسير رواتب ${currentBatch.month} بالكامل.`}</strong>
-            <div style="font-size:12px; margin-top:3px; color:var(--text-muted);">
-              ${isEn ? 'Reason for return' : 'سبب الترجيع'}: <strong>${escapeHtml(currentBatch.fullReturn.reason || '')}</strong>
+        <div class="alert-box alert-danger" style="margin-bottom:20px; background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); padding:16px 20px; border-radius:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <strong style="color:#dc2626; font-size:15px;">↩️ ${isEn ? `Salaries for ${currentBatch.month} have been fully returned.` : `تم ترجيع مسير رواتب ${currentBatch.month} بالكامل.`}</strong>
+                <span class="badge badge-danger">${isEn ? 'Current: Fully Returned' : 'الحالة الحالية: تم الترجيع بالكامل'}</span>
+                <span class="badge badge-success">${isEn ? 'Previous: Paid' : `الحالة السابقة: ${currentBatch.fullReturn?.previousStatus === 'paid' || currentBatch.previousStatus === 'paid' ? 'مصروف' : 'معتمد'}`}</span>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-top:10px; font-size:12px;">
+                <div>🕒 ${isEn ? 'Returned at' : 'تاريخ ووقت الترجيع'}: <strong>${formatDateTime(currentBatch.fullReturn.at)}</strong></div>
+                <div>👤 ${isEn ? 'Returned by' : 'المستخدم المنفذ'}: <strong>${escapeHtml(currentBatch.fullReturn.by || '-')}</strong></div>
+                <div>🔖 ${isEn ? 'Reference' : 'رقم المرجع'}: <code style="font-family:monospace;">${escapeHtml(currentBatch.fullReturn.displayNumber || currentBatch.fullReturn.correctionId || '-')}</code></div>
+                <div>📝 ${isEn ? 'Reason' : 'سبب الترجيع'}: <strong>${escapeHtml(currentBatch.fullReturn.reason || '-')}</strong></div>
+              </div>
+            </div>
+            <div>
+              <button type="button" class="btn btn-sm btn-danger" id="btn-view-all-fully-returned">
+                ↩️ ${isEn ? 'View in Returned Filter' : 'فتح في فلتر تم الترجيع بالكامل'}
+              </button>
             </div>
           </div>
-          <span class="badge badge-danger">${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span>
         </div>
         ` : isPaid ? `
         <div class="alert-box alert-success" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
@@ -967,6 +1348,7 @@ export function renderPayrollView(container, options = {}) {
           toast.error(isEn ? 'Insufficient permissions to submit payroll to Financial Audit.' : 'لا تملك صلاحية ترحيل المسير إلى التدقيق المالي.');
           return;
         }
+        if (!requireBranchForAction()) return;
         const res = transitionPayrollGuarded(state.currentUser, currentBatch, 'under_audit', {
           by: storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب'),
           context: getPayrollBranchContext(),
@@ -1030,6 +1412,14 @@ export function renderPayrollView(container, options = {}) {
         renderTabContent();
       });
 
+      contentArea.querySelector('#btn-view-all-fully-returned')?.addEventListener('click', () => {
+        statusFilter = 'fully_returned';
+        activeTab = 'fully_returned';
+        selectedReturnedBatchMonth = currentBatch?.month || null;
+        updateHeaderTabs();
+        renderTabContent();
+      });
+
       contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
         if (!currentBatch || !canCreateCorrection) return;
         openFullReturnModal({
@@ -1039,11 +1429,15 @@ export function renderPayrollView(container, options = {}) {
             currentMonth = target.month;
             currentBatch = target;
             activeTab = 'payroll';
+            statusFilter = 'fully_returned';
+            selectedReturnedBatchMonth = target.month;
             updateHeaderTabs();
             renderTabContent();
           },
         });
       });
+
+      attachStatusFilterListeners(contentArea);
 
       const triggerDisburse = () => disburseBatch(currentBatch);
 
@@ -1286,6 +1680,7 @@ export function renderPayrollView(container, options = {}) {
           toast.error(isEn ? 'Only batches under audit can be approved.' : 'لا يمكن اعتماد إلا المسيرات قيد التدقيق.');
           return;
         }
+        if (!requireBranchForAction()) return;
         const auditNote = contentArea.querySelector('#audit-notes-input')?.value || '';
         const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي'), context: getPayrollBranchContext(), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
         if (!res.ok) {
@@ -1306,6 +1701,7 @@ export function renderPayrollView(container, options = {}) {
           toast.error(isEn ? 'Only batches under audit can be rejected.' : 'لا يمكن رفض إلا المسيرات قيد التدقيق.');
           return;
         }
+        if (!requireBranchForAction()) return;
         showConfirmDialog({
           title: isEn ? 'Reject Audit Approval' : 'رفض اعتماد التدقيق',
           message: isEn
@@ -1351,6 +1747,9 @@ export function renderPayrollView(container, options = {}) {
             </div>
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
               <span class="badge badge-success">${paidBatches.length} ${isEn ? 'Batches Disbursed' : 'مسير تم صرفه'}</span>
+              <button type="button" class="btn btn-outline btn-sm" id="btn-view-fully-returned-from-disbursed" style="color:var(--danger); border-color:rgba(239,68,68,0.35);">
+                ↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'} (${fullyReturnedCount()})
+              </button>
               ${canManagePayroll ? `
               <button type="button" class="btn btn-outline btn-sm" id="btn-archive-pre-app">
                 ${Icons.clock(14)} ${isEn ? 'Archive Pre-App Months' : 'أرشفة الأشهر السابقة'}
@@ -1433,7 +1832,15 @@ export function renderPayrollView(container, options = {}) {
       `;
 
       contentArea.querySelector('#btn-archive-pre-app')?.addEventListener('click', () => {
+        if (!requireBranchForAction()) return;
         openArchivePayrollModal({ onDone: () => renderTabContent() });
+      });
+
+      contentArea.querySelector('#btn-view-fully-returned-from-disbursed')?.addEventListener('click', () => {
+        statusFilter = 'fully_returned';
+        activeTab = 'fully_returned';
+        updateHeaderTabs();
+        renderTabContent();
       });
 
       contentArea.querySelectorAll('tr').forEach((row) => {
@@ -1463,6 +1870,8 @@ export function renderPayrollView(container, options = {}) {
               currentMonth = target.month;
               currentBatch = target;
               activeTab = 'payroll';
+              statusFilter = 'fully_returned';
+              selectedReturnedBatchMonth = target.month;
               updateHeaderTabs();
               renderTabContent();
             },
@@ -1476,6 +1885,7 @@ export function renderPayrollView(container, options = {}) {
 
         row.querySelector('.btn-archive-paid-batch')?.addEventListener('click', () => {
           if (!canArchive || !b) return;
+          if (!requireBranchForAction()) return;
           showConfirmDialog({
             title: isEn ? 'Archive Payroll' : 'أرشفة مسير الرواتب',
             message: isEn
@@ -1976,6 +2386,9 @@ export function renderPayrollView(container, options = {}) {
     ` : ''}
       <button type="button" class="tab-btn ${activeTab === 'disbursed' ? 'active' : ''}" data-tab="disbursed" id="tab-payroll-disbursed">
         ${Icons.award(16)} ${isEn ? 'Disbursed Payrolls' : 'الرواتب المصروفة والمؤرشفة'} (${getPaidBatches().length})
+      </button>
+      <button type="button" class="tab-btn ${activeTab === 'fully_returned' ? 'active' : ''}" data-tab="fully_returned" id="tab-payroll-fully-returned">
+        ↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'} (${fullyReturnedCount()})
       </button>
       <button type="button" class="tab-btn ${activeTab === 'corrections' ? 'active' : ''}" data-tab="corrections" id="tab-payroll-corrections">
         ${Icons.refresh(16)} ${isEn ? 'Post-Payment Corrections' : 'التصحيحات اللاحقة للصرف'} (${correctionCount()})

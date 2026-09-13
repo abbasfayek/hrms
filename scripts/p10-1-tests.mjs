@@ -282,8 +282,16 @@ async function main() {
     const emp2 = await api('/api/data/employees', { session: hr2 });
     const emp2Arr = Array.isArray(emp2.data) ? emp2.data : [];
     const legit = { ...(emp2Arr[0] || { id: 'emp-c2a', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'EMP-C2-1' }), notes: 'legit edit' };
-    const wLegit = await api('/api/data/employees', { method: 'POST', session: hr2, body: [legit] });
+    const wLegit = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-2a' }, body: [legit] });
     ok('N11 company_hr(comp-2) scoped WRITE allowed', wLegit.status === 200, `status=${wLegit.status}`);
+
+    // New enforcement (branch of a multi-branch company user must be declared):
+    const wNoBranch = await api('/api/data/employees', { method: 'POST', session: hr2, body: [legit] });
+    ok('N11b company_hr(comp-2) multi-branch WRITE WITHOUT X-Branch-Id rejected', wNoBranch.status === 403 && wNoBranch.data && wNoBranch.data.code === 'branch_required', `status=${wNoBranch.status} code=${wNoBranch.data && wNoBranch.data.code}`);
+    const wFakeBranch = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-1' }, body: [legit] });
+    ok('N11c company_hr(comp-2) WRITE with FOREIGN branch rejected', wFakeBranch.status === 403 && wFakeBranch.data && wFakeBranch.data.code === 'scope_violation', `status=${wFakeBranch.status} code=${wFakeBranch.data && wFakeBranch.data.code}`);
+    const wGhostBranch = await api('/api/data/employees', { method: 'POST', session: hr2, headers: { 'X-Branch-Id': 'br-zz' }, body: [legit] });
+    ok('N11d company_hr(comp-2) WRITE with NON-EXISTENT branch rejected', wGhostBranch.status === 403, `status=${wGhostBranch.status}`);
 
     const check = await api('/api/data/employees', { session: admin });
     const onDisk = (Array.isArray(check.data) ? check.data : []).find((e) => e.id === 'emp-1788944410774');

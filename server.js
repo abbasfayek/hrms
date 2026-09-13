@@ -159,6 +159,15 @@ const ALLOWED_COLLECTIONS = [
   'audit', 'deleted_records', 'audit_trail'
 ];
 
+// Operational collections that the "clear all data" reset wipes. System and
+// security collections (companies, users, settings, audit trail, deleted
+// records registry) are intentionally preserved so tenants and passwords are
+// never silently destroyed by a reset.
+const CLEARABLE_COLLECTIONS = [
+  'employees', 'leaves', 'hourly_leaves', 'overtime', 'loans',
+  'increments', 'attendance', 'holidays', 'payrolls', 'eosb',
+];
+
 function jsonResponse(res, data, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
@@ -371,11 +380,20 @@ async function getAuthContext(req) {
   return resolveAuthContext(req, sessions, getAllUsers);
 }
 
-// Server-side branch context validation
-function validateServerBranchContext(user) {
+// Server-side branch context validation.
+// Selection policy shared by the client and this server:
+//   - super_admin                → always allowed, no X-Branch-Id needed.
+//   - branch_hr                  → requires an assigned concrete branch.
+//   - HR/payroll company roles (company_hr, payroll_admin, audit_reviewer,
+//     payments_officer) with a single concrete assigned branch use that branch
+//     automatically; multi-branch users (assigned 'all' / several branches)
+//     MUST declare a concrete branch via the X-Branch-Id header, and that
+//     branch must belong to the user's own company (otherwise scope_violation).
+//   - other roles                → unchanged (assigned branch or 'all').
+function validateServerBranchContext(user, companiesList, selectedBranchId) {
   // Super admin doesn't need branch selection
   if (user.role === 'super_admin') return { ok: true };
-  
+
   // Branch HR users have assigned branch - must have specific branch
   if (user.role === 'branch_hr') {
     if (!user.assignedBranchId || user.assignedBranchId === 'all') {
@@ -383,20 +401,35 @@ function validateServerBranchContext(user) {
     }
     return { ok: true, branchId: user.assignedBranchId };
   }
-  
+
   // Company-scoped roles (company_hr, payroll_admin, audit_reviewer, payments_officer)
-  // These roles are company-scoped and can operate across all branches within their company
-  // Branch selection is a UI filtering concept, not a server-side restriction for these roles
   const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
   if (companyScopedRoles.includes(user.role)) {
-    return { ok: true, branchId: user.assignedBranchId || 'all' };
+    const assigned = Array.isArray(user.assignedBranches) && user.assignedBranches.length
+      ? user.assignedBranches
+      : [user.assignedBranchId || 'all'];
+    const multiBranch = assigned.includes('all') || assigned.length !== 1;
+    if (!multiBranch) {
+      return { ok: true, branchId: assigned[0] };
+    }
+    if (!selectedBranchId || selectedBranchId === 'all') {
+      return { ok: false, code: 'branch_required', message: 'Branch selection required' };
+    }
+    const companyId = user.assignedCompanyId || (Array.isArray(user.assignedCompanyIds) ? user.assignedCompanyIds[0] : null);
+    const company = companyId && companyId !== 'all' && Array.isArray(companiesList)
+      ? companiesList.find((c) => c && c.id === companyId)
+      : null;
+    if (company && Array.isArray(company.branches) && !company.branches.some((b) => b && b.id === selectedBranchId)) {
+      return { ok: false, code: 'scope_violation', message: 'Selected branch is not valid' };
+    }
+    return { ok: true, branchId: selectedBranchId };
   }
-  
+
   // For other roles, check assigned branch
   if (user.assignedBranchId && user.assignedBranchId !== 'all') {
     return { ok: true, branchId: user.assignedBranchId };
   }
-  
+
   // Default: allow 'all' for other roles
   return { ok: true, branchId: 'all' };
 }
@@ -512,9 +545,13 @@ async function handleAPI(req, res, urlParts, method) {
       return jsonResponse(res, { error: writeCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: writeCheck.reason }, writeCheck.status);
     }
     // Validate branch context for write operations (except for super_admin)
-    const branchCheck = validateServerBranchContext(user);
+    const companiesData = await readCollectionData('companies');
+    const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id']);
     if (!branchCheck.ok) {
-      return jsonResponse(res, { error: 'Branch selection required', code: 'branch_required' }, 403);
+      return jsonResponse(res, {
+        error: branchCheck.code === 'scope_violation' ? 'Scope violation' : 'Branch selection required',
+        code: branchCheck.code,
+      }, 403);
     }
     try {
       const body = await readBody(req);
@@ -686,9 +723,13 @@ async function handleAPI(req, res, urlParts, method) {
     }
     // Validate branch context for non-super-admin
     if (!isSuper(user)) {
-      const branchCheck = validateServerBranchContext(user);
+      const companiesData = await readCollectionData('companies');
+      const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id']);
       if (!branchCheck.ok) {
-        return jsonResponse(res, { error: 'Branch selection required', code: 'branch_required' }, 403);
+        return jsonResponse(res, {
+          error: branchCheck.code === 'scope_violation' ? 'Scope violation' : 'Branch selection required',
+          code: branchCheck.code,
+        }, 403);
       }
     }
     try {
@@ -735,6 +776,23 @@ async function handleAPI(req, res, urlParts, method) {
       }
       writeCollection('employees', result);
       return jsonResponse(res, { success: true, imported: newEmps.length, total: result.length });
+    } catch (e) {
+      return jsonResponse(res, { error: e.message }, 500);
+    }
+  }
+
+  // POST /api/clear-all — Wipe operational collections (super_admin only).
+  // This mirrors the app's "تصفير قاعدة البيانات" reset so clearing the data
+  // on the server is not defeated by the merge semantics of empty payloads.
+  if (method === 'POST' && segment === 'clear-all') {
+    if (!isSuper(user)) {
+      return jsonResponse(res, { error: 'Super admin required', code: 'super_required' }, 403);
+    }
+    try {
+      for (const col of CLEARABLE_COLLECTIONS) {
+        writeCollection(col, []);
+      }
+      return jsonResponse(res, { success: true, collections: CLEARABLE_COLLECTIONS });
     } catch (e) {
       return jsonResponse(res, { error: e.message }, 500);
     }

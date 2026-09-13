@@ -23,7 +23,9 @@
     "p102:test": "node scripts/p10-2-tests.mjs",
     "branch:isolation": "node scripts/final-branch-isolation-gate.mjs",
     "backup:test": "node scripts/e2e-backup-restore-verification.mjs",
-    "test": "npm run release:test && npm run p101:test && npm run p102:test && npm run branch:isolation && npm run backup:test"
+    "clear:test": "node scripts/clear-all-tests.mjs",
+    "branchgate:test": "node scripts/branch-gate-client-tests.mjs",
+    "test": "npm run release:test && npm run p101:test && npm run p102:test && npm run branch:isolation && npm run backup:test && npm run clear:test && npm run branchgate:test"
   },
   "dependencies": {
     "react": "^19.0.0",

@@ -181,8 +181,16 @@ export function openSalaryIncrementModal(defaultEmployee = null, onSaved) {
           updateHousingAndTransportProportionally,
         });
 
-        storage.updateEmployee(updatedEmployee);
-        storage.addIncrement(incrementRecord);
+        const resUpdate = storage.updateEmployee(updatedEmployee);
+        if (resUpdate && resUpdate.ok === false) {
+          toast.error(storage.recordErrorText(resUpdate.error, isEn));
+          return;
+        }
+        const resIncrement = storage.addIncrement(incrementRecord);
+        if (resIncrement && resIncrement.ok === false) {
+          toast.error(storage.recordErrorText(resIncrement.error, isEn));
+          return;
+        }
 
         toast.success(isEn ? `Salary increment applied successfully for ${emp.fullName}` : `تم بنجاح تطبيق زيادة الراتب للموظف ${emp.fullName}`);
         close();
