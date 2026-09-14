@@ -299,6 +299,9 @@ class StorageService {
 
   // Server-side sign-in: verifies the username/password on the server (rate
   // limited), and on success stores a USER session that unlocks data access.
+  // The server returns the authenticated user (safeUser — password omitted),
+  // which is hydrated into the local cache so auth.login can build the session
+  // identity WITHOUT ever reading GET /api/data/users (which stays superOnly).
   async serverLogin(username, password) {
     try {
       const res = await fetch('/api/auth/login', {
@@ -312,9 +315,39 @@ class StorageService {
       const data = await res.json().catch(() => ({}));
       if (!data.session) return { ok: false };
       this.setUserSessionToken(data.session);
-      return { ok: true };
+      // Cache the current server-authenticated identity (does not touch the
+      // users directory, does not import other users, never POSTs to server).
+      this._hydrateCurrentUser(data.user);
+      return { ok: true, user: data.user || null };
     } catch (e) {
       return { ok: false, offline: true }; // server unreachable → local check
+    }
+  }
+
+  // Cache-only upsert of the server-authenticated user (safeUser — never
+  // holds a password/secret). Uses a raw localStorage write on purpose: set()
+  // would persistToServer() the whole users collection back to the server,
+  // which must never happen from a login. Matches by id first, then by
+  // username so an offline-created record is updated in place, not duplicated.
+  _hydrateCurrentUser(serverUser) {
+    try {
+      if (!serverUser || typeof serverUser !== 'object' || !serverUser.id) return;
+      const current = this.get(STORAGE_KEYS.USERS, null);
+      const users = Array.isArray(current) ? current : [];
+      let idx = users.findIndex((u) => u && u.id === serverUser.id);
+      if (idx < 0) {
+        idx = users.findIndex((u) => u && serverUser.username &&
+          u.username === serverUser.username);
+      }
+      if (idx >= 0) {
+        users[idx] = { ...users[idx], ...serverUser };
+      } else {
+        users.push({ ...serverUser });
+      }
+      localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+      this.notify();
+    } catch (e) {
+      // Hydration failure must never block an already-authenticated login.
     }
   }
 

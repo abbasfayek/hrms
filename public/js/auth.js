@@ -38,23 +38,33 @@ class AuthService {
     const users = state.users || [];
 
     const cleanInput = (usernameOrEmail || '').trim().toLowerCase();
-    const user = users.find(
+    const cached = users.find(
       (u) =>
         (u.username && u.username.toLowerCase() === cleanInput) ||
         (u.email && u.email.toLowerCase() === cleanInput)
     );
 
-    if (!user) {
-      return { success: false, error: t('auth.userNotFound') };
-    }
+    let user;
 
-    // Server-side verification (preferred) with local fallback for offline mode.
-    // When opts.verified is true the caller already authenticated against the
-    // server (storage.serverLogin), so the duplicate network call is skipped.
-    let ok = false;
+    // Server-side verification (preferred). opts.verified means the caller
+    // already authenticated against the server (storage.serverLogin). The
+    // identity MUST come from that authenticated server response (serverUser);
+    // a cached/local user alone is never accepted as "verified". The local
+    // cache may only supply local-only fields (e.g. an offline password hash)
+    // that the safeUser response omits.
     if (opts.verified) {
-      ok = true;
+      if (!opts.serverUser || !opts.serverUser.id) {
+        return { success: false, error: t('auth.invalidPassword') };
+      }
+      const cachedForId = users.find((u) => u && u.id === opts.serverUser.id);
+      user = { ...(cachedForId || {}), ...opts.serverUser };
     } else {
+      user = cached;
+      if (!user) {
+        return { success: false, error: t('auth.userNotFound') };
+      }
+      // Offline / online fallback verification for non-verified logins.
+      let ok = false;
       try {
         const resp = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
@@ -71,10 +81,9 @@ class AuthService {
         // Offline / network failure — fall back to local verification
         ok = await this.verifyPasswordLocal(user, password);
       }
-    }
-
-    if (!ok) {
-      return { success: false, error: t('auth.invalidPassword') };
+      if (!ok) {
+        return { success: false, error: t('auth.invalidPassword') };
+      }
     }
 
     // If server authenticated, we already have session; if local, create session

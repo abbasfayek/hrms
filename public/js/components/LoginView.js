@@ -139,7 +139,7 @@ export function renderLoginView(container, onLoginSuccess) {
     } else if (result && result.ok) {
       // Session issued — pull the freshest data, then build the local session.
       await storage.syncFromServer();
-      const res = await auth.login(username, password, { verified: true });
+      const res = await auth.login(username, password, { verified: true, serverUser: result.user });
       if (res.success) {
         toast.success(`${isEn ? 'Welcome back' : 'مرحباً بك'}: ${res.user.name}`);
         if (onLoginSuccess) onLoginSuccess(res.user);
