@@ -261,12 +261,16 @@ export const DEFAULT_ROLE_PERMISSIONS = {
 
 /**
  * Check whether a user has a permission.
- * Legacy users without an explicit permissions array fall back to their
- * role's default set, so nothing breaks for existing stored accounts.
+ * A user is granted their explicit permissions array only when it is
+ * NON-empty. undefined / null / [] all mean "no explicit overrides" and
+ * fall back to the role's default set. This keeps the client semantics
+ * identical to the server (server-authz.getEffectivePerms), so saving a
+ * user through the modal without touching any checkbox never wipes their
+ * permissions to zero.
  */
 export function getEffectivePermissions(user) {
   if (!user) return [];
-  if (Array.isArray(user.permissions)) return user.permissions;
+  if (Array.isArray(user.permissions) && user.permissions.length > 0) return user.permissions;
   return DEFAULT_ROLE_PERMISSIONS[user.role] || [];
 }
 
