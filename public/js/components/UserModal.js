@@ -128,7 +128,7 @@ export function openUserModal(user = null, onSaved) {
 
         <div class="form-group">
           <label class="form-label">${t('users.password')}</label>
-          <input type="password" class="form-input" name="password" value="${data.password || ''}" required placeholder="${t('users.passwordPlaceholder')}">
+          <input type="password" class="form-input" name="password" value="${data.password || ''}" ${isEdit ? '' : 'required'} placeholder="${t('users.passwordPlaceholder')}">
         </div>
         <div class="form-group">
           <label class="form-label">${t('users.jobTitle')}</label>
@@ -334,12 +334,20 @@ export function openUserModal(user = null, onSaved) {
         // persisted locally or on the server (C-4). Already-hashed values are
         // preserved untouched to avoid double-hashing on an edit.
         const generatedPasswordHash = await auth.hashPassword(submittedPassword, isAlreadyHashed);
+        // On edit, a password is only submitted when the admin actually types a
+        // NEW plaintext one. An empty field (or a stale hash echoed from local
+        // state) means "keep the existing password" — the password key is then
+        // omitted entirely so the server preserves the stored hash untouched.
+        const submittingPassword = !isEdit || (submittedPassword !== '' && !isAlreadyHashed);
+        // Never echo a stored hash back through the wire: strip any password
+        // that stale local state might carry before building the updated record.
+        const { password: _droppedPassword, ...dataWithoutPassword } = data;
         const updatedUser = {
-          ...data,
+          ...dataWithoutPassword,
           name: formData.get('name'),
           nameEn: formData.get('nameEn') || data.nameEn || '',
           username: formData.get('username').trim(),
-          password: generatedPasswordHash,
+          ...(submittingPassword ? { password: generatedPasswordHash } : {}),
           email: formData.get('email'),
           jobTitle: formData.get('jobTitle') || '',
           role,
