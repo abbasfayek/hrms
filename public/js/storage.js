@@ -829,6 +829,7 @@ class StorageService {
     const companies = this.get(STORAGE_KEYS.COMPANIES, defaultCompanies);
     const users = (this.get(STORAGE_KEYS.USERS, defaultUsers) || []).map((u) => ({
       ...u,
+      _rawPermissions: u.permissions,
       permissions: getEffectivePermissions(u),
     }));
     const settings = this.get(STORAGE_KEYS.SETTINGS, defaultSettings);
@@ -954,18 +955,33 @@ class StorageService {
 
   // Users Mutators
   saveUsers(users) {
+    // _rawPermissions is UI-only metadata captured in getState() — it must
+    // never reach storage. Restore the EXACT raw permissions it recorded
+    // (undefined nulls back to absence; JSON.stringify drops undefined keys)
+    // and drop the field on every user, so no save path (edit, add, delete,
+    // sync) ever bakes derived permissions or leaks the marker to disk.
+    const sanitized = (users || []).map((u) => {
+      const clean = { ...u };
+      if (clean && '_rawPermissions' in clean) {
+        clean.permissions = clean._rawPermissions;
+      }
+      delete clean._rawPermissions;
+      return clean;
+    });
     const current = this.get(STORAGE_KEYS.USERS, []) || [];
     const protectedAccounts = (current.filter((u) => u && u.protected)) || [];
     if (protectedAccounts.length > 0) {
       const protectedIds = new Set(protectedAccounts.map((u) => u.id));
-      const merged = (users || []).filter((u) => u && !protectedIds.has(u.id));
+      const merged = sanitized.filter((u) => u && !protectedIds.has(u.id));
       protectedAccounts.forEach((sp) => {
         const i = merged.findIndex((u) => u && u.id === sp.id);
         if (i >= 0) merged.splice(i, 1);
       });
-      users = protectedAccounts.concat(merged);
+      sanitized.length = 0;
+      protectedAccounts.forEach((sp) => sanitized.push(sp));
+      sanitized.push(...merged);
     }
-    this.set(STORAGE_KEYS.USERS, users);
+    this.set(STORAGE_KEYS.USERS, sanitized);
   }
 
   addUser(user) {

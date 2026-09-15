@@ -330,7 +330,7 @@ export function openUserModal(user = null, onSaved) {
         // - untouched row with marker              → preserve the stored explicit set verbatim (incl. zero)
         // - untouched legacy row (no marker)       → preserve the stored value / role-defaults behavior
         const wasOverride = data.permissionsExplicit === true;
-        const storedPermissions = Array.isArray(data.permissions) ? data.permissions : [];
+        const storedPermissions = Array.isArray(data._rawPermissions) ? data._rawPermissions : (Array.isArray(data.permissions) ? data.permissions : []);
         const checkedAll = Array.from(overlay.querySelectorAll('input[name="perm"]:checked')).map((cb) => cb.value).map(String);
         let permissions;
         let permissionsExplicit;
@@ -348,8 +348,9 @@ export function openUserModal(user = null, onSaved) {
           permissions = storedPermissions;
           permissionsExplicit = false;
         } else {
+          // Legacy no-touch default row (permissions: [], no marker): preserve
+          // the record as-is — never write the permissionsExplicit marker.
           permissions = [];
-          permissionsExplicit = false;
         }
 
         const formData = new FormData(form);
@@ -378,7 +379,7 @@ export function openUserModal(user = null, onSaved) {
           jobTitle: formData.get('jobTitle') || '',
           role,
           permissions,
-          permissionsExplicit,
+          ...(permissionsExplicit !== undefined ? { permissionsExplicit } : {}),
           assignedCompanyId: role === 'super_admin' ? 'all' : formData.get('assignedCompanyId'),
           // Phase 2: financial roles are company-scoped — branch always forced to
           // 'all' (their batches span branches within the assigned company).
@@ -386,8 +387,24 @@ export function openUserModal(user = null, onSaved) {
           avatar: (formData.get('name') || 'م').charAt(0),
         };
 
-        const usersList = state.users.filter((u) => u.id !== updatedUser.id);
-        usersList.push(updatedUser);
+        // Strip _rawPermissions (UI-only metadata) before persisting.
+        // For non-edited users, restore the exact raw stored permissions so
+        // that the derivation from getState() never bakes effective perms to
+        // disk (arrays stay as stored; undefined/null serialize back to the
+        // original absence — JSON.stringify drops undefined-valued keys).
+        const cleanUpdatedUser = { ...updatedUser };
+        delete cleanUpdatedUser._rawPermissions;
+        const usersList = state.users
+          .filter((u) => u.id !== updatedUser.id)
+          .map((u) => {
+            const clean = { ...u };
+            if ('_rawPermissions' in clean) {
+              clean.permissions = clean._rawPermissions;
+            }
+            delete clean._rawPermissions;
+            return clean;
+          });
+        usersList.push(cleanUpdatedUser);
         storage.saveUsers(usersList);
 
         storage.addAudit(isEn ? 'edit' : 'تعديل', 'user', `${updatedUser.name} (${updatedUser.username}) — ${permissions.length} ${t('users.permissions')}`, updatedUser.id);
