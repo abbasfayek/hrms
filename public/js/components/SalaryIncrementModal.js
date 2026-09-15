@@ -2,6 +2,7 @@
 // Salary Increment & Progression Modal
 // ==========================================
 
+import { Icons } from '../icons.js';
 import { storage } from '../storage.js';
 import { toast } from './Toast.js';
 import { createModal } from './Modal.js';
