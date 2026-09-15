@@ -212,7 +212,6 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     'companies.view', 'companies.manage',
     'reports.view', 'reports.export',
     'audit.view',
-    'settings.view',
   ],
   branch_hr: [
     'dashboard.view',

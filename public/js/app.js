@@ -39,6 +39,12 @@ const ROUTE_PERMISSIONS = {
   settings: 'settings.view',
 };
 
+// Routes that are server-side super-only (server-authz READ/WRITE_GATES mark
+// users/settings with superOnly: true). The client mirrors that: these pages
+// may only be seen and opened by a super_admin, regardless of granular
+// permission grants, so a non-super user never gets a broken 403 screen.
+const SUPER_ONLY_ROUTES = new Set(['users', 'settings']);
+
 
 class HRMSApp {
   constructor() {
@@ -241,7 +247,9 @@ class HRMSApp {
     document.querySelectorAll('.nav-item[data-route]').forEach((link) => {
       const route = link.getAttribute('data-route');
       const perm = ROUTE_PERMISSIONS[route];
-      const hidden = (route === 'payroll' && payrollLocked) || (perm && !can(user, perm));
+      const hidden = (route === 'payroll' && payrollLocked)
+        || (SUPER_ONLY_ROUTES.has(route) && (!user || user.role !== 'super_admin'))
+        || (perm && !can(user, perm));
       link.style.display = hidden ? 'none' : '';
     });
   }
@@ -396,8 +404,10 @@ class HRMSApp {
 
   navigateTo(route, options = {}) {
     // Route guard: redirect to dashboard when the user lacks permission.
+    const user = storage.getActiveUser();
     const required = ROUTE_PERMISSIONS[route];
-    if (required && !can(storage.getActiveUser(), required)) {
+    const superOnlyBlocked = SUPER_ONLY_ROUTES.has(route) && (!user || user.role !== 'super_admin');
+    if (superOnlyBlocked || (required && !can(user, required))) {
       if (route !== 'dashboard') {
         toast.error(t('route.noAccess'));
         this.navigateTo('dashboard');
