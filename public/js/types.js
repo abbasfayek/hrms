@@ -261,15 +261,18 @@ export const DEFAULT_ROLE_PERMISSIONS = {
 
 /**
  * Check whether a user has a permission.
- * A user is granted their explicit permissions array only when it is
- * NON-empty. undefined / null / [] all mean "no explicit overrides" and
- * fall back to the role's default set. This keeps the client semantics
- * identical to the server (server-authz.getEffectivePerms), so saving a
- * user through the modal without touching any checkbox never wipes their
- * permissions to zero.
+ *
+ * A stored `permissionsExplicit: true` marks the permissions array as an
+ * explicit override chosen by an admin — empty means "grant nothing" — and is
+ * honored verbatim. Without that marker (legacy rows, or users saved before
+ * the marker existed) a NON-empty array is honored as the explicit set, while
+ * undefined / null / [] fall back to the role's default set. This keeps the
+ * client semantics identical to the server (server-authz.getEffectivePerms),
+ * so a row saved as role-defaults still resolves through the same path.
  */
 export function getEffectivePermissions(user) {
   if (!user) return [];
+  if (user.permissionsExplicit === true) return Array.isArray(user.permissions) ? user.permissions : [];
   if (Array.isArray(user.permissions) && user.permissions.length > 0) return user.permissions;
   return DEFAULT_ROLE_PERMISSIONS[user.role] || [];
 }

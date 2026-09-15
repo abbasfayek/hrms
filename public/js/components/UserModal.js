@@ -34,6 +34,12 @@ export function openUserModal(user = null, onSaved) {
     avatar: 'م',
   };
 
+  // Grid-interaction state — decides whether a save persists an explicit set
+  // (permissionsExplicit: true) or leaves the role defaults in effect:
+  // - dirty:        the admin manually toggled a checkbox / select-all / clear-all
+  // - pendingReset: "reset to role defaults" (button or role change) was used
+  const permState = { dirty: false, pendingReset: false };
+
   // Safe (escaped) versions of user-controlled fields for template interpolation
   const safe = {
     name: escapeHtml(data.name || ''),
@@ -189,14 +195,6 @@ export function openUserModal(user = null, onSaved) {
     <button type="button" class="btn btn-primary submit-user-btn">${t('save')}</button>
   `;
 
-  const collectPermissions = (overlay) => {
-    // Only collect explicitly checked permissions (user manually checked them)
-    // Role defaults are applied automatically by the server/client logic
-    return Array.from(overlay.querySelectorAll('input[name="perm"]:checked'))
-      .filter((cb) => cb.dataset.explicit === 'true')
-      .map((cb) => cb.value);
-  };
-
   const applyRoleDefaults = (overlay, role) => {
     const defaults = DEFAULT_ROLE_PERMISSIONS[role] || [];
     overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
@@ -207,6 +205,8 @@ export function openUserModal(user = null, onSaved) {
       cb.dataset.explicit = 'false';
     });
     refreshPermissionState(overlay);
+    permState.dirty = false;
+    permState.pendingReset = true;
   };
 
   const applyToggleAllForModule = (overlay, moduleId, checked) => {
@@ -218,6 +218,7 @@ export function openUserModal(user = null, onSaved) {
         cb.dataset.explicit = checked ? 'true' : 'false';
       }
     });
+    permState.dirty = true;
     refreshPermissionState(overlay);
   };
 
@@ -300,6 +301,7 @@ export function openUserModal(user = null, onSaved) {
       // Individual checkbox changes = explicit user choice
       overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
         cb.addEventListener('change', () => {
+          permState.dirty = true;
           cb.dataset.explicit = cb.checked ? 'true' : 'false';
           refreshPermissionState(overlay);
         });
@@ -322,9 +324,33 @@ export function openUserModal(user = null, onSaved) {
           return;
         }
 
-        const explicitPermissions = collectPermissions(overlay);
-        // Allow empty explicit permissions - role defaults will apply automatically
-        const permissions = explicitPermissions;
+        // Save-decision for the permission set:
+        // - dirty (manual toggle)                  → commit the worked-on checked set as explicit
+        // - pendingReset (reset / role change)     → back to the selected role's defaults
+        // - untouched row with marker              → preserve the stored explicit set verbatim (incl. zero)
+        // - untouched legacy row (no marker)       → preserve the stored value / role-defaults behavior
+        const wasOverride = data.permissionsExplicit === true;
+        const storedPermissions = Array.isArray(data.permissions) ? data.permissions : [];
+        const checkedAll = Array.from(overlay.querySelectorAll('input[name="perm"]:checked')).map((cb) => cb.value).map(String);
+        let permissions;
+        let permissionsExplicit;
+        if (permState.dirty) {
+          permissions = checkedAll;
+          permissionsExplicit = true;
+        } else if (permState.pendingReset) {
+          permissions = [];
+          permissionsExplicit = false;
+        } else if (wasOverride) {
+          permissions = storedPermissions;
+          permissionsExplicit = true;
+        } else if (storedPermissions.length > 0) {
+          // Pre-marker legacy explicit row — keep the stored set and legacy shape.
+          permissions = storedPermissions;
+          permissionsExplicit = false;
+        } else {
+          permissions = [];
+          permissionsExplicit = false;
+        }
 
         const formData = new FormData(form);
         const role = formData.get('role');
@@ -352,6 +378,7 @@ export function openUserModal(user = null, onSaved) {
           jobTitle: formData.get('jobTitle') || '',
           role,
           permissions,
+          permissionsExplicit,
           assignedCompanyId: role === 'super_admin' ? 'all' : formData.get('assignedCompanyId'),
           // Phase 2: financial roles are company-scoped — branch always forced to
           // 'all' (their batches span branches within the assigned company).

@@ -84,6 +84,9 @@ export const DEFAULT_ROLE_PERMISSIONS = {
 // ----- Core permission helpers -----
 export function getEffectivePerms(user) {
   if (!user) return [];
+  // permissionsExplicit === true marks an admin-chosen set (empty = grant nothing).
+  // Absent/false keeps legacy semantics: non-empty honors the set, otherwise role defaults.
+  if (user.permissionsExplicit === true) return Array.isArray(user.permissions) ? user.permissions : [];
   if (Array.isArray(user.permissions) && user.permissions.length) return user.permissions;
   return DEFAULT_ROLE_PERMISSIONS[user.role] || [];
 }
