@@ -195,18 +195,25 @@ export function openUserModal(user = null, onSaved) {
     <button type="button" class="btn btn-primary submit-user-btn">${t('save')}</button>
   `;
 
-  const applyRoleDefaults = (overlay, role) => {
+  const applyRoleDefaults = (overlay, role, markReset = false) => {
     const defaults = DEFAULT_ROLE_PERMISSIONS[role] || [];
     overlay.querySelectorAll('input[name="perm"]').forEach((cb) => {
-      const wasExplicit = cb.dataset.explicit === 'true';
       const isDefault = defaults.includes(cb.value);
       cb.checked = isDefault;
       // Role defaults are NOT explicit - user hasn't manually chosen them
       cb.dataset.explicit = 'false';
     });
     refreshPermissionState(overlay);
-    permState.dirty = false;
-    permState.pendingReset = true;
+    // P10-5: a role-change repaint is only a PREVIEW of the new role's
+    // defaults — it must NOT turn the upcoming save into a permission reset.
+    // Only an explicit "Reset to role defaults" (or creating a brand-new user)
+    // may latch the reset decision (pendingReset), which keeps the save
+    // flowing into the preserve paths when a role is changed without any
+    // permission edit.
+    if (markReset) {
+      permState.dirty = false;
+      permState.pendingReset = true;
+    }
   };
 
   const applyToggleAllForModule = (overlay, moduleId, checked) => {
@@ -266,7 +273,7 @@ export function openUserModal(user = null, onSaved) {
           .join('');
       }
 
-      function updateRoleVisibility(applyDefaults = true) {
+      function updateRoleVisibility(applyDefaults = true, markReset = false) {
         const role = roleSelect.value;
         // Phase 2 (Spec v1.0): the financial roles (payroll_admin, audit_reviewer,
         // payments_officer) are company-scoped — company selector shown, branch hidden.
@@ -282,13 +289,16 @@ export function openUserModal(user = null, onSaved) {
           branchGroup.style.display = 'block';
           updateBranchesDropdown();
         }
-        if (applyDefaults) applyRoleDefaults(overlay, role);
+        // On role CHANGE the repaint is a preview only (markReset stays false),
+        // so changing a role never wipes the saved permission decision. New-user
+        // creation still latches the reset so the row saves as clean role defaults.
+        if (applyDefaults) applyRoleDefaults(overlay, role, markReset);
       }
 
       roleSelect.addEventListener('change', () => updateRoleVisibility(true));
       compSelect.addEventListener('change', updateBranchesDropdown);
       // On brand-new users apply the selected role's defaults; on edit keep the saved custom set.
-      updateRoleVisibility(!isEdit);
+      updateRoleVisibility(!isEdit, !isEdit);
 
       // Module-level select-all / clear-all
       overlay.querySelectorAll('.perm-select-all').forEach((btn) => {
@@ -307,10 +317,10 @@ export function openUserModal(user = null, onSaved) {
         });
       });
 
-      // Reset to role defaults
+      // Reset to role defaults (the ONLY intent that may latch a permission reset)
       overlay.querySelector('#btn-reset-role-defaults')?.addEventListener('click', () => {
-        applyRoleDefaults(overlay, roleSelect.value);
-        toast.info(isEn ? 'Permissions reset to the selected role defaults.' : 'تمت استعادة الصلاحيات الافتراضية للدور المحدد.');
+        applyRoleDefaults(overlay, roleSelect.value, true);
+        toast.success(isEn ? 'Permissions reset to the selected role defaults.' : 'تمت استعادة الصلاحيات الافتراضية للدور المحدد.');
       });
 
       // Count initial selection
@@ -326,9 +336,11 @@ export function openUserModal(user = null, onSaved) {
 
         // Save-decision for the permission set:
         // - dirty (manual toggle)                  → commit the worked-on checked set as explicit
-        // - pendingReset (reset / role change)     → back to the selected role's defaults
+        // - pendingReset (Reset button / new user) → back to the selected role's defaults
         // - untouched row with marker              → preserve the stored explicit set verbatim (incl. zero)
         // - untouched legacy row (no marker)       → preserve the stored value / role-defaults behavior
+        // Note (P10-5): a role CHANGE alone never sets dirty or pendingReset,
+        // so it flows into the preserve paths below.
         const wasOverride = data.permissionsExplicit === true;
         const storedPermissions = Array.isArray(data._rawPermissions) ? data._rawPermissions : (Array.isArray(data.permissions) ? data.permissions : []);
         const checkedAll = Array.from(overlay.querySelectorAll('input[name="perm"]:checked')).map((cb) => cb.value).map(String);
@@ -344,9 +356,10 @@ export function openUserModal(user = null, onSaved) {
           permissions = storedPermissions;
           permissionsExplicit = true;
         } else if (storedPermissions.length > 0) {
-          // Pre-marker legacy explicit row — keep the stored set and legacy shape.
+          // Pre-marker legacy explicit row — keep the stored set and the legacy
+          // shape (NO permissionsExplicit key at all), so a no-touch save of a
+          // row that never carried the marker never gains one (P10-5).
           permissions = storedPermissions;
-          permissionsExplicit = false;
         } else {
           // Legacy no-touch default row (permissions: [], no marker): preserve
           // the record as-is — never write the permissionsExplicit marker.
