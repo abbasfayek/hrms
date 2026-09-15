@@ -692,10 +692,14 @@ class StorageService {
     this.set(STORAGE_KEYS.ACTIVE_USER_ID, userId);
     const user = this.getActiveUser();
     
+    // P10-4: the financial roles (payroll_admin, audit_reviewer, payments_officer)
+    // are company-scoped exactly like company_hr — session company = assigned
+    // company, branch initialised to 'all' (spanning the company's branches).
+    const companyScopedHr = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
     if (user.role === 'branch_hr') {
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, user.assignedCompanyId);
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, user.assignedBranchId);
-    } else if (user.role === 'company_hr') {
+    } else if (companyScopedHr.includes(user.role)) {
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, user.assignedCompanyId);
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
     } else {
@@ -706,7 +710,8 @@ class StorageService {
 
   getSelectedCompanyId() {
     const user = this.getActiveUser();
-    if (user.role === 'branch_hr' || user.role === 'company_hr') {
+    if (user.role === 'branch_hr' || user.role === 'company_hr'
+      || user.role === 'payroll_admin' || user.role === 'audit_reviewer' || user.role === 'payments_officer') {
       return user.assignedCompanyId;
     }
     return this.get(STORAGE_KEYS.SELECTED_COMPANY_ID, 'all');
