@@ -937,7 +937,7 @@ function translateLegacyArabicText(value) {
 
 class I18nService {
   constructor() {
-    this.currentLang = localStorage.getItem('hrms_lang_v1') || 'ar';
+    this.currentLang = (typeof localStorage !== 'undefined' && localStorage.getItem) ? (localStorage.getItem('hrms_lang_v1') || 'ar') : 'ar';
     this.listeners = new Set();
   }
 
@@ -948,7 +948,7 @@ class I18nService {
   setLang(lang) {
     if (lang !== 'ar' && lang !== 'en') lang = 'ar';
     this.currentLang = lang;
-    localStorage.setItem('hrms_lang_v1', lang);
+    if (typeof localStorage !== 'undefined' && localStorage.setItem) localStorage.setItem('hrms_lang_v1', lang);
 
     document.documentElement.lang = lang;
     document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';

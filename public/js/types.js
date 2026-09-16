@@ -232,7 +232,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
   // to financial audit. It may NOT approve, reject, disburse or archive.
   payroll_admin: [
     'dashboard.view',
-    'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.submit', 'payroll.export',
+'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.submit', 'payroll.export', 'payroll.cancelPayment',
     'payroll.correction.create', 'payroll.correction.manual',
     'reports.view',
   ],

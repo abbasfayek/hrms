@@ -7,7 +7,7 @@ import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency, escapeHtml } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
 import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded } from '../engines/payrollAccess.js';
-import { disbursePayrollAtomic } from '../engines/payrollDisbursement.js';
+import { disbursePayrollAtomic, reversePayrollDisbursementAtomic } from '../engines/payrollDisbursement.js';
 import { transitionCorrectionGuarded, coApproveCorrectionGuarded, archiveCorrectionGuarded } from '../engines/payrollCorrectionAccess.js';
 import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { openPayslipModal } from './PayslipModal.js';
@@ -19,6 +19,7 @@ import { openLoanReceiptModal } from './LoanReceiptModal.js';
 import { openDeductionBonusModal, openDeductionsBonusesListModal } from './DeductionBonusModal.js';
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
 import { openPayrollCorrectionModal } from './PayrollCorrectionModal.js';
+import { openPayrollFullReturnModal } from './PayrollFullReturnModal.js';
 
 import { toast } from './Toast.js';
 import { showConfirmDialog, createModal } from './Modal.js';
@@ -1453,13 +1454,35 @@ export function renderPayrollView(container, options = {}) {
       });
 
       contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
-        if (!currentBatch || !canCreateCorrection) return;
-        performPayrollFullReturn(currentBatch, () => {
-          currentMonth = currentBatch?.month || currentMonth;
-          currentBatch = null;
-          statusFilter = 'paid';
-          updateHeaderTabs();
-          renderTabContent();
+        if (!currentBatch) return;
+        const canCancel = can(state.currentUser, 'payroll.cancelPayment') || state.currentUser?.role === 'super_admin';
+        if (!canCancel) {
+          toast.error(isEn ? 'Insufficient permissions to return this payroll.' : 'لا تملك صلاحية ترجيع هذا المسير.');
+          return;
+        }
+        if (!requireBranchForAction()) return;
+        openPayrollFullReturnModal({
+          batch: currentBatch,
+          onConfirmed: (reason) => {
+            const res = reversePayrollDisbursementAtomic({
+              user: state.currentUser,
+              batch: currentBatch,
+              reason,
+              storage,
+              context: getBranchContext(),
+            });
+            if (!res.ok) {
+              toast.error(isEn ? `Failed to return payroll: ${res.error}` : `فشل ترجيع المسير: ${res.error}`);
+              return;
+            }
+            toast.success(isEn ? 'Payroll successfully returned and loan installments reversed.' : 'تم ترجيع المسير بنجاح وعكس أقساط السلف.');
+            currentMonth = currentBatch?.month || currentMonth;
+            currentBatch = res.batch;
+            statusFilter = 'fully_returned';
+            activeTab = 'fully_returned';
+            updateHeaderTabs();
+            renderTabContent();
+          },
         });
       });
 

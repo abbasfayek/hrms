@@ -8,6 +8,7 @@
 // ==========================================
 
 import { transitionPayrollGuarded } from './payrollAccess.js';
+import { can } from '../types.js';
 
 // In-flight tracking to prevent concurrent/double submission
 const inFlightDisbursements = new Set();
@@ -175,5 +176,106 @@ export function disbursePayrollAtomic({
     }
   } finally {
     inFlightDisbursements.delete(key);
+  }
+}
+
+/**
+ * Executes a structured financial full return on a paid payroll batch,
+ * reversing associated loan deductions atomically.
+ */
+export function reversePayrollDisbursementAtomic({
+  user,
+  batch,
+  reason,
+  storage,
+  context,
+  by,
+} = {}) {
+  if (!batch || typeof batch !== 'object') {
+    return { ok: false, error: 'invalid_batch', layer: 'validation' };
+  }
+  if (!storage || typeof storage.getState !== 'function') {
+    return { ok: false, error: 'invalid_storage', layer: 'system' };
+  }
+  if (!reason || !String(reason).trim()) {
+    return { ok: false, error: 'missing_return_reason', layer: 'validation' };
+  }
+  if (batch.status !== 'paid') {
+    return { ok: false, error: 'batch_not_paid', layer: 'state' };
+  }
+  if (batch.fullReturn && batch.fullReturn.completed) {
+    return { ok: false, error: 'already_fully_returned', layer: 'state' };
+  }
+
+  // Permission check: require payroll.cancelPayment (or super_admin)
+  if (!user || (!can(user, 'payroll.cancelPayment') && user.role !== 'super_admin')) {
+    return { ok: false, error: 'permission_denied', layer: 'permission' };
+  }
+
+  const actorName = by || user?.name || user?.username || 'HR Manager';
+  const targetMonth = batch.month;
+
+  const originalPayrolls = JSON.parse(JSON.stringify(storage.getState().payrolls || []));
+  const originalLoans = JSON.parse(JSON.stringify(storage.getState().loans || []));
+
+  const allLoans = JSON.parse(JSON.stringify(originalLoans));
+  let loansReversed = false;
+
+  (batch.items || []).forEach((it) => {
+    const installment = Number(it.loanInstallment) || 0;
+    if (installment <= 0) return;
+    const loan = allLoans.find((l) => l.employeeId === it.employeeId);
+    if (!loan || !Array.isArray(loan.installments)) return;
+    const scheduleEntry = loan.installments.find((x) => x.month === targetMonth && x.isPaid);
+    if (!scheduleEntry) return;
+
+    scheduleEntry.isPaid = false;
+    delete scheduleEntry.paidAt;
+
+    loan.paidAmount = Math.max(0, Number(((Number(loan.paidAmount) || 0) - installment).toFixed(2)));
+    loan.remainingAmount = Number(((Number(loan.remainingAmount) || 0) + installment).toFixed(2));
+    if (loan.status === 'settled') {
+      loan.status = 'active';
+      delete loan.settledAt;
+    }
+    loansReversed = true;
+  });
+
+  const updatedBatch = JSON.parse(JSON.stringify(batch));
+  updatedBatch.fullReturn = {
+    completed: true,
+    at: new Date().toISOString(),
+    by: actorName,
+    reason: String(reason).trim(),
+    previousStatus: 'paid',
+  };
+  updatedBatch.updatedAt = new Date().toISOString();
+
+  try {
+    storage.addPayrollBatch(updatedBatch);
+    if (loansReversed) {
+      storage.saveLoans(allLoans);
+    }
+    storage.addAudit('full_return', 'payroll', `${targetMonth} → fully returned: ${String(reason).trim()}`, updatedBatch.id);
+
+    return {
+      ok: true,
+      batch: updatedBatch,
+      loansReversed,
+    };
+  } catch (err) {
+    try {
+      storage.savePayrolls(originalPayrolls);
+      if (loansReversed) storage.saveLoans(originalLoans);
+    } catch (rbErr) {
+      console.error('Critical rollback error during payroll full return:', rbErr);
+    }
+    return {
+      ok: false,
+      layer: 'storage',
+      error: err.message || 'storage_write_failure',
+      rolledBack: true,
+      batch,
+    };
   }
 }
