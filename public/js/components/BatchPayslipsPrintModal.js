@@ -296,9 +296,6 @@ function generateSingleSlipHtml(it, payrollBatch, opts, isForPrintWindow = false
           <div>${isEn ? 'Document Ref:' : 'رقم المستند:'} <strong>${docRef}</strong></div>
           <div style="margin-top:2px;">${isEn ? 'Print Date:' : 'تاريخ الطباعة:'} ${printDate}</div>
           <div style="margin-top:2px;">${pageInfo}</div>
-          <div style="margin-top:6px; font-weight:700; color:#4f46e5; font-size:10px;">
-            ${isEn ? `Issued from ${programNameDisplay}` : `صادر من برنامج ${programNameDisplay}`}
-          </div>
         </div>
       </div>
 

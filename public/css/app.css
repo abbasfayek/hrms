@@ -943,6 +943,35 @@ body {
     font-size: 11pt;
   }
 
+  @page {
+    margin-bottom: 20mm;
+  }
+
+  body::after {
+    content: "صادر من برنامج بينو سوفت لإدارة الموارد البشرية";
+    display: block;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 10px;
+    color: #64748b;
+    padding: 10px;
+    border-top: 1px solid #e2e8f0;
+    background: #ffffff;
+    z-index: 9999;
+  }
+
+  html[lang="en"] body::after, html[dir="ltr"] body::after {
+    content: "Issued from HRMS Enterprise";
+  }
+
+  tr, td, th, .item-row {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
   .sidebar, .navbar, .btn, .modal-footer, .no-print, .toast-container, .tabs-header {
     display: none !important;
   }
