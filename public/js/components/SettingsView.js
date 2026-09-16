@@ -812,7 +812,7 @@ export function renderSettingsView(container) {
         toast.success(isEn ? 'Backup restored successfully!' : 'تمت استعادة النسخة الاحتياطية بنجاح!');
         renderSettingsView(container);
       } else {
-        toast.error(isEn ? `Failed to restore backup: ${res.error}` : `فشل استعادة النسخة: ${res.error}`);
+        toast.error(isEn ? `Failed to restore backup: ${storage.recordErrorText(res.error, isEn)}` : `فشل استعادة النسخة: ${storage.recordErrorText(res.error, isEn)}`);
       }
     };
     reader.readAsText(file);
@@ -856,7 +856,7 @@ export function renderSettingsView(container) {
     } else if (res.status === 401) {
       toast.error(isEn ? 'Enter the correct current token to change or disable protection.' : 'أدخل الرمز الحالي الصحيح لتغيير الحماية أو إيقافها.');
     } else {
-      toast.error(isEn ? `Failed: ${data.error || 'Unknown error'}` : `فشل التحديث: ${data.error || 'خطأ غير معروف'}`);
+      toast.error(isEn ? `Failed: ${storage.recordErrorText(data.error || 'unknown_error', isEn)}` : `فشل التحديث: ${storage.recordErrorText(data.error || 'unknown_error', isEn)}`);
     }
   };
 

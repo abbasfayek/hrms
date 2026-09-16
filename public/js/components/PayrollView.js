@@ -732,7 +732,7 @@ export function renderPayrollView(container, options = {}) {
           });
 
           if (!result.ok) {
-            toast.error(isEn ? `Cannot execute payment: ${result.error}` : `تعذر تنفيذ الصرف: ${result.error}`);
+            toast.error(isEn ? `Cannot execute payment: ${storage.recordErrorText(result.error, isEn)}` : `تعذر تنفيذ الصرف: ${storage.recordErrorText(result.error, isEn)}`);
             return;
           }
 
@@ -1339,7 +1339,7 @@ export function renderPayrollView(container, options = {}) {
             // overwrite the Returned record, destroy its rejection history and
             // bypass the permission/scope guard. Abort and alert instead.
             if (!corr.ok) {
-              toast.error(isEn ? `Cannot record correction: ${corr.error}` : `تعذر تسجيل التصحيح: ${corr.error}`);
+              toast.error(isEn ? `Cannot record correction: ${storage.recordErrorText(corr.error, isEn)}` : `تعذر تسجيل التصحيح: ${storage.recordErrorText(corr.error, isEn)}`);
               renderTabContent();
               return;
             }
@@ -1388,7 +1388,7 @@ export function renderPayrollView(container, options = {}) {
           rejectionReason: rejectionNote,
         });
         if (!res.ok) {
-          toast.error(isEn ? `Cannot transfer: ${res.error}` : `تعذر الترحيل: ${res.error}`);
+          toast.error(isEn ? `Cannot transfer: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الترحيل: ${storage.recordErrorText(res.error, isEn)}`);
           return;
         }
         currentBatch = res.batch;
@@ -1415,7 +1415,7 @@ export function renderPayrollView(container, options = {}) {
           reason: isEn ? 'Corrected and resubmitted after audit return' : 'تصحيح وإعادة إرسال بعد إعادة التدقيق',
         });
         if (!corr.ok) {
-          toast.error(isEn ? `Cannot record correction: ${corr.error}` : `تعذر تسجيل التصحيح: ${corr.error}`);
+          toast.error(isEn ? `Cannot record correction: ${storage.recordErrorText(corr.error, isEn)}` : `تعذر تسجيل التصحيح: ${storage.recordErrorText(corr.error, isEn)}`);
           renderTabContent();
           return;
         }
@@ -1472,7 +1472,7 @@ export function renderPayrollView(container, options = {}) {
               context: getBranchContext(),
             });
             if (!res.ok) {
-              toast.error(isEn ? `Failed to return payroll: ${res.error}` : `فشل ترجيع المسير: ${res.error}`);
+              toast.error(isEn ? `Failed to return payroll: ${storage.recordErrorText(res.error, isEn)}` : `فشل ترجيع المسير: ${storage.recordErrorText(res.error, isEn)}`);
               return;
             }
             toast.success(isEn ? 'Payroll successfully returned and loan installments reversed.' : 'تم ترجيع المسير بنجاح وعكس أقساط السلف.');
@@ -1734,7 +1734,7 @@ export function renderPayrollView(container, options = {}) {
         const auditNote = contentArea.querySelector('#audit-notes-input')?.value || '';
         const res = transitionPayrollGuarded(state.currentUser, selectedAuditBatch, 'approved', { by: storage.getActiveUser()?.name || (isEn ? 'Audit Reviewer' : 'المدقق المالي'), context: getPayrollBranchContext(), rejectionReason: auditNote || (isEn ? 'approved for payment' : 'اعتماد للصرف') });
         if (!res.ok) {
-          toast.error(isEn ? `Cannot approve: ${res.error}` : `تعذر الاعتماد: ${res.error}`);
+          toast.error(isEn ? `Cannot approve: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الاعتماد: ${storage.recordErrorText(res.error, isEn)}`);
           return;
         }
         storage.addPayrollBatch(res.batch);
@@ -1769,7 +1769,7 @@ export function renderPayrollView(container, options = {}) {
               auditNotes: notes,
             });
             if (!res.ok) {
-              toast.error(isEn ? `Cannot reject: ${res.error}` : `تعذر الرفض: ${res.error}`);
+              toast.error(isEn ? `Cannot reject: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الرفض: ${storage.recordErrorText(res.error, isEn)}`);
               return;
             }
             storage.addPayrollBatch(res.batch);
@@ -1933,7 +1933,7 @@ export function renderPayrollView(container, options = {}) {
             onConfirm: () => {
               const res = archivePayrollBatchGuarded(state.currentUser, b, { by: storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام'), context: getPayrollBranchContext() });
               if (!res.ok) {
-                toast.error(isEn ? `Cannot archive: ${res.error}` : `تعذر الأرشفة: ${res.error}`);
+                toast.error(isEn ? `Cannot archive: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الأرشفة: ${storage.recordErrorText(res.error, isEn)}`);
                 return;
               }
               storage.addPayrollBatch(res.batch);
@@ -2293,7 +2293,7 @@ export function renderPayrollView(container, options = {}) {
         }
         if (act === 'coApprove') {
           const res = coApproveCorrectionGuarded(state.currentUser, correction, { by: byName(), context: getPayrollBranchContext() });
-          if (!res.ok) { toast.error(isEn ? `Cannot co-approve: ${res.error}` : `تعذر الاعتماد الثاني: ${res.error}`); return; }
+          if (!res.ok) { toast.error(isEn ? `Cannot co-approve: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الاعتماد الثاني: ${storage.recordErrorText(res.error, isEn)}`); return; }
           storage.addPayrollCorrection(res.correction);
           storage.addAudit('approve', 'payroll', `${res.correction.displayNumber} → dual approved`, res.correction.correctionId);
           toast.success(isEn ? 'Dual approval completed.' : 'تمت الموافقة الثانية.');
@@ -2312,7 +2312,7 @@ export function renderPayrollView(container, options = {}) {
                 const reason = overlay.querySelector('#pc-reject-reason').value.trim();
                 if (!reason) { toast.error(isEn ? 'A rejection reason is required.' : 'سبب الرفض إلزامي.'); return; }
                 const res = transitionCorrectionGuarded(state.currentUser, correction, 'rejected', { by: byName(), context: getPayrollBranchContext(), rejectionReason: reason });
-                if (!res.ok) { toast.error(isEn ? `Cannot return: ${res.error}` : `تعذر الإعادة: ${res.error}`); return; }
+                if (!res.ok) { toast.error(isEn ? `Cannot return: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الإعادة: ${storage.recordErrorText(res.error, isEn)}`); return; }
                 storage.addPayrollCorrection(res.correction);
                 storage.addAudit('reject', 'payroll', `${res.correction.displayNumber} → returned`, res.correction.correctionId);
                 toast.success(isEn ? 'Correction returned for revision.' : 'تمت إعادة التصحيح للمراجعة.');
@@ -2326,7 +2326,7 @@ export function renderPayrollView(container, options = {}) {
         const to = act === 'submit' ? 'under_audit' : act === 'approve' ? 'approved' : act === 'disburse' ? 'paid' : null;
         if (act === 'archive') {
           const res = archiveCorrectionGuarded(state.currentUser, correction, { by: byName(), context: getPayrollBranchContext() });
-          if (!res.ok) { toast.error(isEn ? `Cannot archive: ${res.error}` : `تعذر الأرشفة: ${res.error}`); return; }
+          if (!res.ok) { toast.error(isEn ? `Cannot archive: ${storage.recordErrorText(res.error, isEn)}` : `تعذر الأرشفة: ${storage.recordErrorText(res.error, isEn)}`); return; }
           storage.addPayrollCorrection(res.correction);
           storage.addAudit('archive', 'payroll', `${res.correction.displayNumber} → archived`, res.correction.correctionId);
           toast.success(isEn ? 'Correction archived (now immutable).' : 'تمت أرشفة التصحيح (غير قابل للتعديل الآن).');
@@ -2335,7 +2335,7 @@ export function renderPayrollView(container, options = {}) {
         }
         if (!to) return;
         const res = transitionCorrectionGuarded(state.currentUser, correction, to, { by: byName(), context: getPayrollBranchContext() });
-        if (!res.ok) { toast.error(isEn ? `Cannot ${act}: ${res.error}` : `تعذر ${act}: ${res.error}`); return; }
+        if (!res.ok) { toast.error(isEn ? `Cannot ${act}: ${storage.recordErrorText(res.error, isEn)}` : `تعذر ${act}: ${storage.recordErrorText(res.error, isEn)}`); return; }
         storage.addPayrollCorrection(res.correction);
         storage.addAudit(act, 'payroll', `${res.correction.displayNumber} → ${res.correction.status}`, res.correction.correctionId);
         toast.success(isEn ? `Correction ${res.correction.status}.` : `حالة التصحيح: ${res.correction.status}.`);
