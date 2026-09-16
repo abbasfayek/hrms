@@ -246,7 +246,7 @@ export function openPayrollCorrectionModal({ original, onSaved, existingCorrecti
     overlayEl.querySelector(`#pc-lreason-${i}`).addEventListener('input', (e) => { row.reason = e.target.value; });
     overlayEl.querySelector(`#pc-src-${i}`).addEventListener('input', (e) => { row.sourceRef = e.target.value; refresh(); });
     overlayEl.querySelector(`#pc-manual-${i}`).addEventListener('change', (e) => { row.manual = e.target.checked; refresh(); });
-    overlayEl.querySelector(`.pc-remove-row`).addEventListener('click', () => {
+    overlayEl.querySelector(`[data-pc-row="${i}"] .pc-remove-row`).addEventListener('click', () => {
       if (rows.length === 1) {
         toast.info(isEn ? 'A correction needs at least one line.' : 'يتطلب التصحيح بنداً واحداً على الأقل.');
         return;

@@ -613,8 +613,8 @@ export function renderPayrollView(container, options = {}) {
       targetArea.querySelectorAll('.btn-view-returned-item-payslip').forEach((btn) => {
         btn.addEventListener('click', () => {
           const empId = btn.getAttribute('data-emp-id');
-          const item = selectedBatch?.items?.find((i) => i.employeeId === empId);
-          if (item) openPayslipModal(item, selectedBatch, settings, null, companies);
+          const emp = employees.find((e) => e.id === empId);
+          if (emp && selectedBatch?.month) openPayslipModal(emp, selectedBatch.month);
         });
       });
     }
@@ -1099,7 +1099,7 @@ export function renderPayrollView(container, options = {}) {
               ${isEn ? 'Review the net amounts below, then confirm the final release for everyone on the system.' : 'أجرِ المراجعة النهائية للمبالغ الصافية ثم أكّد التحرير النهائي ليصبح الرواتب متاحة للجميع.'}
             </div>
           </div>
-          <button type="button" class="btn btn-sm btn-success" id="btn-disburse-payroll-banner">
+          <button type="button" class="btn btn-sm btn-success" id="btn-disburse-payroll-banner-final">
             💵 ${isEn ? 'Final Review & Release' : 'مراجعة نهائية وتحرير الرواتب'}
           </button>
         </div>
@@ -1469,6 +1469,7 @@ export function renderPayrollView(container, options = {}) {
 
       contentArea.querySelector('#btn-disburse-payroll')?.addEventListener('click', triggerDisburse);
       contentArea.querySelector('#btn-disburse-payroll-banner')?.addEventListener('click', triggerDisburse);
+      contentArea.querySelector('#btn-disburse-payroll-banner-final')?.addEventListener('click', triggerDisburse);
 
       // Payslip Buttons
       contentArea.querySelectorAll('tr').forEach((row) => {

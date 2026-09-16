@@ -57,6 +57,10 @@ class ToastManager {
   warning(msg) {
     this.show(msg, 'warning');
   }
+
+  info(msg) {
+    this.show(msg, 'info');
+  }
 }
 
 export const toast = new ToastManager();
