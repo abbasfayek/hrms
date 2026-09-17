@@ -242,7 +242,7 @@ class HRMSApp {
    * Hide navigation entries the current user has no permission to open.
    */
   applyNavPermissionFilter() {
-    const user = storage.getActiveUser();
+    const user = auth.getCurrentUser() || storage.getActiveUser();
     const payrollLocked = !isPayrollViewEnabled(storage.getState().settings) && user && user.role !== 'super_admin';
     document.querySelectorAll('.nav-item[data-route]').forEach((link) => {
       const route = link.getAttribute('data-route');

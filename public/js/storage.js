@@ -240,7 +240,10 @@ class StorageService {
       }
     }
     // Attempt to sync from backend server files
-    await this.syncFromServer();
+    const changed = await this.syncFromServer();
+    if (changed) {
+      window.dispatchEvent(new CustomEvent('hrms:sync', { detail: { changed: true } }));
+    }
   }
 
   // Initializes ONLY the storage keys that are missing, so a missing or
@@ -700,7 +703,11 @@ class StorageService {
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, user.assignedCompanyId);
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, user.assignedBranchId);
     } else if (companyScopedHr.includes(user.role)) {
-      this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, user.assignedCompanyId);
+      let compId = user.assignedCompanyId;
+      if (!compId && Array.isArray(user.assignedCompanyIds) && user.assignedCompanyIds.length > 0) {
+        compId = user.assignedCompanyIds[0];
+      }
+      this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, compId || 'all');
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
     } else {
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, 'all');
