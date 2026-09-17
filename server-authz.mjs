@@ -695,9 +695,13 @@ function authorizeIncrementRecord(ctx, rec, storedData) {
 
 // Admin collections that carry no branch/company identity of their own: super
 // writes to these stay exempt from the branch-context requirement.
+// deleted_records is a global, super-only audit registry (it is neither
+// branch-scoped nor a branch-scoped data collection), so a super_admin write
+// must never require an X-Branch-Id. Its per-record scope is carried inside
+// rec.data; the collection is restricted to super_admin by WRITE_GATES.
 const GLOBAL_ADMIN_WRITES = new Set([
   'companies', 'users', 'settings', 'audit', 'audit_trail', 'corrections',
-  'backup', 'restore',
+  'backup', 'restore', 'deleted_records',
 ]);
 
 // Per-record authorization for super_admin writes. Mirrors the paid-seal from
