@@ -154,7 +154,12 @@ export function renderAttendanceOvertimeView(container, options = {}) {
           const ot = overtime.find((o) => o.id === otId);
           if (ot) {
             ot.status = 'approved';
-            storage.saveOvertime(overtime);
+            const res = storage.updateOvertime(ot);
+            if (res && res.ok === false) {
+              toast.error(storage.recordErrorText(res.error, isEn));
+              renderAttendanceOvertimeView(container, { subTab: 'overtime' });
+              return;
+            }
             toast.success(t('att.overtimeApproved'));
             renderAttendanceOvertimeView(container, { subTab: 'overtime' });
           }

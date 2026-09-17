@@ -63,14 +63,10 @@ export async function syncBiometricLogs(config, employees) {
         });
       });
 
-      // Save into storage
-      const state = storage.getState();
-      const currentAttendance = state.attendance || [];
-
-      // Replace only today's machine-sourced biometric entries so manually
-      // recorded attendance and absence records are never overwritten.
-      const filtered = currentAttendance.filter((a) => !(a.date === today && a.source === 'biometric_device'));
-      storage.saveAttendance([...newLogs, ...filtered]);
+      // X-1: merge into the FULL attendance collection; only today's
+      // biometric_device entries for the synced employees are replaced, so
+      // out-of-scope attendance and manual records are never overwritten.
+      storage.upsertBiometricAttendance(newLogs);
 
       resolve({
         success: true,

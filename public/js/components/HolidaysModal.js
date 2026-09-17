@@ -174,12 +174,12 @@ export function openHolidayModal(holiday = null, onSaved) {
           isPaid: true,
         };
 
-        const state = storage.getState();
-        const holidays = state.holidays || [];
-
         if (isEdit) {
-          const updated = holidays.map((h) => (h.id === data.id ? newHol : h));
-          storage.saveHolidays(updated);
+          const resUpdate = storage.updateHoliday(newHol);
+          if (resUpdate && resUpdate.ok === false) {
+            toast.error(storage.recordErrorText(resUpdate.error, isEn));
+            return;
+          }
           toast.success(isEn ? `Holiday ${newHol.name} updated successfully` : `تم تعديل العطلة ${newHol.name} بنجاح`);
         } else {
           const res = storage.addHoliday(newHol);

@@ -267,7 +267,12 @@ export function renderHourlyLeaveView(container, options = {}) {
         req.status = 'approved';
         req.approvedAt = new Date().toISOString();
         req.approvedBy = state.currentUser ? state.currentUser.name : (isEn ? 'Manager' : 'المدير');
-        storage.saveHourlyLeaves(hourlyLeaves);
+        const res = storage.updateHourlyLeave(req);
+        if (res && res.ok === false) {
+          toast.error(storage.recordErrorText(res.error, isEn));
+          render();
+          return;
+        }
         toast.success(isEn ? 'Hourly leave approved' : 'تم اعتماد الإجازة الزمنية بنجاح');
         render();
       });
@@ -286,7 +291,12 @@ export function renderHourlyLeaveView(container, options = {}) {
 
         req.status = 'rejected';
         req.rejectedAt = new Date().toISOString();
-        storage.saveHourlyLeaves(hourlyLeaves);
+        const res = storage.updateHourlyLeave(req);
+        if (res && res.ok === false) {
+          toast.error(storage.recordErrorText(res.error, isEn));
+          render();
+          return;
+        }
         toast.info(isEn ? 'Hourly leave rejected' : 'تم رفض طلب الإجازة الزمنية');
         render();
       });
@@ -305,8 +315,7 @@ export function renderHourlyLeaveView(container, options = {}) {
           message: isEn ? 'Are you sure you want to delete this hourly leave request?' : 'هل أنت متأكد من رغبتك في حذف طلب الإجازة الزمنية هذا؟',
           confirmText: t('delete'),
           onConfirm: () => {
-            const updated = hourlyLeaves.filter((l) => l.id !== id);
-            storage.saveHourlyLeaves(updated);
+            storage.deleteHourlyLeave(id);
             toast.success(isEn ? 'Request deleted' : 'تم حذف الطلب بنجاح');
             render();
           },

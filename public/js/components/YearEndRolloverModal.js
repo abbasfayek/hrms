@@ -12,7 +12,7 @@ import { i18n, t } from '../i18n.js';
 
 export function openYearEndRolloverModal(onExecuted) {
   const state = storage.getState();
-  const { employees, leaves, settings } = state;
+  const { employees, leaves, settings, selectedCompanyId, selectedBranchId } = state;
   const currentYear = new Date().getFullYear();
   const nextYear = currentYear + 1;
   const isEn = i18n.getLang() === 'en';
@@ -169,8 +169,15 @@ export function openYearEndRolloverModal(onExecuted) {
           settings
         );
 
-        storage.saveEmployees(updatedEmployees);
-        toast.success(isEn ? `Leave balances rolled over & renewed for ${targetYear} for all employees!` : `تم بنجاح ترحيل وتجديد أرصدة الإجازات لسنة ${targetYear} لجميع الموظفين!`);
+        // X-1: merge only the rolled-over employees back into the FULL stored
+        // collection, so out-of-scope employees are preserved unchanged.
+        storage.mergeEmployeeUpdatesById(updatedEmployees);
+        const rolloverScoped = selectedCompanyId !== 'all' || selectedBranchId !== 'all';
+        toast.success(
+          rolloverScoped
+            ? (isEn ? `Leave balances rolled over & renewed for ${targetYear} for the selected company/branch scope (${rolloverResults.length} employees).` : `تم بنجاح ترحيل وتجديد أرصدة الإجازات لسنة ${targetYear} للنطاق المحدد (${rolloverResults.length} موظف).`)
+            : (isEn ? `Leave balances rolled over & renewed for ${targetYear} for all employees (${rolloverResults.length} employees).` : `تم بنجاح ترحيل وتجديد أرصدة الإجازات لسنة ${targetYear} لجميع الموظفين (${rolloverResults.length} موظف).`)
+        );
         close();
         if (onExecuted) onExecuted(rolloverResults);
       });

@@ -1035,6 +1035,30 @@ class StorageService {
     this.set(STORAGE_KEYS.EMPLOYEES, employees);
   }
 
+  /**
+   * X-1: Merge a set of employee updates by ID into the FULL stored collection.
+   * Records not present in the update list (out-of-scope employees) are left
+   * intact. IDs that do not exist in the stored collection are ignored, so an
+   * unknown target can never be appended or silently mutated.
+   */
+  mergeEmployeeUpdatesById(updatedList) {
+    const list = this.get(STORAGE_KEYS.EMPLOYEES, []);
+    if (!Array.isArray(updatedList)) return list;
+    const byId = new Map();
+    list.forEach((e) => { if (e && e.id) byId.set(e.id, e); });
+    let touched = false;
+    updatedList.forEach((e) => {
+      if (e && e.id && byId.has(e.id)) {
+        byId.set(e.id, e);
+        touched = true;
+      }
+    });
+    if (!touched) return list;
+    const merged = Array.from(byId.values());
+    this.set(STORAGE_KEYS.EMPLOYEES, merged);
+    return merged;
+  }
+
   saveSettings(settings) {
     this.set(STORAGE_KEYS.SETTINGS, settings);
   }
@@ -1252,6 +1276,21 @@ class StorageService {
 
   // Attendance Mutators
   saveAttendance(att) { this.set(STORAGE_KEYS.ATTENDANCE, att); }
+
+  /**
+   * X-1: Merge biometric-device attendance logs into the FULL attendance
+   * collection. Only today's biometric_device rows for the synced employee IDs
+   * are replaced; other scopes, prior days, and manual/absence rows stay intact.
+   */
+  upsertBiometricAttendance(newLogs) {
+    const list = this.get(STORAGE_KEYS.ATTENDANCE, []);
+    const today = new Date().toISOString().split('T')[0];
+    const syncedEmpIds = new Set((newLogs || []).map((a) => a && a.employeeId).filter(Boolean));
+    const preserved = list.filter((a) => !(a && syncedEmpIds.has(a.employeeId) && a.date === today && a.source === 'biometric_device'));
+    const merged = [...(newLogs || []), ...preserved];
+    this.set(STORAGE_KEYS.ATTENDANCE, merged);
+    return merged;
+  }
   addAttendance(att) {
     const gate = this.branchWriteGuard();
     if (gate) return gate;
@@ -1699,6 +1738,22 @@ class StorageService {
 
   // Holidays Mutators
   saveHolidays(holidays) { this.set(STORAGE_KEYS.HOLIDAYS, holidays); }
+
+  /**
+   * X-1: id-based holiday update against the FULL stored collection, so an
+   * edit of one holiday never replaces unrelated (out-of-scope) holidays.
+   */
+  updateHoliday(hol) {
+    const gate = this.branchWriteGuard();
+    if (gate) return gate;
+    if (!hol || !hol.id) return { ok: false, error: 'invalid_record' };
+    const list = this.get(STORAGE_KEYS.HOLIDAYS, []);
+    const idx = list.findIndex((h) => h && h.id === hol.id);
+    if (idx === -1) return { ok: false, error: 'not_found' };
+    list[idx] = hol;
+    this.set(STORAGE_KEYS.HOLIDAYS, list);
+    return { ok: true, saved: hol };
+  }
   addHoliday(hol) {
     const gate = this.branchWriteGuard();
     if (gate) return gate;
