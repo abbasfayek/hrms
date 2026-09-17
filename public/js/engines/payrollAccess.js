@@ -14,7 +14,7 @@
 // transitionPayroll once all three guards pass.
 
 import { can, getEffectivePermissions } from '../types.js';
-import { transitionPayroll, recordPayrollCorrection, archivePayrollBatch } from './payrollEngine.js';
+import { transitionPayroll, recordPayrollCorrection, archivePayrollBatch, fullReturnPayrollBatch } from './payrollEngine.js';
 
 // Phase 5: security-denial hook. Storage registers itself here (acyclic —
 // payrollAccess has no storage dependency) so a forbidden payroll operation is
@@ -248,6 +248,22 @@ export function archivePayrollBatchGuarded(user, batch, opts = {}) {
   }
   const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
   return archivePayrollBatch(batch, { ...opts, by: opts.by || actor });
+}
+
+/**
+ * Structured full return of a paid batch through the full guard stack
+ * (payroll.cancelPayment → permission/scope/branch-context/state, then the
+ * Phase 1 full-return recorder). This is the ONLY sanctioned engine path from
+ * UI to the paid → approved full return.
+ */
+export function fullReturnPayrollBatchGuarded(user, batch, opts = {}) {
+  const gate = requirePayrollAction(user, 'cancelPayment', batch, opts.context);
+  if (!gate.ok) {
+    reportDenied('cancelPayment', batch, gate);
+    return { ok: false, error: gate.error, layer: gate.layer, batch };
+  }
+  const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
+  return fullReturnPayrollBatch(batch, { ...opts, by: opts.by || actor });
 }
 
 /** Exposure for tests/tooling: what can a user effectively do end-to-end? */

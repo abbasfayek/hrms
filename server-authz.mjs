@@ -527,35 +527,72 @@ function findStoredById(storedData, id) {
   return storedData.find((s) => s && s.id === id) || null;
 }
 
+// Sealed-financial check for a stored 'paid' batch: every monetary value and
+// the sealed exchange-rate snapshot must survive any write untouched, including
+// a genuine structured full return. Returns true when nothing financial moved.
+function paidFinancialsUnchanged(existing, rec) {
+  if (existing && existing.ratesSnapshot && rec && rec.ratesSnapshot &&
+      JSON.stringify(existing.ratesSnapshot) !== JSON.stringify(rec.ratesSnapshot)) return false;
+  const existingItems = (existing && existing.items) || [];
+  const incomingItems = Array.isArray(rec && rec.items) ? rec.items : [];
+  for (const inItem of incomingItems) {
+    const exItem = existingItems.find((it) => it && it.employeeId === inItem.employeeId);
+    if (exItem) {
+      if ((inItem.exchangeRate !== undefined && inItem.exchangeRate !== null && inItem.exchangeRate !== exItem.exchangeRate) ||
+          (inItem.baseAmount !== undefined && inItem.baseAmount !== null && inItem.baseAmount !== exItem.baseAmount) ||
+          inItem.netSalary !== exItem.netSalary ||
+          inItem.grossSalary !== exItem.grossSalary ||
+          inItem.basicSalary !== exItem.basicSalary ||
+          inItem.totalDeductions !== exItem.totalDeductions ||
+          inItem.totalEarnings !== exItem.totalEarnings) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// A genuine structured full return (P4 Fix #1+): the paid batch moves back to
+// 'approved' and must carry the completed fullReturn marker (previousStatus
+// 'paid' + mandatory reason) AND the matching auditHistory entry. Anything else
+// that tries to touch a paid batch remains sealed.
+function isFullReturnPayload(rec) {
+  if (!rec || typeof rec !== 'object' || rec.status !== 'approved') return false;
+  const fr = rec.fullReturn;
+  if (!fr || fr.completed !== true) return false;
+  if (String(fr.previousStatus || '') !== 'paid') return false;
+  if (!String(fr.reason || '').trim()) return false;
+  if (!Array.isArray(rec.auditHistory) ||
+      !rec.auditHistory.some((a) => a && a.action === 'full_return' && a.from === 'paid' && a.to === 'approved')) return false;
+  return true;
+}
+
 // Returns null when allowed, or { reason, status, recordId } to reject.
 function authorizePayrollRecord(ctx, rec, storedData) {
   const { user } = ctx;
   const existing = findStoredById(storedData, rec && rec.id);
   const to = (rec && rec.status) || 'draft';
 
-  // Sealed paid batches are immutable (except for an unchanged echo).
+  // Sealed paid batches are immutable (except for an unchanged echo). The ONLY
+  // sanctioned exit from 'paid' is a genuine structured full return: approved
+  // status + completed fullReturn marker + auditHistory entry, executed by the
+  // payroll.cancelPayment holder. Financial values stay sealed even on a return.
   if (existing && existing.status === 'paid') {
+    if (to === 'approved' && isFullReturnPayload(rec)) {
+      if (!recordWouldChangeStored(existing, rec)) return null;
+      if (!paidFinancialsUnchanged(existing, rec)) {
+        return { reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
+      }
+      if (!can(user, 'payroll.cancelPayment')) {
+        return { reason: 'permission_denied', status: 403, recordId: rec.id };
+      }
+      return null;
+    }
     if (to !== 'paid') return { reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
     if (recordWouldChangeStored(existing, rec)) {
       // Financial snapshots cannot be tampered with on a sealed batch.
-      if (existing.ratesSnapshot && rec.ratesSnapshot && JSON.stringify(existing.ratesSnapshot) !== JSON.stringify(rec.ratesSnapshot)) {
+      if (!paidFinancialsUnchanged(existing, rec)) {
         return { reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
-      }
-      const existingItems = existing.items || [];
-      const incomingItems = Array.isArray(rec.items) ? rec.items : [];
-      for (const inItem of incomingItems) {
-        const exItem = existingItems.find((it) => it && it.employeeId === inItem.employeeId);
-        if (exItem) {
-          if ((inItem.exchangeRate !== undefined && inItem.exchangeRate !== null && inItem.exchangeRate !== exItem.exchangeRate) ||
-              (inItem.baseAmount !== undefined && inItem.baseAmount !== null && inItem.baseAmount !== exItem.baseAmount) ||
-              inItem.netSalary !== exItem.netSalary ||
-              inItem.grossSalary !== exItem.grossSalary ||
-              inItem.basicSalary !== exItem.basicSalary ||
-              inItem.totalDeductions !== exItem.totalDeductions ||
-              inItem.totalEarnings !== exItem.totalEarnings) {
-            return { reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
-          }
-        }
       }
       if (!can(user, 'payroll.edit')) return { reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
     }
@@ -656,10 +693,80 @@ function authorizeIncrementRecord(ctx, rec, storedData) {
   return null;
 }
 
+// Admin collections that carry no branch/company identity of their own: super
+// writes to these stay exempt from the branch-context requirement.
+const GLOBAL_ADMIN_WRITES = new Set([
+  'companies', 'users', 'settings', 'audit', 'audit_trail', 'corrections',
+  'backup', 'restore',
+]);
+
+// Per-record authorization for super_admin writes. Mirrors the paid-seal from
+// authorizePayrollRecord: even the global authority cannot mutate a paid batch
+// except through a genuine full-return payload, and every changed record must
+// belong to the declared branch/company context.
+function authorizeSuperRecord(collection, rec, branchId, companyId, storedData) {
+  const scopeRec = (collection === 'deleted_records' && rec.data && typeof rec.data === 'object')
+    ? rec.data
+    : rec;
+  const recBranch = scopeRec.branchId != null ? String(scopeRec.branchId) : '';
+  const recCompany = scopeRec.companyId != null ? String(scopeRec.companyId) : '';
+
+  const existing = storedData ? findStoredById(storedData, rec && rec.id) : null;
+  const isEcho = existing ? !recordWouldChangeStored(existing, rec) : false;
+  if (!isEcho) {
+    if (recBranch && recBranch !== 'all' && recBranch !== branchId) {
+      return { reason: 'scope_violation', status: 403, recordId: rec.id };
+    }
+    if (companyId && recCompany && recCompany !== 'all' && recCompany !== companyId) {
+      return { reason: 'scope_violation', status: 403, recordId: rec.id };
+    }
+  }
+
+  if (collection === 'payrolls' && existing && existing.status === 'paid') {
+    const to = (rec && rec.status) || 'paid';
+    if (to === 'approved' && isFullReturnPayload(rec)) {
+      if (recordWouldChangeStored(existing, rec) && !paidFinancialsUnchanged(existing, rec)) {
+        return { reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
+      }
+      return null;
+    }
+    if (to !== 'paid') return { reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
+    if (recordWouldChangeStored(existing, rec)) {
+      if (!paidFinancialsUnchanged(existing, rec)) {
+        return { reason: 'paid_batch_snapshot_immutable', status: 403, recordId: rec.id };
+      }
+      return { reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
+    }
+    return null; // unchanged echo of a paid batch
+  }
+  return null;
+}
+
+function validateSuperWrite(collection, incoming, ctx, storedData) {
+  if (incoming.length === 0) return { ok: true };
+  if (GLOBAL_ADMIN_WRITES.has(collection)) return { ok: true };
+
+  // Branch-scoped data collections require ONE concrete declared branch even
+  // for super_admin (the same policy the client enforces): a super write can
+  // never silently span or overwrite multiple branches.
+  const branchId = ctx.declaredBranchId;
+  const companyId = ctx.declaredCompanyId;
+  if (!branchId || branchId === 'all') {
+    return { ok: false, reason: 'branch_required', status: 403 };
+  }
+
+  for (const rec of incoming) {
+    if (!rec || typeof rec !== 'object') continue;
+    const gate = authorizeSuperRecord(collection, rec, branchId, companyId, storedData);
+    if (gate) return gate;
+  }
+  return { ok: true };
+}
+
 // ----- Write scope validation -----
 export function scopeValidateWrite(collection, incoming, ctx, getAllEmployees, storedData = null) {
   if (!Array.isArray(incoming)) return { ok: false, reason: 'payload_not_array', status: 400 };
-  if (isSuper(ctx.user)) return { ok: true };
+  if (isSuper(ctx.user)) return validateSuperWrite(collection, incoming, ctx, storedData);
   if (incoming.length === 0) return { ok: true };
 
   const { scope } = ctx;

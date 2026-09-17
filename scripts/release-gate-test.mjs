@@ -90,6 +90,8 @@ const empB = mkEmp('emp-rel-b', { branchId: 'br-2', basicSalary: 9000, housingAl
 storage.saveEmployees([empA, empB]);
 storage.saveCompanies(defaultCompanies);
 storage.saveSettings({ ...defaultSettings, currencySymbol: '$' });
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 
 console.log('  [Authentication]');
 if (auth) {
@@ -154,12 +156,16 @@ storage.addLoan({ id: 'loan-1', employeeId: empA.id, totalAmount: 1200, paidAmou
 ok('loan stored active', storage.getState().loans.find((l) => l.id === 'loan-1')?.status === 'active');
 
 console.log('  [Increments]');
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-2');
 const inc = applySalaryIncrement({ employee: empB, type: 'percentage', value: 5, effectiveDate: '2026-09-01', reason: 'annual', approvedBy: 'Tester', updateHousingAndTransportProportionally: true });
 ok('applySalaryIncrement returns higher salary', inc.incrementRecord.newTotalSalary > empB.basicSalary);
 storage.addIncrement(inc.incrementRecord);
 ok('increment stored scoped', storage.getState().increments.find((x) => x.id === inc.incrementRecord.id)?.companyId === 'comp-1');
 
 console.log('  [Payroll workflow]');
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('all');
 const MONTH = '2026-08';
 const payrollPaidCheck = (month) => {
   const batch = (storage.getState().payrolls || []).find((b) => b.month === month);

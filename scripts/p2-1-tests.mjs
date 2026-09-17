@@ -41,6 +41,8 @@ store.clear();
 storage.seedIfMissing();
 storage.saveCompanies(defaultCompanies);
 storage.saveSettings({ ...defaultSettings, currencySymbol: '$', dailyRateMethod: 'workingDays' });
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 
 const mkEmp = (id, extra = {}) => ({
   id,
@@ -182,6 +184,7 @@ ok('branch HR sees only its branch leaves', scopedState.leaves.some((l) => l.id 
 ok('branch HR sees only its branch hourly leaves', scopedState.hourlyLeaves.some((h) => h.id === 'hl-scope-a') && !scopedState.hourlyLeaves.some((h) => h.id === 'hl-scope-b'));
 
 storage.setActiveUser('usr-admin');
+storage.setSelectedBranchId('all');
 scopedState = storage.getState();
 ok('super admin sees all attendance after scope switch back', scopedState.attendance.length === 2);
 ok('super admin sees all leaves after scope switch back', scopedState.leaves.length === 2);
@@ -195,6 +198,8 @@ ok('half-day reduces remaining balance by 0.5', Math.abs((halfBal.totalAvailable
 
 console.log('  [Regression anchor: attendance deduction unchanged by guards]');
 storage.saveAttendance([]);
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 storage.addAttendance({ id: 'att-reg-abs', employeeId: empA.id, date: '2026-11-03', status: 'absent' });
 storage.addAttendance({ id: 'att-reg-late', employeeId: empA.id, date: '2026-11-04', status: 'late', lateMinutes: 15 });
 storage.addAttendance({ id: 'att-reg-pres', employeeId: empA.id, date: '2026-11-05', status: 'present' });

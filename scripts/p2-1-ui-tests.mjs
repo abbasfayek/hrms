@@ -63,6 +63,8 @@ storage.saveCompanies(defaultCompanies);
 storage.saveSettings({ ...defaultSettings, currencySymbol: 'ر.س' });
 storage.setSelectedCompanyId('all');
 storage.setSelectedBranchId('all');
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 
 const empA = {
   id: 'emp-ui-1',

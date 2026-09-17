@@ -338,6 +338,11 @@ export function renderEmployeesView(container, options = {}) {
     container.querySelector('#btn-add-employee')?.addEventListener('click', (e) => {
       e.preventDefault();
       if (!canAdd) return;
+      const guard = storage.branchWriteGuard();
+      if (guard) {
+        toast.error(guard.message);
+        return;
+      }
       try {
         openEmployeeModal(null, () => render());
       } catch (err) {

@@ -203,6 +203,8 @@ ok('storage chain still valid after full lifecycle', chainOk.valid === true && c
 console.log('F. EOSB lifecycle (reject → resubmit → approve → paid → cancel)');
 emptyBase();
 storage.setActiveUser(String(ADMIN.id || ADMIN.username));
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 const esb = {
   id: 'E1', employeeId: 'emp-1', status: 'draft',
   netSettlementAmount: 1000, salaryCurrency: 'USD', notes: 'separation',

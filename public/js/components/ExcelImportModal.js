@@ -537,7 +537,8 @@ export function planImport(rows, { employees, companies, settings, mode = 'merge
 /**
  * Mirror of the server's validateServerBranchContext for WRITES: the returned
  * employee list is the set the caller may actually update/create. super_admin
- * spans all companies/branches; branch_hr is pinned to its assigned branch;
+ * is branch-scoped like everyone else — a concrete selectedBranchId is
+ * required (server policy agrees); branch_hr is pinned to its assigned branch;
  * company-scoped roles must have a concrete branch selected when they span
  * several branches.
  */
@@ -545,7 +546,8 @@ export function buildWriteScopeForUser({ user, employees = [], selectedBranchId 
   if (!user) return { ok: false, error: 'no_user' };
   const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
   if (user.role === 'super_admin') {
-    return { ok: true, companyIds: 'all', branchIds: 'all', employees, selectedBranchId: null };
+    if (!selectedBranchId || selectedBranchId === 'all') return { ok: false, error: 'branch_required' };
+    return { ok: true, companyIds: 'all', branchIds: 'all', employees, selectedBranchId };
   }
   if (user.role === 'branch_hr') {
     if (!user.assignedBranchId || user.assignedBranchId === 'all') return { ok: false, error: 'branch_required' };
@@ -600,7 +602,7 @@ export async function runImport({ rows, mode = 'merge', store = storage, apiFetc
   });
   if (!scope.ok) {
     const msg = scope.error === 'branch_required'
-      ? (i18n.getLang() === 'en' ? 'A valid branch must be selected before importing' : 'يجب تحديد الفرع أولاً قبل الاستيراد')
+      ? (i18n.getLang() === 'en' ? 'Please select a branch first to continue.' : 'يرجى اختيار الفرع أولاً للمتابعة.')
       : scope.error;
     return { ok: false, step: 'scope', error: scope.error, message: msg };
   }

@@ -709,6 +709,22 @@ class StorageService {
       }
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, compId || 'all');
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
+    } else if (user.role === 'super_admin') {
+      // Super admin may operate branch-scoped like everyone else. When the
+      // tenant has exactly one company with exactly one branch, auto-scope to
+      // it (mirrors the server's single-branch auto-scope). Otherwise the
+      // session starts at 'all' — a concrete branch must be selected before
+      // branch-scoped writes (imports, payroll actions, record mutations).
+      const companies = this.get(STORAGE_KEYS.COMPANIES, defaultCompanies);
+      const single = Array.isArray(companies) && companies.length === 1 ? companies[0] : null;
+      const branches = single && Array.isArray(single.branches) ? single.branches : null;
+      if (branches && branches.length === 1) {
+        this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, single.id || single.companyId || 'all');
+        this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, (branches[0] && (branches[0].id || branches[0].branchId)) || 'all');
+        return;
+      }
+      this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, 'all');
+      this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
     } else {
       this.set(STORAGE_KEYS.SELECTED_COMPANY_ID, 'all');
       this.set(STORAGE_KEYS.SELECTED_BRANCH_ID, 'all');
@@ -744,14 +760,22 @@ class StorageService {
   /**
    * Check if the current user has a valid branch context for operational actions.
    * Returns { ok: true } if branch is properly set, or { ok: false, message } if not.
-   * Branch is required for all operational actions except for super_admin.
+   * Branch is required for all operational actions, including super_admin.
    */
   validateBranchContext() {
     const user = this.getActiveUser();
     if (!user) return { ok: false, message: 'no_user' };
     
-    // Super admin doesn't need branch selection
-    if (user.role === 'super_admin') return { ok: true };
+    // Super admin is branch-scoped like everyone else: a concrete branch must
+    // be selected before operational actions (server policy agrees).
+    if (user.role === 'super_admin') {
+      const selectedCompanyId = this.getSelectedCompanyId();
+      const selectedBranchId = this.getSelectedBranchId();
+      if (!selectedBranchId || selectedBranchId === 'all' || !selectedCompanyId || selectedCompanyId === 'all') {
+        return { ok: false, message: 'branch_required', userRole: user.role };
+      }
+      return { ok: true, branchId: selectedBranchId, companyId: selectedCompanyId };
+    }
     
     // Branch HR users have assigned branch - they're already scoped
     if (user.role === 'branch_hr') {
@@ -793,9 +817,9 @@ class StorageService {
     const validation = this.validateBranchContext();
     if (!validation.ok) {
       const messages = {
-        branch_required: i18n.getLang() === 'en' 
-          ? 'Please select a branch first before performing this operation.'
-          : 'يرجى تحديد الفرع أولاً قبل تنفيذ العملية.',
+        branch_required: i18n.getLang() === 'en'
+          ? 'Please select a branch first to continue.'
+          : 'يرجى اختيار الفرع أولاً للمتابعة.',
         no_user: i18n.getLang() === 'en'
           ? 'No active user session.'
           : 'لا يوجد مستخدم نشط.',
@@ -812,7 +836,8 @@ class StorageService {
    * payments_officer assigned 'all', or several branches) must have selected a
    * concrete branch before any record write — "لا يستطيع فعل أي شيء حتى يتم
    * تحديد الفرع". Single-branch company users are auto-scoped (server policy
-   * agrees). Super admin and branch_hr are exempt.
+   * agrees). Super admin must also select a concrete branch; branch_hr is
+   * auto-scoped by her assignment.
    * Returns null when the write may proceed, or an error result to return.
    */
   branchWriteGuard() {
@@ -831,8 +856,8 @@ class StorageService {
       ok: false,
       error: 'branch_required',
       message: i18n.getLang() === 'en'
-        ? 'Please select a branch first before performing this operation.'
-        : 'يرجى تحديد الفرع أولاً قبل تنفيذ العملية.',
+        ? 'Please select a branch first to continue.'
+        : 'يرجى اختيار الفرع أولاً للمتابعة.',
     };
   }
 

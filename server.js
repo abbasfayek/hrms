@@ -390,9 +390,33 @@ async function getAuthContext(req) {
 //     MUST declare a concrete branch via the X-Branch-Id header, and that
 //     branch must belong to the user's own company (otherwise scope_violation).
 //   - other roles                → unchanged (assigned branch or 'all').
-function validateServerBranchContext(user, companiesList, selectedBranchId) {
-  // Super admin doesn't need branch selection
-  if (user.role === 'super_admin') return { ok: true };
+//
+// Super admin is the global authority, BUT branch-scoped data collections
+// still demand ONE concrete selected branch (X-Branch-Id) so a write can never
+// silently span or overwrite multiple branches. Global admin collections carry
+// no branch identity and stay exempt.
+const BRANCH_SCOPED_COLLECTIONS = new Set([
+  'employees', 'leaves', 'hourly_leaves', 'overtime', 'loans', 'increments',
+  'attendance', 'holidays', 'payrolls', 'eosb', 'import-employees',
+]);
+
+function validateServerBranchContext(user, companiesList, selectedBranchId, collection) {
+  // Super admin: needs no branch context for global admin collections, but
+  // branch-scoped data collections require a concrete X-Branch-Id.
+  if (user.role === 'super_admin') {
+    if (BRANCH_SCOPED_COLLECTIONS.has(collection)) {
+      if (!selectedBranchId || selectedBranchId === 'all') {
+        return { ok: false, code: 'branch_required', message: 'Branch selection required' };
+      }
+      if (Array.isArray(companiesList)) {
+        const company = companiesList.find((c) => c && Array.isArray(c.branches) && c.branches.some((b) => b && b.id === selectedBranchId));
+        if (!company) return { ok: false, code: 'scope_violation', message: 'Selected branch is not valid' };
+        return { ok: true, branchId: selectedBranchId, companyId: company.id };
+      }
+      return { ok: true, branchId: selectedBranchId, companyId: null };
+    }
+    return { ok: true };
+  }
 
   // Branch HR users have assigned branch - must have specific branch
   if (user.role === 'branch_hr') {
@@ -544,15 +568,20 @@ async function handleAPI(req, res, urlParts, method) {
     if (!writeCheck.ok) {
       return jsonResponse(res, { error: writeCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: writeCheck.reason }, writeCheck.status);
     }
-    // Validate branch context for write operations (except for super_admin)
+    // Validate branch context for write operations (super_admin included for
+    // branch-scoped collections). The resolved declared branch/company context
+    // is attached to authCtx so scopeValidateWrite can enforce super writes
+    // per-record against that branch.
     const companiesData = await readCollectionData('companies');
-    const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id']);
+    const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id'], collection);
     if (!branchCheck.ok) {
       return jsonResponse(res, {
         error: branchCheck.code === 'scope_violation' ? 'Scope violation' : 'Branch selection required',
         code: branchCheck.code,
       }, 403);
     }
+    authCtx.declaredBranchId = branchCheck.branchId || null;
+    authCtx.declaredCompanyId = branchCheck.companyId || null;
     try {
       const body = await readBody(req);
       // For merge collections, payload must be an array; for non-merge (settings, etc.) objects are allowed
@@ -742,17 +771,20 @@ async function handleAPI(req, res, urlParts, method) {
     if (!impCheck.ok) {
       return jsonResponse(res, { error: impCheck.reason === 'super_required' ? 'Super admin required' : 'Permission denied', code: impCheck.reason }, impCheck.status);
     }
-    // Validate branch context for non-super-admin
-    if (!isSuper(user)) {
-      const companiesData = await readCollectionData('companies');
-      const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id']);
-      if (!branchCheck.ok) {
-        return jsonResponse(res, {
-          error: branchCheck.code === 'scope_violation' ? 'Scope violation' : 'Branch selection required',
-          code: branchCheck.code,
-        }, 403);
-      }
+    // Validate branch context for super_admin too: imported employees are
+    // branch-scoped data, so even a super import requires a concrete branch and
+    // is scoped per-record to that branch (the declared branch/company context
+    // is attached to authCtx before scopeValidateWrite below).
+    const companiesData = await readCollectionData('companies');
+    const branchCheck = validateServerBranchContext(user, companiesData, req.headers['x-branch-id'], 'import-employees');
+    if (!branchCheck.ok) {
+      return jsonResponse(res, {
+        error: branchCheck.code === 'scope_violation' ? 'Scope violation' : 'Branch selection required',
+        code: branchCheck.code,
+      }, 403);
     }
+    authCtx.declaredBranchId = branchCheck.branchId || null;
+    authCtx.declaredCompanyId = branchCheck.companyId || null;
     try {
       const body = await readBody(req);
       const { employees: newEmps = [], mode = 'append' } = body;
@@ -777,7 +809,14 @@ async function handleAPI(req, res, urlParts, method) {
         if (!isSuper(authCtx.user)) {
           return jsonResponse(res, { error: 'Replace mode requires super admin', code: 'super_required' }, 403);
         }
-        result = newEmps;
+        // Branch-restricted replace: only the declared branch's roster is
+        // replaced. Employees belonging to any other branch are preserved so a
+        // branch-scoped super import can never wipe data it cannot see.
+        const declaredBranch = branchCheck.branchId;
+        const kept = Array.isArray(existing)
+          ? existing.filter((e) => e && e.branchId !== declaredBranch)
+          : [];
+        result = kept.concat(newEmps);
       } else {
         // Append/merge mode: merge safely by companyId + employeeNumber so
         // tenants cannot overwrite each other. For an EXISTING employee the

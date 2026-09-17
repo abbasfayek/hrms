@@ -244,7 +244,9 @@ console.log('\n=== P5 Fix #1 (X-1): Scoped Mutation Data Integrity ===');
   ok('10. Multi-branch company_hr without branch selection: write denied (branch_required)', res && res.ok === false && res.error === 'branch_required');
   ok('10b. Guard denial left the whole collection untouched', json(full) === json(FIX.hourlyLeaves));
 
-  seed('u-admin'); // super_admin is exempt from branch context
+  seed('u-admin'); // super_admin still needs a concrete branch (branch-scoped like every role)
+  storage.setSelectedCompanyId('comp-1');
+  storage.setSelectedBranchId('br-1');
   const resAdmin = storage.updateHourlyLeave({ ...FIX.hourlyLeaves[0], status: 'approved', approvedBy: 'Admin' });
   ok('10c. super_admin: approve succeeds', !(resAdmin && resAdmin.ok === false));
   ok('10d. super_admin: target changed but all scopes intact', recordById('hrms_hourly_leaves_v3', 'HL-A1')?.status === 'approved' && json(storage.get('hrms_hourly_leaves_v3', []).find((l) => l.id === 'HL-A2')) === json(FIX.hourlyLeaves[1]) && json(storage.get('hrms_hourly_leaves_v3', []).find((l) => l.id === 'HL-B1')) === json(FIX.hourlyLeaves[2]));

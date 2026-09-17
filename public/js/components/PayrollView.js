@@ -140,7 +140,7 @@ export function renderPayrollView(container, options = {}) {
     const check = storage.validateBranchContext();
     if (!check.ok) {
       const messages = {
-        branch_required: isEn ? 'Please select a branch before performing this action.' : 'يرجى تحديد الفرع أولاً قبل تنفيذ هذا الإجراء.',
+        branch_required: isEn ? 'Please select a branch first to continue.' : 'يرجى اختيار الفرع أولاً للمتابعة.',
         no_user: isEn ? 'No active user session.' : 'لا يوجد مستخدم نشط.',
       };
       toast.error(messages[check.message] || check.message);

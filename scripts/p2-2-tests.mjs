@@ -50,6 +50,8 @@ store.clear();
 storage.seedIfMissing();
 storage.saveCompanies(defaultCompanies);
 storage.saveSettings({ ...defaultSettings, currency: 'USD', currencySymbol: '$', dailyRateMethod: 'fixed30' });
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 
 const mkEmp = (id, extra = {}) => ({
   id,

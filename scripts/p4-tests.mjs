@@ -73,6 +73,8 @@ function resetSettings(overrides = {}) {
 function emptyBase(overrides = {}) {
   storage.seedIfMissing();
   storage.saveCompanies(defaultCompanies);
+  storage.setSelectedCompanyId('comp-1');
+  storage.setSelectedBranchId('br-1');
   resetSettings({ customCurrencies: [{ code: 'EUR', symbol: '€' }, { code: 'IQD', symbol: 'ع.د' }], ...overrides });
   storage.saveAttendance([]);
   storage.saveLeaves([]);
@@ -336,6 +338,8 @@ ok('storage authority: HR denied', storage.setExchangeRate({ user: HR, currency:
 let deniedStored = storage.setExchangeRate({ user: HR, currency: 'IQD', rate: 1 });
 ok('HR denial did not mutate rates', !deniedStored.ok && storage.getExchangeRates()[0].rate === 1460);
 storage.setActiveUser(ADMIN.id || ADMIN.id);
+storage.setSelectedCompanyId('comp-1');
+storage.setSelectedBranchId('br-1');
 ok('legacy loan (no currency) still saves with resolved currency', (() => {
   const legacy = { id: 'L-LEGACY', employeeId: null, amount: 100, installmentAmount: 10 };
   // no employee -> currency falls back to settings currency (USD); stamped implicitly

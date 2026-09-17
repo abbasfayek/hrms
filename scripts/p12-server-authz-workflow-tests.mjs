@@ -550,9 +550,14 @@ try {
     const rCrossT = await postData('bhr1', 'payrolls', [{ id: 'PAYROLL-X2', companyId: 'comp-1', branchId: 'br-2', status: 'draft', month: '2026-09', updatedAt: new Date().toISOString(), items: [{ employeeId: 'emp-3', companyId: 'comp-1', branchId: 'br-2' }] }], 'br-2');
     ok('B HR07.8 branch_hr cannot create draft for another branch (scope_violation)', rCrossT.status === 403 && lastReason(rCrossT) === 'scope_violation', lastReason(rCrossT));
 
-    // super_admin global authority: can push under_audit→paid directly
-    const rSuper = await postData('admin', 'payrolls', [{ id: 'PAYROLL-SUPER', companyId: 'comp-1', branchId: 'br-1', status: 'paid', month: '2026-09', updatedAt: new Date().toISOString(), items: [] }], 'all');
-    ok('B HR07.9 super_admin global-authority write accepted (by design)', rSuper.status === 200, lastReason(rSuper));
+    // super_admin is branch-scoped: PASSES with a concrete branch, create
+    // straight-to-paid allowed (by design).
+    const rSuper = await postData('admin', 'payrolls', [{ id: 'PAYROLL-SUPER', companyId: 'comp-1', branchId: 'br-1', status: 'paid', month: '2026-09', updatedAt: new Date().toISOString(), items: [] }], 'br-1');
+    ok('B HR07.9 super_admin branch-scoped write accepted (by design)', rSuper.status === 200, lastReason(rSuper));
+
+    // super_admin without a concrete branch on a branch-scoped collection → 403.
+    const rSuperNoBranch = await postData('admin', 'payrolls', [{ id: 'PAYROLL-SUPER-NB', companyId: 'comp-1', branchId: 'br-1', status: 'draft', month: '2026-10', updatedAt: new Date().toISOString(), items: [] }], 'all');
+    ok('B HR07.10 super_admin write WITHOUT a branch is rejected (branch_required)', rSuperNoBranch.status === 403 && rSuperNoBranch.data && rSuperNoBranch.data.code === 'branch_required', `status=${rSuperNoBranch.status} code=${rSuperNoBranch.data && rSuperNoBranch.data.code}`);
   }
 
   // ---- EOSB over HTTP (HR07 / EOSB) ----

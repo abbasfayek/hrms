@@ -122,7 +122,7 @@ console.log('\n=== P4 Fix #6: Full Return Legacy Paths Alignment ===');
   const afterLoanA = storage1.getState().loans.find((l) => l.id === 'LOAN-1');
   const afterLoanB = storage1.getState().loans.find((l) => l.id === 'LOAN-2');
 
-  ok('19. Original payroll remains persisted (status paid, fullReturn completed)', afterPayrolls.length === 1 && afterPayrolls[0].id === 'P-PAID-1' && afterPayrolls[0].status === 'paid' && afterPayrolls[0].fullReturn?.completed === true);
+  ok('19. Original payroll remains persisted (status approved, fullReturn completed)', afterPayrolls.length === 1 && afterPayrolls[0].id === 'P-PAID-1' && afterPayrolls[0].status === 'approved' && afterPayrolls[0].fullReturn?.completed === true);
   ok('20. fullReturn metadata persisted (at/by/reason/previousStatus)', afterPayrolls[0].fullReturn?.at && afterPayrolls[0].fullReturn?.by && afterPayrolls[0].fullReturn?.reason === 'Customer requested full refund' && afterPayrolls[0].fullReturn?.previousStatus === 'paid');
   ok('21. full_return audit event created with reason', storage1.getState().audit.some((a) => a.action === 'full_return' && a.details.includes('Customer requested full refund')));
   ok('22. Exact loan installment for the payroll month reversed (paidAmount 0 / remaining 2000)', afterLoanA.paidAmount === 0 && afterLoanA.remainingAmount === 2000 && afterLoanA.installments[0].isPaid === false && afterLoanA.installments[0].paidAt === undefined);
@@ -130,7 +130,7 @@ console.log('\n=== P4 Fix #6: Full Return Legacy Paths Alignment ===');
   ok('24. Loan with no matching installment is NOT reversed', afterLoanB.installments.every((x) => x.isPaid === true));
 
   const dupRes = reversePayrollDisbursementAtomic({ user: authUser, batch: storage1.getState().payrolls[0], reason: 'Second attempt', storage: storage1 });
-  ok('25. Duplicate full return remains blocked (already_fully_returned)', !dupRes.ok && dupRes.error === 'already_fully_returned');
+  ok('25. Duplicate full return on the returned (now approved) batch remains blocked (batch_not_paid)', !dupRes.ok && dupRes.error === 'batch_not_paid');
 
   const batchNotPaid = mockStorage([{ ...paidBatch, status: 'approved' }], [loanA]);
   const notPaidRes = reversePayrollDisbursementAtomic({ user: authUser, batch: { ...paidBatch, status: 'approved' }, reason: 'x', storage: batchNotPaid });

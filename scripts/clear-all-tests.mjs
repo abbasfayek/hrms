@@ -188,7 +188,7 @@ async function main() {
 
     // 4) Merge can no longer resurrect cleared records: a new write only adds
     const newEmp = { id: 'emp-new', companyId: 'comp-1', branchId: 'br-1', employeeNumber: 'EMP-NEW', fullName: 'New After Clear', basicSalary: 5000, status: 'active', updatedAt: new Date().toISOString() };
-    const wRes = await request(BASE, '/api/data/employees', { method: 'POST', session: admin, body: [newEmp] });
+    const wRes = await request(BASE, '/api/data/employees', { method: 'POST', session: admin, headers: { 'X-Branch-Id': 'br-1' }, body: [newEmp] });
     ok('C-08 super write after clear succeeds', wRes.status === 200, `status=${wRes.status}`);
     const after = readJSON(tmp, 'employees.json');
     ok('C-09 post-clear write persists and NO cleared record resurrects', Array.isArray(after) && after.length === 1 && after[0].id === 'emp-new', `rows=${Array.isArray(after) ? after.map((e) => e.id).join(',') : 'n/a'}`);

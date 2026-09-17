@@ -137,6 +137,12 @@ function seed(actorId = 'u-admin') {
   storage.set('hrms_eosb_v3', deepClone(CHILDREN.eosb));
   storage.set('hrms_corrections_v3', deepClone(CHILDREN.corrections));
   storage.setActiveUser(actorId);
+  // Super admin is branch-scoped like every role: the fixture's super imports
+  // operate on comp-1 / br-1 by default.
+  if (actorId === 'u-admin') {
+    storage.setSelectedCompanyId('comp-1');
+    storage.setSelectedBranchId('br-1');
+  }
 }
 
 function okFetch(capture) {
@@ -243,14 +249,18 @@ console.log('=== Phase: X-2 client — id preservation & child-record resolution
 }
 
 // ---- I: same employeeNumber in two companies → no cross-tenant collision ----
+// Super admin is branch-scoped: the two tenants are imported as TWO separate
+// branch-scoped imports (br-1 then br-2a) so a super write can never span
+// branches silently. Merge key (companyId+employeeNumber) keeps them apart.
 {
   seed('u-admin');
-  const rows = [
-    rowFor('comp-1', 'فرع 1', 'EMP-X', { ...AR.name('X in CoA') }),
-    rowFor('comp-2', 'فرع 2أ', 'EMP-X', { ...AR.name('X in CoB') }),
-  ];
-  const res = await runImport({ rows, mode: 'merge', store: storage, apiFetch: okFetch([]) });
-  ok('X2-I. Cross-company same-number import succeeds (created=2)', res.ok === true && res.created === 2);
+  const rowsC1 = [rowFor('comp-1', 'فرع 1', 'EMP-X', { ...AR.name('X in CoA') })];
+  const resC1 = await runImport({ rows: rowsC1, mode: 'merge', store: storage, apiFetch: okFetch([]) });
+  storage.setSelectedCompanyId('comp-2');
+  storage.setSelectedBranchId('br-2a');
+  const rowsC2 = [rowFor('comp-2', 'فرع 2أ', 'EMP-X', { ...AR.name('X in CoB') })];
+  const resC2 = await runImport({ rows: rowsC2, mode: 'merge', store: storage, apiFetch: okFetch([]) });
+  ok('X2-I. Each branch-scoped cross-company import succeeds (created=1 each)', resC1.ok === true && resC1.created === 1 && resC2.ok === true && resC2.created === 1, JSON.stringify({ resC1, resC2 }));
   const stored = employeesStore();
   const a = stored.filter((e) => e.employeeNumber === 'EMP-X' && e.companyId === 'comp-1');
   const b = stored.filter((e) => e.employeeNumber === 'EMP-X' && e.companyId === 'comp-2');
@@ -379,8 +389,10 @@ console.log('=== Phase: X-2 client — id preservation & child-record resolution
 // ---- Pure scope mirror smoke ----
 {
   seed('u-admin');
-  const sup = buildWriteScopeForUser({ user: { role: 'super_admin' }, employees: EMPLOYEES });
-  ok('X2-SC. super_admin scope spans all companies/branches', sup.ok && sup.companyIds === 'all' && sup.branchIds === 'all' && sup.employees.length === 3);
+  const sup = buildWriteScopeForUser({ user: { role: 'super_admin' }, employees: EMPLOYEES, selectedBranchId: 'br-1' });
+  ok('X2-SC. super_admin with selectedBranchId spans all companies/branches', sup.ok && sup.companyIds === 'all' && sup.branchIds === 'all' && sup.employees.length === 3);
+  const supNoBranch = buildWriteScopeForUser({ user: { role: 'super_admin' }, employees: EMPLOYEES });
+  ok('X2-SC. super_admin without selectedBranchId is branch_required', supNoBranch.ok === false && supNoBranch.error === 'branch_required');
   const br = buildWriteScopeForUser({ user: USERS[1], employees: EMPLOYEES });
   ok('X2-SC. branch_hr scope pinned to assigned branch', br.ok && br.branchIds[0] === 'br-1' && br.employees.length === 1);
   const multi = buildWriteScopeForUser({ user: USERS[2], employees: EMPLOYEES, selectedBranchId: 'all' });
@@ -605,9 +617,11 @@ async function runServerPhase() {
     ok('X2-S3. Malformed-id new employee request succeeds (200)', s3.status === 200, `status=${s3.status}`);
     ok('X2-S3. Server replaced the malformed id with a well-formed emp-imp id', /^emp-imp-/.test((readJSON(tmp, 'employees.json') || []).find((e) => e.employeeNumber === 'EMP-C2-M')?.id));
 
-    // S6: super_admin merge preserves ids across companies too.
+    // S6: super_admin merge preserves ids across companies too — super_admin
+    // is branch-scoped now, so a concrete X-Branch-Id is required.
     const s6 = await api(BASE, '/api/import-employees', {
       method: 'POST', session: sessionSystem,
+      headers: { 'X-Branch-Id': 'br-1' },
       body: { mode: 'append', employees: [
         { id: 'emp-hacked', companyId: 'comp-1', branchId: 'br-1', employeeNumber: 'EMP-C1-1', basicSalary: 1234, status: 'active' },
       ] },
@@ -616,6 +630,15 @@ async function runServerPhase() {
     const d6 = (readJSON(tmp, 'employees.json') || []).find((e) => e.employeeNumber === 'EMP-C1-1');
     ok('X2-S6. super_admin merge preserved the stored id', d6?.id === 'emp-c1-1', `id=${d6?.id}`);
     ok('X2-S6. basicSalary applied by super_admin merge', d6?.basicSalary === 1234);
+
+    // S6b: super_admin import WITHOUT a concrete branch is rejected.
+    const s6b = await api(BASE, '/api/import-employees', {
+      method: 'POST', session: sessionSystem,
+      body: { mode: 'append', employees: [
+        { id: 'emp-s6b', companyId: 'comp-1', branchId: 'br-1', employeeNumber: 'EMP-S6B', fullName: 'No Branch', status: 'active' },
+      ] },
+    });
+    ok('X2-S6b. Super admin import without branch rejected (403 branch_required)', s6b.status === 403 && s6b.data && s6b.data.code === 'branch_required', `status=${s6b.status} code=${s6b.data && s6b.data.code}`);
 
     // L: out-of-scope import (branch_hr of comp-1/br-1b importing comp-2) → 403, zero disk change.
     const beforeOut = readJSON(tmp, 'employees.json').length;

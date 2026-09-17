@@ -77,7 +77,7 @@ console.log('\n=== P4 Fix #1: Full Payroll Return & Reversal Test Suite ===');
   });
 
   ok('1. Full return succeeds', res.ok === true, res.error);
-  ok('2. Original payroll preserved with fullReturn metadata', res.batch && res.batch.fullReturn && res.batch.fullReturn.completed === true && res.batch.fullReturn.reason === 'Customer requested full refund' && res.batch.status === 'paid');
+  ok('2. Original payroll preserved — status transitions paid → approved with fullReturn metadata', res.batch && res.batch.fullReturn && res.batch.fullReturn.completed === true && res.batch.fullReturn.reason === 'Customer requested full refund' && res.batch.status === 'approved' && res.batch.paidAt === undefined && res.batch.releaseStatus === undefined && res.batch.items.every((i) => i.isPaid === undefined));
   const updatedLoan = storage.getState().loans.find((l) => l.id === 'LOAN-1');
   ok('3. Loan installments reversed (paidAmount reduced, remaining increased)', updatedLoan.paidAmount === 0 && updatedLoan.remainingAmount === 2000 && updatedLoan.installments[0].isPaid === false);
   ok('4. Audit entry recorded with return reason', storage.getState().audit.some((a) => a.action === 'full_return' && a.details.includes('Customer requested full refund')));

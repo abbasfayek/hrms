@@ -674,6 +674,89 @@ export function archivePayrollBatch(batch, opts = {}) {
 }
 
 /**
+ * Structured full return of a paid payroll batch (P4 Fix #1 policy): the batch
+ * moves paid → approved through the payroll.cancelPayment gate. Pure — returns
+ * a NEW batch, never mutates the input. Every payment stamp (paidBy/paidAt,
+ * releaseStatus/releasedAt/releasedBy, items.isPaid) is cleared, the archive
+ * seal is lifted (a returned batch is live again), and the return is recorded
+ * as fullReturn metadata plus a full_return entry on auditHistory /
+ * auditAttempts / versions. Financial values and sealed snapshots are
+ * PRESERVED — a full return reverses the payment and its loan runs, it never
+ * recomputes amounts.
+ */
+export function fullReturnPayrollBatch(batch, opts = {}) {
+  if (!batch) return { ok: false, error: 'no_batch', batch };
+  if ((batch.status || 'draft') !== 'paid') {
+    return { ok: false, error: `batch_not_paid:${batch.status}`, layer: 'state', batch };
+  }
+  const reason = String(opts.reason || '').trim();
+  if (!reason) {
+    return { ok: false, error: 'missing_return_reason', layer: 'validation', batch };
+  }
+  if (batch.fullReturn && batch.fullReturn.completed) {
+    return { ok: false, error: 'already_fully_returned', layer: 'state', batch };
+  }
+
+  const now = new Date().toISOString();
+  const actor = opts.by || '';
+  const next = cloneBatch(batch);
+  const prevRevision = Number(next.revision) || 0;
+  const revision = prevRevision + 1;
+
+  next.status = 'approved';
+  next.revision = revision;
+  next.updatedAt = now;
+  next.payrollSchema = PAYROLL_SCHEMA;
+
+  // Clear every payment stamp — the batch reads as returned to approval.
+  next.paidBy = undefined;
+  next.paidAt = undefined;
+  next.releaseStatus = undefined;
+  next.releasedAt = undefined;
+  next.releasedBy = undefined;
+  (next.items || []).forEach((it) => { delete it.isPaid; });
+
+  // Lift the archive seal: a returned batch is live again, not archived.
+  next.archived = undefined;
+  next.archivedAt = undefined;
+  next.archivedBy = undefined;
+  next.archiveReference = undefined;
+  next.archiveNumber = undefined;
+
+  next.fullReturn = {
+    completed: true,
+    at: now,
+    by: actor,
+    reason,
+    previousStatus: 'paid',
+    previousRevision: prevRevision,
+  };
+  next.fullReturnState = 'fully_returned';
+
+  next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
+  next.auditHistory.push({ action: 'full_return', from: 'paid', to: 'approved', by: actor, at: now, reason, revision });
+  next.auditAttempts = Array.isArray(batch.auditAttempts) ? batch.auditAttempts.slice() : [];
+  next.auditAttempts.push({
+    attempt: (batch.auditAttempts ? batch.auditAttempts.length : 0) + 1,
+    result: 'fully_returned',
+    by: actor,
+    at: now,
+    reason,
+    fromVersion: prevRevision,
+    toVersion: revision,
+  });
+  next.versions = pushVersion(next, {
+    type: 'full_return',
+    version: revision,
+    status: 'approved',
+    by: actor,
+    at: now,
+    reason,
+  });
+  return { ok: true, batch: next };
+}
+
+/**
  * Legacy P2.2 "reject-and-return" rule: when the Financial Audit rejects a
  * payroll, EVERY monetary figure in the batch is wiped to zero (statement renders as
  * empty/zeros instead of showing the previously submitted amounts) and the
