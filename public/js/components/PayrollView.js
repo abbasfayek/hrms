@@ -82,6 +82,10 @@ export function renderPayrollView(container, options = {}) {
   // Phase 9 — correction permissions (guards still enforce all business/SoD rules).
   const canCreateCorrection = can(state.currentUser, 'payroll.correction.create');
   const canCoApproveCorrection = can(state.currentUser, 'payroll.correction.coApprove');
+  // P4 Fix #6: Full Return is a financial operation. UI grant must mirror the
+  // engine authorization (payroll.cancelPayment or super_admin — included in
+  // super_admin's ALL_PERMISSIONS) instead of payroll.correction.create.
+  const canCancelPayment = can(state.currentUser, 'payroll.cancelPayment') || state.currentUser?.role === 'super_admin';
 
   let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'fully_returned' | 'loans' | 'increments' | 'corrections'
   let statusFilter = options.statusFilter || 'all'; // 'all' | 'draft' | 'under_audit' | 'approved' | 'paid' | 'fully_returned'
@@ -680,33 +684,42 @@ export function renderPayrollView(container, options = {}) {
     const isReleased = currentBatch ? currentBatch.releaseStatus === 'released' : false;
     const releaseDue = currentBatch ? (!!currentBatch.releaseDate && !isPaid && todayStr >= currentBatch.releaseDate) : false;
 
-    // Full return = plain removal: the payroll leaves the archive for good, a
-    // tombstone stays in the deletion log. No corrections, no state machines.
-    const performPayrollFullReturn = (batch, onDone) => {
+    // Official structured Full Return flow (P4 Fix #1 + Fix #6). Single shared
+    // implementation used by every Full Return entry point so all paths converge
+    // on the same behavior: mandatory reason -> reversePayrollDisbursementAtomic
+    // -> payroll.cancelPayment authorization -> exact loan-installment reversal
+    // -> preserved original record -> persisted fullReturn metadata -> audit.
+    // Never deletes the payroll.
+    const runFullReturnFlow = (batch, opts = {}) => {
       if (!batch) return;
-      if (!canCreateCorrection) {
-        toast.error(isEn ? 'Insufficient permissions to remove this payroll.' : 'لا تملك صلاحية حذف هذا المسير.');
+      if (!canCancelPayment) {
+        toast.error(isEn ? 'Insufficient permissions to return this payroll.' : 'لا تملك صلاحية ترجيع هذا المسير.');
         return;
       }
       if (!requireBranchForAction()) return;
-      showConfirmDialog({
-        title: isEn ? 'Remove Payroll from Archive' : 'حذف المسير من الأرشيف',
-        message: isEn
-          ? `<strong>${batch.month}</strong> — the payroll will be removed from the archive and deleted permanently. A record of the deletion stays in the log.`
-          : `<strong>${batch.month}</strong> — سيُحذف هذا المسير نهائياً من الأرشيف. يبقى أثر العملية في سجل الحذف.`,
-        confirmText: isEn ? 'Yes, Delete Payroll' : 'نعم، حذف المسير',
-        onConfirm: () => {
-          const res = storage.deletePayrollBatch(batch.id);
+      openPayrollFullReturnModal({
+        batch,
+        onConfirmed: (reason) => {
+          const res = reversePayrollDisbursementAtomic({
+            user: state.currentUser,
+            batch,
+            reason,
+            storage,
+            context: getPayrollBranchContext(),
+          });
           if (!res.ok) {
-            toast.error(storage.recordErrorText(res.error, isEn));
+            toast.error(isEn ? `Failed to return payroll: ${storage.recordErrorText(res.error, isEn)}` : `فشل ترجيع المسير: ${storage.recordErrorText(res.error, isEn)}`);
             return;
           }
-          const byName = storage.getActiveUser()?.name || (isEn ? 'Super Admin' : 'المدير العام');
-          storage.addAudit('full_return', 'payroll', isEn
-            ? `Payroll ${batch.month} removed from archive (full return)`
-            : `تم حذف مسير ${batch.month} من الأرشيف (ترجيع كامل)`, batch.id);
-          toast.success(isEn ? 'Payroll removed from archive.' : 'تم حذف المسير من الأرشيف.');
-          if (onDone) onDone();
+          toast.success(isEn ? 'Payroll successfully returned and loan installments reversed.' : 'تم ترجيع المسير بنجاح وعكس أقساط السلف.');
+          currentBatch = res.batch;
+          if (opts.goToReturnedTab) {
+            currentMonth = batch?.month || currentMonth;
+            statusFilter = 'fully_returned';
+            activeTab = 'fully_returned';
+          }
+          updateHeaderTabs();
+          renderTabContent();
         },
       });
     };
@@ -1084,7 +1097,7 @@ export function renderPayrollView(container, options = {}) {
             <div style="font-size:12px; margin-top:2px;">${isEn ? 'Paid on' : 'تاريخ الصرف'}: ${formatDate(currentBatch.paidAt)} • ${isEn ? 'By' : 'بواسطة'}: ${currentBatch.paidBy || 'HR'}</div>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
-            ${canCreateCorrection ? `
+            ${canCancelPayment ? `
             <button type="button" class="btn btn-sm btn-danger" id="btn-full-return-main">
               ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
             </button>
@@ -1459,35 +1472,7 @@ export function renderPayrollView(container, options = {}) {
 
       contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
         if (!currentBatch) return;
-        const canCancel = can(state.currentUser, 'payroll.cancelPayment') || state.currentUser?.role === 'super_admin';
-        if (!canCancel) {
-          toast.error(isEn ? 'Insufficient permissions to return this payroll.' : 'لا تملك صلاحية ترجيع هذا المسير.');
-          return;
-        }
-        if (!requireBranchForAction()) return;
-        openPayrollFullReturnModal({
-          batch: currentBatch,
-          onConfirmed: (reason) => {
-            const res = reversePayrollDisbursementAtomic({
-              user: state.currentUser,
-              batch: currentBatch,
-              reason,
-              storage,
-              context: getBranchContext(),
-            });
-            if (!res.ok) {
-              toast.error(isEn ? `Failed to return payroll: ${storage.recordErrorText(res.error, isEn)}` : `فشل ترجيع المسير: ${storage.recordErrorText(res.error, isEn)}`);
-              return;
-            }
-            toast.success(isEn ? 'Payroll successfully returned and loan installments reversed.' : 'تم ترجيع المسير بنجاح وعكس أقساط السلف.');
-            currentMonth = currentBatch?.month || currentMonth;
-            currentBatch = res.batch;
-            statusFilter = 'fully_returned';
-            activeTab = 'fully_returned';
-            updateHeaderTabs();
-            renderTabContent();
-          },
-        });
+        runFullReturnFlow(currentBatch, { goToReturnedTab: true });
       });
 
       attachStatusFilterListeners(contentArea);
@@ -1859,7 +1844,7 @@ export function renderPayrollView(container, options = {}) {
                             ` : ''}
                             ${b.fullReturn?.completed ? `
                             <span class="badge badge-danger">${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span>
-                            ` : canCreateCorrection ? `
+                            ` : canCancelPayment ? `
                             <button type="button" class="btn btn-sm btn-danger btn-full-return-batch" title="${isEn ? 'Full Return' : 'ترجيع كامل'}">
                               ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
                             </button>
@@ -1916,8 +1901,8 @@ export function renderPayrollView(container, options = {}) {
         });
 
         row.querySelector('.btn-full-return-batch')?.addEventListener('click', () => {
-          if (!b || !canCreateCorrection) return;
-          performPayrollFullReturn(b, () => renderTabContent());
+          if (!b) return;
+          runFullReturnFlow(b);
         });
 
         row.querySelector('.btn-correct-batch')?.addEventListener('click', () => {
@@ -2211,16 +2196,20 @@ export function renderPayrollView(container, options = {}) {
               <div style="font-size:12px; color:var(--text-muted);">${isEn ? 'Original + Σ corrections = Net/Effective — the archived original is never modified (L1/L6).' : 'الأصلي + مجموع التصحيحات = الصافي/الفعال — لا يُعدّل المسير المؤرشف أبداً.'}</div>
             </div>
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              ${archivedBatches.length && canCreateCorrection ? `
+              ${archivedBatches.length && (canCreateCorrection || canCancelPayment) ? `
               <select class="form-select" id="pc-new-batch" style="width:180px; padding:6px 10px;">
                 ${archivedBatches.map((b) => `<option value="${b.id}">${b.month}</option>`).join('')}
               </select>
+              ${canCancelPayment ? `
               <button type="button" class="btn btn-danger btn-sm" id="btn-quick-full-return">
                 ${Icons.refresh(14)} ${isEn ? 'Full Return' : 'ترجيع كامل'}
               </button>
+              ` : ''}
+              ${canCreateCorrection ? `
               <button type="button" class="btn btn-outline btn-sm" id="btn-new-correction">
                 ${isEn ? 'Custom Correction' : 'تصحيح مخصص'}
-              </button>` : `<span class="badge badge-gray">${isEn ? 'No archived payrolls in this branch' : 'لا مسيرات مؤرشفة في هذا الفرع'}</span>`}
+              </button>
+              ` : ''}` : `<span class="badge badge-gray">${isEn ? 'No archived payrolls in this branch' : 'لا مسيرات مؤرشفة في هذا الفرع'}</span>`}
             </div>
           </div>
           <div class="table-container" style="border:none;">
@@ -2276,8 +2265,8 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-quick-full-return')?.addEventListener('click', () => {
         const sel = contentArea.querySelector('#pc-new-batch');
         const batch = archivedBatches.find((b) => b.id === (sel ? sel.value : ''));
-        if (!batch || !canCreateCorrection) return;
-        performPayrollFullReturn(batch, () => renderTabContent());
+        if (!batch) return;
+        runFullReturnFlow(batch);
       });
 
       contentArea.querySelector('#btn-new-correction')?.addEventListener('click', () => {
