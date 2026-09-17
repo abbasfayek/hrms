@@ -715,6 +715,27 @@ async function handleAPI(req, res, urlParts, method) {
     }
   }
 
+  // X-2: Field allow-list for Excel-import updates. Only these fields may be
+  // written onto an EXISTING employee. Identity (id / employeeNumber /
+  // companyId / branchId) and balance/status fields are never overwritten by
+  // an import, and empty cells can never clobber stored values.
+  const IMPORT_UPDATE_ALLOWLIST = [
+    'fullName', 'fullNameEn', 'department', 'jobTitle', 'contractType',
+    'hireDate', 'basicSalary', 'housingAllowance', 'transportAllowance',
+    'otherAllowances', 'isSubjectToGosi', 'gosiRegisteredWage',
+    'gosiEmployeePercent', 'gosiCompanyPercent', 'bankName',
+    'bankAccountNumber', 'iban', 'nationalId', 'phone', 'email',
+    'nationality', 'gender', 'dateOfBirth',
+  ];
+
+  function generateImportEmpId(existingIds) {
+    let id;
+    do {
+      id = `emp-imp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    } while (existingIds && existingIds.has(id));
+    return id;
+  }
+
   // POST /api/import-employees — Import employees (employees.add + scope)
   if (method === 'POST' && segment === 'import-employees') {
     const impCheck = checkWritePerm(authCtx, 'import-employees');
@@ -758,7 +779,11 @@ async function handleAPI(req, res, urlParts, method) {
         }
         result = newEmps;
       } else {
-        // Append mode: merge safely by companyId + employeeNumber so tenants cannot overwrite each other
+        // Append/merge mode: merge safely by companyId + employeeNumber so
+        // tenants cannot overwrite each other. For an EXISTING employee the
+        // stored id is sacred — server-supplied id values from the payload are
+        // never trusted (X-2). Only allow-listed, non-empty fields may land on
+        // the existing record, so identity and leave/status data survive intact.
         const callerScope = authCtx.scope;
         const map = new Map();
         for (const e of existing) {
@@ -766,11 +791,33 @@ async function handleAPI(req, res, urlParts, method) {
           const key = `${e.companyId || ''}::${e.employeeNumber || e.id}`;
           map.set(key, e);
         }
+        const usedIds = new Set(Array.from(map.values()).map((e) => e.id));
         for (const ne of newEmps) {
           if (!ne) continue;
           const key = `${ne.companyId || callerScope.companyId || ''}::${ne.employeeNumber || ne.id}`;
           const prev = map.get(key);
-          map.set(key, prev ? { ...prev, ...ne } : ne);
+          if (prev) {
+            const patch = {};
+            for (const f of IMPORT_UPDATE_ALLOWLIST) {
+              const v = ne[f];
+              if (v !== undefined && v !== null && String(v).trim() !== '') patch[f] = v;
+            }
+            map.set(key, {
+              ...prev,
+              ...patch,
+              id: prev.id,
+              companyId: prev.companyId,
+              branchId: prev.branchId,
+              employeeNumber: prev.employeeNumber,
+            });
+          } else {
+            const candidateId = ne.id;
+            const acceptedId = usedIds.has(candidateId) || !/^emp-/.test(String(candidateId || ''))
+              ? generateImportEmpId(usedIds)
+              : candidateId;
+            usedIds.add(acceptedId);
+            map.set(key, { ...ne, id: acceptedId });
+          }
         }
         result = Array.from(map.values());
       }

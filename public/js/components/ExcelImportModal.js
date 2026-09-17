@@ -8,6 +8,165 @@ import { toast } from './Toast.js';
 import { Icons } from '../icons.js';
 import { i18n, t } from '../i18n.js';
 
+// =========================================================
+// X-2: Deterministic, scope-safe import pipeline.
+// The pure functions below are exported so the automated test suite
+// (scripts/p5-fix2-excel-id-preservation-tests.mjs) and the modal UI
+// exercise the SAME logic. Import sequencing is server-first:
+// prepare + validate → POST (await) → persist locally only when the
+// server accepts the import.
+// =========================================================
+
+// Fields Excel is allowed to write onto an EXISTING employee.
+// Identity (id / employeeNumber / companyId / branchId) and balance/status
+// fields are preserved — an update can never re-key or zero them.
+export const IMPORT_FIELD_WHITELIST = [
+  'fullName', 'fullNameEn', 'department', 'jobTitle', 'contractType',
+  'hireDate', 'basicSalary', 'housingAllowance', 'transportAllowance',
+  'otherAllowances', 'isSubjectToGosi', 'gosiRegisteredWage',
+  'gosiEmployeePercent', 'gosiCompanyPercent', 'bankName',
+  'bankAccountNumber', 'iban', 'nationalId', 'phone', 'email',
+  'nationality', 'gender', 'dateOfBirth',
+];
+
+const IMPORT_NUMERIC_FIELDS = new Set([
+  'basicSalary', 'housingAllowance', 'transportAllowance', 'otherAllowances',
+  'gosiRegisteredWage', 'gosiEmployeePercent', 'gosiCompanyPercent',
+]);
+
+// Column aliases (Arabic + English). Keys are unchanged from the original
+// template so existing files keep parsing identically.
+const IMPORT_FIELD_KEYS = {
+  fullName: ['الاسم الكامل', 'اسم الموظف', 'الاسم', 'FullName', 'name'],
+  fullNameEn: ['الاسم بالإنجليزية', 'FullNameEn', 'EnglishName'],
+  department: ['القسم', 'الإدارة', 'Department'],
+  jobTitle: ['المسمى الوظيفي', 'الوظيفة', 'JobTitle'],
+  contractType: ['نوع العقد', 'ContractType'],
+  hireDate: ['تاريخ التعيين', 'تاريخ المباشرة', 'HireDate', 'JoinDate'],
+  basicSalary: ['الراتب الأساسي', 'BasicSalary', 'salary'],
+  housingAllowance: ['بدل السكن', 'HousingAllowance'],
+  transportAllowance: ['بدل النقل', 'TransportAllowance'],
+  otherAllowances: ['بدلات أخرى', 'OtherAllowances'],
+  isSubjectToGosi: ['خاضع للتأمينات', 'خاضع للضمان', 'GOSI', 'IsGOSI'],
+  gosiRegisteredWage: ['الأجر المسجل في الضمان', 'أجر التأمينات', 'GOSIWage'],
+  gosiEmployeePercent: ['نسبة استقطاع الموظف %', 'GOSIEmpPercent'],
+  gosiCompanyPercent: ['نسبة مساهمة الشركة %', 'GOSICompPercent'],
+  bankName: ['اسم البنك', 'البنك', 'BankName'],
+  bankAccountNumber: ['رقم الحساب', 'BankAccount'],
+  iban: ['الآيبان', 'IBAN'],
+  nationalId: ['رقم الهوية', 'الإقامة', 'NationalID'],
+  phone: ['رقم الهاتف', 'الجوال', 'Phone'],
+  email: ['البريد الإلكتروني', 'Email'],
+  nationality: ['الجنسية', 'Nationality'],
+  gender: ['الجنس', 'Gender'],
+  dateOfBirth: ['تاريخ الميلاد', 'DOB'],
+};
+
+// Canonical (already-normalized) field names are included as aliases so this
+// normalizer is idempotent: acceptParsedRows() output can be re-validated by
+// runImport() without being destructively re-parsed (X-2 UI boundary).
+const IMPORT_COMPANY_KEYS = ['كود الشركة', 'اسم الشركة', 'رقم الشركة', 'Company', 'CompanyCode', 'companyId'];
+const IMPORT_BRANCH_KEYS = ['اسم الفرع', 'الفرع', 'Branch', 'BranchName', 'branchId'];
+const IMPORT_NUMBER_KEYS = ['الرقم الوظيفي', 'رقم الموظف', 'EmployeeNumber', 'EmployeeID', 'emp_id', 'employeeNumber'];
+
+let importIdCounter = 0;
+function defaultImportId() {
+  importIdCounter += 1;
+  return `emp-imp-${Date.now()}-${importIdCounter}`;
+}
+
+function firstCell(row, keys) {
+  for (const k of keys) {
+    const v = row[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
+/**
+ * Strict, side-effect-free parse of uploaded rows.
+ * Resolves company/branch WITHOUT any comp-1 / br-1 / companies[0] fallbacks:
+ * an unknown company or branch is a reported error, never a silent re-key.
+ * Rows that fail identity resolution (company, branch or employee number) are
+ * excluded and reported so the caller can block the import.
+ * Only non-empty cells are carried — empty cells cannot clobber anything.
+ */
+export function normalizeImportedRows(rows, { companies, defaultCompanyId, settings } = {}) {
+  const comps = Array.isArray(companies) ? companies : [];
+  const out = [];
+  const errors = [];
+
+  rows.forEach((row, idx) => {
+    const line = idx + 1;
+    if (!row || typeof row !== 'object') {
+      errors.push({ row: line, code: 'invalid_row', message: 'Row is not an object' });
+      return;
+    }
+
+    const companyVal = firstCell(row, IMPORT_COMPANY_KEYS);
+    const matchedComp = companyVal
+      ? comps.find((c) => c && (
+        String(c.code || '').toLowerCase() === companyVal.toLowerCase()
+          || c.nameAr === companyVal
+          || String(c.nameEn || '').toLowerCase() === companyVal.toLowerCase()
+          || c.id === companyVal))
+      : comps.find((c) => c && c.id === defaultCompanyId);
+    if (!matchedComp) {
+      errors.push({ row: line, code: companyVal ? 'unknown_company' : 'missing_company', value: companyVal });
+      return;
+    }
+
+    const branchVal = firstCell(row, IMPORT_BRANCH_KEYS);
+    const branches = Array.isArray(matchedComp.branches) ? matchedComp.branches : [];
+    const matchedBranch = branchVal
+      ? branches.find((b) => b && (b.nameAr === branchVal || String(b.nameEn || '').toLowerCase() === branchVal.toLowerCase() || b.id === branchVal))
+      : branches[0];
+    if (!matchedBranch) {
+      errors.push({ row: line, code: branchVal ? 'unknown_branch' : 'no_branches', value: branchVal });
+      return;
+    }
+
+    const employeeNumber = firstCell(row, IMPORT_NUMBER_KEYS);
+    if (!employeeNumber) {
+      errors.push({ row: line, code: 'missing_employee_number', value: '' });
+      return;
+    }
+
+    const rec = { employeeNumber, companyId: matchedComp.id, branchId: matchedBranch.id };
+    for (const field of IMPORT_FIELD_WHITELIST) {
+      const raw = firstCell(row, [...(IMPORT_FIELD_KEYS[field] || []), field]);
+      if (raw === '') continue;
+      if (field === 'isSubjectToGosi') {
+        rec[field] = !['لا', 'no', 'false', '0', 'exempt'].includes(raw.toLowerCase());
+      } else if (IMPORT_NUMERIC_FIELDS.has(field)) {
+        rec[field] = Number(raw);
+      } else {
+        rec[field] = raw;
+      }
+    }
+    out.push(rec);
+  });
+
+  return { rows: out, errors };
+}
+
+function createEmployeeFromRow(row, { company, settings, id }) {
+  const target = { ...row };
+  target.id = id;
+  if (target.hireDate === undefined) target.hireDate = new Date().toISOString().split('T')[0];
+  if (target.status === undefined) target.status = 'active';
+  if (target.contractType === undefined) target.contractType = 'full_time';
+  if (target.gender === undefined) target.gender = 'male';
+  if (target.department === undefined) target.department = 'العمليات والتشغيل';
+  if (target.jobTitle === undefined) target.jobTitle = 'موظف';
+  if (target.basicSalary === undefined) target.basicSalary = 5000;
+  if (target.annualLeaveBalance === undefined) target.annualLeaveBalance = settings.defaultAnnualLeaveDays || 21;
+  if (target.annualLeaveEntitlement === undefined) target.annualLeaveEntitlement = target.annualLeaveBalance;
+  if (target.carriedOverLeaveBalance === undefined) target.carriedOverLeaveBalance = 0;
+  if (target.hourlyLeaveQuota === undefined) target.hourlyLeaveQuota = (company && company.hourlyLeaveQuota) || settings.defaultHourlyLeaveQuota || 4;
+  return target;
+}
+
 export function openExcelImportModal(onImportSuccess) {
   const state = storage.getState();
   const { companies, settings } = state;
@@ -186,15 +345,7 @@ export function openExcelImportModal(onImportSuccess) {
                 toast.error(isEn ? 'CSV file is empty' : 'ملف CSV فارغ');
                 return;
               }
-              parsedEmployees = mapExcelRowsToComprehensiveEmployees(rows, companies, companySelect.value, settings);
-              renderPreview(parsedEmployees);
-              dropZone.innerHTML = `
-                <div style="font-size:28px; color:var(--success);">✅</div>
-                <div style="font-weight:700; color:var(--text-main); margin-top:4px;">${file.name}</div>
-                <div style="font-size:12px; color:var(--text-muted);">${parsedEmployees.length} ${isEn ? 'records parsed' : 'موظف تم استخراجه'}</div>
-              `;
-              executeBtn.disabled = false;
-              toast.success(isEn ? `Extracted ${parsedEmployees.length} employees` : `تم استخراج ${parsedEmployees.length} سجل موظف بنجاح`);
+              acceptParsedRows(rows);
             } catch (err) {
               toast.error(err.message);
             }
@@ -218,21 +369,7 @@ export function openExcelImportModal(onImportSuccess) {
                 return;
               }
 
-              parsedEmployees = mapExcelRowsToComprehensiveEmployees(jsonData, companies, companySelect.value, settings);
-
-              if (parsedEmployees.length === 0) {
-                toast.error(isEn ? 'Could not recognize columns' : 'لم يتم التعرف على أعمدة بيانات الموظفين في الملف');
-                return;
-              }
-
-              renderPreview(parsedEmployees);
-              dropZone.innerHTML = `
-                <div style="font-size:28px; color:var(--success);">✅</div>
-                <div style="font-weight:700; color:var(--text-main); margin-top:4px;">${file.name}</div>
-                <div style="font-size:12px; color:var(--text-muted);">${parsedEmployees.length} ${isEn ? 'records parsed' : 'موظف تم استخراجه'}</div>
-              `;
-              executeBtn.disabled = false;
-              toast.success(isEn ? `Extracted ${parsedEmployees.length} records successfully` : `تم استخراج ${parsedEmployees.length} سجل موظف بنجاح`);
+              acceptParsedRows(jsonData);
             } catch (err) {
               console.error(err);
               toast.error((isEn ? 'Error reading Excel file: ' : 'خطأ في قراءة ملف Excel: ') + err.message);
@@ -271,48 +408,258 @@ export function openExcelImportModal(onImportSuccess) {
           .join('');
       }
 
-      // 3. Execute Import
+      // Parse gate: strictly normalize, preview the valid rows and COUNT errors.
+      // When any row fails identity resolution the import button stays disabled
+      // so a half-valid file can never be silently committed (X-2).
+      function acceptParsedRows(rawRows) {
+        const { rows: mapped, errors } = normalizeImportedRows(rawRows, {
+          companies,
+          defaultCompanyId: companySelect.value,
+          settings,
+        });
+        if (!mapped.length) {
+          const first = errors[0];
+          let msg = isEn ? 'No valid employee rows could be parsed' : 'لم يتم العثور على صفوف موظفين صالحة';
+          if (first) msg = isEn ? `Row ${first.row}: ${first.code}` : `السطر ${first.row}: ${first.code}`;
+          executeBtn.disabled = true;
+          toast.error(msg);
+          return;
+        }
+        parsedEmployees = mapped;
+        renderPreview(parsedEmployees);
+        dropZone.innerHTML = `
+          <div style="font-size:28px; color:${errors.length ? 'var(--warning)' : 'var(--success)'};">${errors.length ? '⚠️' : '✅'}</div>
+          <div style="font-weight:700; color:var(--text-main); margin-top:4px;">${file.name}</div>
+          <div style="font-size:12px; color:var(--text-muted);">${parsedEmployees.length} ${isEn ? 'records parsed' : 'موظف تم استخراجه'}</div>
+        `;
+        executeBtn.disabled = errors.length > 0;
+        if (errors.length) {
+          toast.warning(isEn
+            ? `${errors.length} row(s) skipped: ${errors.slice(0, 3).map((e) => `Row ${e.row} ${e.code}`).join(', ')}`
+            : `تم تجاوز ${errors.length} صف: ${errors.slice(0, 3).map((e) => `السطر ${e.row} ${e.code}`).join(', ')}`);
+        } else {
+          toast.success(isEn ? `Extracted ${parsedEmployees.length} employees` : `تم استخراج ${parsedEmployees.length} سجل موظف بنجاح`);
+        }
+      }
+
+      // 3. Execute Import — server-first sequencing (X-2)
       executeBtn?.addEventListener('click', () => {
         if (parsedEmployees.length === 0) return;
-
-        const currentEmployees = storage.get('hrms_employees_v3', []);
-        const mode = modeSelect.value;
-
-        let finalEmployees = [];
-
-        if (mode === 'merge') {
-          const map = {};
-          currentEmployees.forEach((e) => {
-            map[e.employeeNumber] = e;
+        executeBtn.disabled = true;
+        void runImport({ rows: parsedEmployees, mode: modeSelect.value, store: storage })
+          .then((result) => {
+            executeBtn.disabled = false;
+            if (!result.ok) {
+              let msg = result.error || (isEn ? 'Import failed' : 'فشل الاستيراد');
+              if (result.step === 'server') {
+                msg = isEn ? `Import rejected by server: ${result.error}` : `رفض الخادم الاستيراد: ${result.error}`;
+              } else if (result.step === 'parse' && result.errors && result.errors.length) {
+                msg = isEn
+                  ? `${result.errors.length} row(s) are invalid: ${result.errors.slice(0, 3).map((e) => `Row ${e.row} ${e.code}`).join(', ')}`
+                  : `${result.errors.length} سطر غير صالح: ${result.errors.slice(0, 3).map((e) => `السطر ${e.row} ${e.code}`).join(', ')}`;
+              }
+              toast.error(msg);
+              return;
+            }
+            toast.success(isEn
+              ? `🎉 Imported: ${result.updated} updated, ${result.created} added${result.skipped ? `, ${result.skipped} skipped` : ''}`
+              : `🎉 تم التحديث: ${result.updated} موظف محدَّث، ${result.created} موظف جديد${result.skipped ? `، تم تجاوز ${result.skipped}` : ''}`);
+            close();
+            if (onImportSuccess) onImportSuccess();
+          })
+          .catch((err) => {
+            executeBtn.disabled = false;
+            toast.error(err && err.message ? err.message : String(err));
           });
-          parsedEmployees.forEach((e) => {
-            map[e.employeeNumber] = { ...(map[e.employeeNumber] || {}), ...e };
-          });
-          finalEmployees = Object.values(map);
-        } else {
-          // append new only
-          const existingNums = new Set(currentEmployees.map((e) => String(e.employeeNumber)));
-          const newEmps = parsedEmployees.filter((e) => !existingNums.has(String(e.employeeNumber)));
-          finalEmployees = [...newEmps, ...currentEmployees];
-        }
-
-        storage.saveEmployees(finalEmployees);
-
-        // Backend sync
-        storage.apiFetch('/api/import-employees', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ employees: parsedEmployees, mode }),
-        }).catch(() => {});
-
-        toast.success(isEn ? `🎉 Successfully imported and saved ${parsedEmployees.length} employees` : `🎉 تم استيراد وحفظ ${parsedEmployees.length} موظف بنجاح`);
-        close();
-        if (onImportSuccess) onImportSuccess();
       });
 
       overlay.querySelector('.close-modal-btn')?.addEventListener('click', close);
     },
   });
+}
+
+/**
+ * Build the deterministic import plan against the WRITABLE employee set.
+ * Identity key is the composite `${companyId}::${employeeNumber}` so two
+ * tenants may safely reuse an employee number without colliding. A matched
+ * employee keeps its stored id byte-for-byte; duplicate rows for the same key
+ * collapse into ONE result (last occurrence wins). Brand-new employees get a
+ * fresh unique id via allocId (default: emp-imp-...).
+ */
+export function planImport(rows, { employees, companies, settings, mode = 'merge', allocId } = {}) {
+  const empList = Array.isArray(employees) ? employees : [];
+  const comps = Array.isArray(companies) ? companies : [];
+  const s = settings || {};
+  const byId = new Map();
+  const byKey = new Map();
+  empList.forEach((e) => {
+    if (!e) return;
+    if (e.id) byId.set(e.id, e);
+    if (e.companyId && e.employeeNumber != null) byKey.set(`${e.companyId}::${e.employeeNumber}`, e);
+  });
+  const usedIds = new Set(byId.keys());
+  const alloc = allocId || defaultImportId;
+  const plan = [];
+  const skipped = [];
+  // last-row-wins: a duplicate composite key yields exactly ONE result.
+  const lastIdx = new Map();
+  rows.forEach((row, i) => {
+    if (row && row.companyId && row.employeeNumber != null) lastIdx.set(`${row.companyId}::${row.employeeNumber}`, i);
+  });
+  rows.forEach((row, i) => {
+    if (!row) return;
+    const key = `${row.companyId}::${row.employeeNumber}`;
+    if (lastIdx.get(key) !== i) return;
+    const existing = byKey.get(key);
+    if (existing) {
+      if (mode === 'append') {
+        skipped.push({ employeeNumber: row.employeeNumber, companyId: row.companyId, branchId: row.branchId });
+        return;
+      }
+      const target = { ...existing };
+      IMPORT_FIELD_WHITELIST.forEach((f) => { if (row[f] !== undefined) target[f] = row[f]; });
+      target.id = existing.id;
+      plan.push({ action: 'update', id: existing.id, companyId: existing.companyId, branchId: existing.branchId, employeeNumber: existing.employeeNumber, target });
+      return;
+    }
+    let id = alloc();
+    let guard = 0;
+    while (usedIds.has(id) && guard++ < 1000) id = alloc();
+    usedIds.add(id);
+    const company = comps.find((c) => c && c.id === row.companyId) || null;
+    const target = createEmployeeFromRow(row, { company, settings: s, id });
+    plan.push({ action: 'create', id, companyId: row.companyId, branchId: row.branchId, employeeNumber: row.employeeNumber, target });
+  });
+
+  return { plan, skipped };
+}
+
+/**
+ * Mirror of the server's validateServerBranchContext for WRITES: the returned
+ * employee list is the set the caller may actually update/create. super_admin
+ * spans all companies/branches; branch_hr is pinned to its assigned branch;
+ * company-scoped roles must have a concrete branch selected when they span
+ * several branches.
+ */
+export function buildWriteScopeForUser({ user, employees = [], selectedBranchId = 'all' } = {}) {
+  if (!user) return { ok: false, error: 'no_user' };
+  const companyScopedRoles = ['company_hr', 'payroll_admin', 'audit_reviewer', 'payments_officer'];
+  if (user.role === 'super_admin') {
+    return { ok: true, companyIds: 'all', branchIds: 'all', employees, selectedBranchId: null };
+  }
+  if (user.role === 'branch_hr') {
+    if (!user.assignedBranchId || user.assignedBranchId === 'all') return { ok: false, error: 'branch_required' };
+    const scoped = employees.filter((e) => e && e.companyId === user.assignedCompanyId && e.branchId === user.assignedBranchId);
+    return { ok: true, companyIds: [user.assignedCompanyId], branchIds: [user.assignedBranchId], employees: scoped, selectedBranchId: user.assignedBranchId };
+  }
+  if (companyScopedRoles.includes(user.role)) {
+    const assigned = Array.isArray(user.assignedBranches) && user.assignedBranches.length
+      ? user.assignedBranches
+      : [user.assignedBranchId || 'all'];
+    const companyId = user.assignedCompanyId || (Array.isArray(user.assignedCompanyIds) && user.assignedCompanyIds[0]) || null;
+    const multiBranch = assigned.includes('all') || assigned.length !== 1;
+    if (multiBranch) {
+      if (!selectedBranchId || selectedBranchId === 'all') return { ok: false, error: 'branch_required' };
+      const scoped = employees.filter((e) => e && e.companyId === companyId && e.branchId === selectedBranchId);
+      return { ok: true, companyIds: [companyId], branchIds: [selectedBranchId], employees: scoped, selectedBranchId };
+    }
+    const scoped = employees.filter((e) => e && e.companyId === companyId && e.branchId === assigned[0]);
+    return { ok: true, companyIds: [companyId], branchIds: [assigned[0]], employees: scoped, selectedBranchId: assigned[0] };
+  }
+  const branchId = user.assignedBranchId && user.assignedBranchId !== 'all'
+    ? user.assignedBranchId
+    : (selectedBranchId !== 'all' ? selectedBranchId : null);
+  if (!branchId) return { ok: false, error: 'branch_required' };
+  const scoped = employees.filter((e) => e && e.branchId === branchId);
+  return { ok: true, companyIds: [user.assignedCompanyId || null], branchIds: [branchId], employees: scoped, selectedBranchId: branchId };
+}
+
+/**
+ * Server-first import executor. Sequencing:
+ *   1. build the caller's write scope;
+ *   2. strictly normalize the rows (report invalid identity rows);
+ *   3. reject out-of-scope rows before anything is sent;
+ *   4. POST /api/import-employees (await), sending X-Branch-Id when a concrete
+ *      branch is required;
+ *   5. persist locally ONLY on server success (mergeEmployeeUpdatesById +
+ *      addEmployee). The local employee collection is never touched when the
+ *      server rejects the import.
+ */
+export async function runImport({ rows, mode = 'merge', store = storage, apiFetch, allocId } = {}) {
+  if (!store || !Array.isArray(rows)) return { ok: false, step: 'input', error: 'invalid input' };
+  const state = store.getState();
+  const user = store.getActiveUser();
+  const companies = state.companies || [];
+  const settings = state.settings || {};
+  const allEmployees = state.rawEmployees || [];
+
+  const scope = buildWriteScopeForUser({
+    user,
+    employees: allEmployees,
+    selectedBranchId: store.getSelectedBranchId(),
+  });
+  if (!scope.ok) {
+    const msg = scope.error === 'branch_required'
+      ? (i18n.getLang() === 'en' ? 'A valid branch must be selected before importing' : 'يجب تحديد الفرع أولاً قبل الاستيراد')
+      : scope.error;
+    return { ok: false, step: 'scope', error: scope.error, message: msg };
+  }
+
+  const { rows: cleanRows, errors: parseErrors } = normalizeImportedRows(rows, { companies, settings });
+  if (parseErrors.length) return { ok: false, step: 'parse', error: 'invalid_rows', errors: parseErrors };
+
+  const outOfScope = cleanRows.filter((r) => {
+    if (scope.companyIds !== 'all' && !scope.companyIds.includes(r.companyId)) return true;
+    if (scope.branchIds !== 'all' && !scope.branchIds.includes(r.branchId)) return true;
+    return false;
+  });
+  if (outOfScope.length) {
+    return {
+      ok: false,
+      step: 'scope_rows',
+      error: 'scope_violation',
+      rows: outOfScope.map((r) => ({ employeeNumber: r.employeeNumber, companyId: r.companyId, branchId: r.branchId })),
+    };
+  }
+
+  const { plan, skipped } = planImport(cleanRows, { employees: scope.employees, companies, settings, mode, allocId });
+  const targetEmps = plan.map((p) => p.target);
+
+  const send = apiFetch || store.apiFetch.bind(store);
+  let res = null;
+  try {
+    res = await send('/api/import-employees', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Branch-Id': scope.selectedBranchId || 'all',
+      },
+      body: JSON.stringify({ employees: targetEmps, mode }),
+    });
+  } catch (err) {
+    return { ok: false, step: 'network', error: String((err && err.message) || err) };
+  }
+
+  if (!res || !res.ok) {
+    let data = null;
+    try { data = await (res && res.json ? res.json() : Promise.resolve(null)); } catch (e) {}
+    const status = res ? res.status : 0;
+    return {
+      ok: false,
+      step: 'server',
+      status,
+      data,
+      error: (data && data.error) || (status === 403 ? 'Permission denied' : 'Import rejected'),
+    };
+  }
+
+  // Persist locally ONLY after the server accepted the import.
+  const updates = plan.filter((p) => p.action === 'update').map((p) => p.target);
+  const creates = plan.filter((p) => p.action === 'create').map((p) => p.target);
+  if (updates.length) store.mergeEmployeeUpdatesById(updates);
+  creates.forEach((emp) => store.addEmployee(emp));
+
+  return { ok: true, updated: updates.length, created: creates.length, skipped: skipped.length, plan };
 }
 
 function parseCSVText(csvText) {
@@ -361,103 +708,7 @@ function parseCSVLine(line) {
 }
 
 function mapExcelRowsToComprehensiveEmployees(rows, companies, defaultCompanyId, settings) {
-  return rows
-    .map((row, idx) => {
-      // 1. Resolve Company
-      const compVal = String(row['كود الشركة'] || row['اسم الشركة'] || row['رقم الشركة'] || row['Company'] || row['CompanyCode'] || '').trim();
-      let matchedComp = companies.find(
-        (c) => c.code?.toLowerCase() === compVal.toLowerCase() || c.nameAr === compVal || c.nameEn?.toLowerCase() === compVal.toLowerCase() || c.id === compVal
-      );
-      if (!matchedComp) {
-        matchedComp = companies.find((c) => c.id === defaultCompanyId) || companies[0] || { id: 'comp-1', branches: [] };
-      }
-
-      // 2. Resolve Branch
-      const branchVal = String(row['اسم الفرع'] || row['الفرع'] || row['Branch'] || row['BranchName'] || '').trim();
-      let matchedBranch = (matchedComp.branches || []).find(
-        (b) => b.nameAr === branchVal || b.nameEn?.toLowerCase() === branchVal.toLowerCase() || b.id === branchVal
-      );
-      if (!matchedBranch) {
-        matchedBranch = (matchedComp.branches || [])[0] || { id: 'br-1' };
-      }
-
-      const empNum =
-        row['الرقم الوظيفي'] || row['رقم الموظف'] || row['EmployeeNumber'] || row['EmployeeID'] || row['emp_id'] || `EMP-${1000 + idx + 1}`;
-      const fullName =
-        row['الاسم الكامل'] || row['اسم الموظف'] || row['الاسم'] || row['FullName'] || row['name'] || `موظف ${idx + 1}`;
-      const fullNameEn = row['الاسم بالإنجليزية'] || row['FullNameEn'] || row['EnglishName'] || '';
-      const dept = row['القسم'] || row['الإدارة'] || row['Department'] || 'العمليات والتشغيل';
-      const jobTitle = row['المسمى الوظيفي'] || row['الوظيفة'] || row['JobTitle'] || 'موظف';
-      const hireDate = String(row['تاريخ التعيين'] || row['تاريخ المباشرة'] || row['HireDate'] || row['JoinDate'] || new Date().toISOString().split('T')[0]);
-      const contractType = row['نوع العقد'] || row['ContractType'] || 'full_time';
-      const status = row['الحالة'] || row['Status'] || 'active';
-
-      // Salaries & Allowances
-      const basicSalary = Number(row['الراتب الأساسي'] || row['BasicSalary'] || row['salary'] || 5000);
-      const housingAllowance = Number(row['بدل السكن'] || row['HousingAllowance'] || 0);
-      const transportAllowance = Number(row['بدل النقل'] || row['TransportAllowance'] || 0);
-      const otherAllowances = Number(row['بدلات أخرى'] || row['OtherAllowances'] || 0);
-
-      // Social Security / GOSI
-      const gosiSubjectVal = String(row['خاضع للتأمينات'] || row['خاضع للضمان'] || row['GOSI'] || row['IsGOSI'] || 'نعم').trim();
-      const isSubjectToGosi = !['لا', 'no', 'false', '0', 'exempt'].includes(gosiSubjectVal.toLowerCase());
-      const gosiRegisteredWage = Number(row['الأجر المسجل في الضمان'] || row['أجر التأمينات'] || row['GOSIWage'] || (basicSalary + housingAllowance));
-      const gosiEmployeePercent = Number(row['نسبة استقطاع الموظف %'] || row['GOSIEmpPercent'] || (settings.socialInsuranceEmployeePercent !== undefined ? settings.socialInsuranceEmployeePercent : (settings.gosiEmployeePercent || 0)));
-      const gosiCompanyPercent = Number(row['نسبة مساهمة الشركة %'] || row['GOSICompPercent'] || (settings.socialInsuranceCompanyPercent !== undefined ? settings.socialInsuranceCompanyPercent : (settings.gosiCompanyPercent || 0)));
-
-      // Bank Details
-      const bankName = String(row['اسم البنك'] || row['البنك'] || row['BankName'] || '');
-      const bankAccountNumber = String(row['رقم الحساب'] || row['BankAccount'] || '');
-      const iban = String(row['الآيبان'] || row['IBAN'] || '');
-
-      // Personal Info
-      const nationalId = String(row['رقم الهوية'] || row['الإقامة'] || row['NationalID'] || '');
-      const phone = String(row['رقم الهاتف'] || row['الجوال'] || row['Phone'] || '');
-      const email = String(row['البريد الإلكتروني'] || row['Email'] || '');
-      const nationality = String(row['الجنسية'] || row['Nationality'] || '');
-      const gender = String(row['الجنس'] || row['Gender'] || 'male');
-      const dateOfBirth = String(row['تاريخ الميلاد'] || row['DOB'] || '1995-01-01');
-
-      // Leaves
-      const annualLeaveBalance = Number(row['رصيد الإجازات السنوي'] || row['AnnualLeaveBalance'] || settings.defaultAnnualLeaveDays || 21);
-      const hourlyLeaveQuota = Number(row['رصيد الساعات الشهري'] || row['HourlyLeaveQuota'] || matchedComp.hourlyLeaveQuota || 4);
-
-      return {
-        id: `emp-imp-${Date.now()}-${idx}`,
-        companyId: matchedComp.id,
-        branchId: matchedBranch.id,
-        employeeNumber: String(empNum),
-        fullName: String(fullName),
-        fullNameEn: String(fullNameEn),
-        department: String(dept),
-        jobTitle: String(jobTitle),
-        hireDate,
-        contractType,
-        status,
-        basicSalary,
-        housingAllowance,
-        transportAllowance,
-        otherAllowances,
-        isSubjectToGosi,
-        gosiRegisteredWage,
-        gosiEmployeePercent,
-        gosiCompanyPercent,
-        bankName,
-        bankAccountNumber,
-        iban,
-        nationalId,
-        phone,
-        email,
-        nationality,
-        gender,
-        dateOfBirth,
-        annualLeaveBalance,
-        annualLeaveEntitlement: annualLeaveBalance,
-        carriedOverLeaveBalance: 0,
-        hourlyLeaveQuota,
-      };
-    })
-    .filter((e) => e.fullName);
+  return normalizeImportedRows(rows, { companies, defaultCompanyId, settings }).rows;
 }
 
 function downloadComprehensiveEmployeeTemplate(companies = [], settings = {}) {

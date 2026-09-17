@@ -1040,8 +1040,13 @@ class StorageService {
    * Records not present in the update list (out-of-scope employees) are left
    * intact. IDs that do not exist in the stored collection are ignored, so an
    * unknown target can never be appended or silently mutated.
+   * X-2: gated by branchWriteGuard — a caller without a valid branch context
+   * is refused before the collection is touched, mirroring the interactive
+   * CRUD mutators.
    */
   mergeEmployeeUpdatesById(updatedList) {
+    const gate = this.branchWriteGuard();
+    if (gate) return this.get(STORAGE_KEYS.EMPLOYEES, []);
     const list = this.get(STORAGE_KEYS.EMPLOYEES, []);
     if (!Array.isArray(updatedList)) return list;
     const byId = new Map();
