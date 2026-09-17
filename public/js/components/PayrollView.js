@@ -85,7 +85,7 @@ export function renderPayrollView(container, options = {}) {
 
   let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'fully_returned' | 'loans' | 'increments' | 'corrections'
   let statusFilter = options.statusFilter || 'all'; // 'all' | 'draft' | 'under_audit' | 'approved' | 'paid' | 'fully_returned'
-  let selectedReturnedBatchMonth = options.returnedMonth || null;
+  let selectedReturnedBatchId = options.returnedBatchId || null;
 
   // Standard payday = day 25 of each month (or the branch payDay configured in
   // Companies/Branches). The calcuation is scoped to the selected company/branch
@@ -276,7 +276,11 @@ export function renderPayrollView(container, options = {}) {
 
     // Filter disbursed payrolls - read live state so batches paid during this
     // view session (release / disburse) appear immediately, not a stale mount snapshot.
-    const paidBatches = livePayrolls.filter((b) => b.status === 'paid');
+    const ctx = getPayrollBranchContext();
+    const paidBatches = livePayrolls.filter((b) => b.status === 'paid' &&
+      (!ctx.companyId || ctx.companyId === 'all' || String(b.companyId) === String(ctx.companyId)) &&
+      (!ctx.branchId || ctx.branchId === 'all' || String(b.branchId) === String(ctx.branchId))
+    );
 
     // P2.2 multi-currency: never sum different currencies into one figure.
     // Each currency renders on its own line, with its own decimals and a tinted
@@ -335,8 +339,8 @@ export function renderPayrollView(container, options = {}) {
 
     function renderFullyReturnedView(targetArea) {
       const returnedBatches = getFullyReturnedBatches();
-      const activeReturnedMonth = selectedReturnedBatchMonth || (returnedBatches[0]?.month) || null;
-      const selectedBatch = returnedBatches.find((b) => b.month === activeReturnedMonth) || returnedBatches[0];
+      const activeReturnedId = selectedReturnedBatchId || (returnedBatches[0]?.id) || null;
+      const selectedBatch = returnedBatches.find((b) => b.id === activeReturnedId) || returnedBatches[0];
 
       // Find audit trail entries matching this batch or its return correction
       const allAudit = storage.getState().audit_trail || [];
@@ -413,7 +417,7 @@ export function renderPayrollView(container, options = {}) {
                     const prevStatus = b.fullReturn?.previousStatus || b.previousStatus || 'paid';
                     const prevLabel = prevStatus === 'paid' ? (isEn ? 'Paid' : 'مصروف') : prevStatus === 'approved' ? (isEn ? 'Approved' : 'معتمد') : prevStatus;
                     return `
-                      <tr data-returned-month="${b.month}" style="${isSelected ? 'background:rgba(239,68,68,0.05); font-weight:600;' : ''}">
+                      <tr data-returned-id="${b.id}" style="${isSelected ? 'background:rgba(239,68,68,0.05); font-weight:600;' : ''}">
                         <td><strong>${b.month}</strong></td>
                         <td>${b.employeesCount || (b.items ? b.items.length : 0)} ${isEn ? 'employees' : 'موظف'}</td>
                         <td><strong style="color:var(--danger); font-size:14px;">${segB('net')}</strong></td>
@@ -424,7 +428,7 @@ export function renderPayrollView(container, options = {}) {
                         <td><span class="badge badge-danger">↩️ ${isEn ? 'Fully Returned' : 'تم الترجيع بالكامل'}</span></td>
                         <td>
                           <div style="display:flex; justify-content:flex-end;">
-                            <button type="button" class="btn btn-sm ${isSelected ? 'btn-danger' : 'btn-outline'} btn-select-returned-batch" data-month="${b.month}">
+                            <button type="button" class="btn btn-sm ${isSelected ? 'btn-danger' : 'btn-outline'} btn-select-returned-batch" data-id="${b.id}">
                               ${Icons.fileText ? Icons.fileText(14) : '📄'} ${isEn ? 'View Details' : 'عرض التفاصيل'}
                             </button>
                           </div>
@@ -602,7 +606,7 @@ export function renderPayrollView(container, options = {}) {
 
       targetArea.querySelectorAll('.btn-select-returned-batch').forEach((btn) => {
         btn.addEventListener('click', () => {
-          selectedReturnedBatchMonth = btn.getAttribute('data-month');
+          selectedReturnedBatchId = btn.getAttribute('data-id');
           renderFullyReturnedView(targetArea);
         });
       });
@@ -1448,7 +1452,7 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-view-all-fully-returned')?.addEventListener('click', () => {
         statusFilter = 'fully_returned';
         activeTab = 'fully_returned';
-        selectedReturnedBatchMonth = currentBatch?.month || null;
+        selectedReturnedBatchId = currentBatch?.id || null;
         updateHeaderTabs();
         renderTabContent();
       });
@@ -1830,7 +1834,7 @@ export function renderPayrollView(container, options = {}) {
                         .map((b) => {
                           const segB = (k, sign) => summarizeCurrencySegmentsHtml((b.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g[k] || 0 })), { sign });
                           return `
-                      <tr data-batch-month="${b.month}">
+                      <tr data-batch-id="${b.id}">
                         <td><strong>${b.month}</strong></td>
                         <td>${b.employeesCount} ${isEn ? 'employees' : 'موظف'}</td>
                         <td>${segB('gross')}</td>
@@ -1894,8 +1898,8 @@ export function renderPayrollView(container, options = {}) {
       });
 
       contentArea.querySelectorAll('tr').forEach((row) => {
-        const month = row.getAttribute('data-batch-month');
-        const b = paidBatches.find((x) => x.month === month);
+        const bId = row.getAttribute('data-batch-id');
+        const b = paidBatches.find((x) => x.id === bId);
 
         row.querySelector('.btn-print-disbursed-all')?.addEventListener('click', () => {
           if (b) openBatchPayslipsPrintModal(b, settings, null, companies);
