@@ -81,6 +81,12 @@ function seedFixture(tmp) {
 
   const employees = readJSON(tmp, 'employees.json');
   employees.push(
+    // Hermetic fixture: branch_hr 'c1b2-hr' (br-1788788794421) must have at
+    // least one employee in its branch, and pb-c1's item (emp-1788944410774)
+    // must resolve to a real employee — otherwise N04/N16b depend on whatever
+    // exists in the developer's local data/ directory.
+    { id: 'emp-brh', companyId: 'comp-1', branchId: 'br-1788788794421', employeeNumber: 'EMP-BRH-1', fullName: 'Branch HR Target', basicSalary: 3000, status: 'active', contractType: 'full_time', updatedAt: new Date().toISOString() },
+    { id: 'emp-1788944410774', companyId: 'comp-1', branchId: 'br-1', employeeNumber: 'EMP-C1-1', fullName: 'C1 B1 Empl', basicSalary: 4500, status: 'active', contractType: 'full_time', updatedAt: new Date().toISOString() },
     { id: 'emp-c2a', companyId: 'comp-2', branchId: 'br-2a', employeeNumber: 'EMP-C2-1', fullName: 'Second Co Empl A', basicSalary: 5000, status: 'active', contractType: 'full_time', updatedAt: new Date().toISOString() },
     { id: 'emp-c2b', companyId: 'comp-2', branchId: 'br-2b', employeeNumber: 'EMP-C2-2', fullName: 'Second Co Empl B', basicSalary: 4000, status: 'active', contractType: 'full_time', updatedAt: new Date().toISOString() },
   );
