@@ -14,7 +14,7 @@
 // transitionPayroll once all three guards pass.
 
 import { can, getEffectivePermissions } from '../types.js';
-import { transitionPayroll, recordPayrollCorrection, archivePayrollBatch, fullReturnPayrollBatch } from './payrollEngine.js';
+import { transitionPayroll, recordPayrollCorrection, archivePayrollBatch, fullReturnPayrollBatch, reactivateFullReturnedBatch } from './payrollEngine.js';
 
 // Phase 5: security-denial hook. Storage registers itself here (acyclic —
 // payrollAccess has no storage dependency) so a forbidden payroll operation is
@@ -57,6 +57,7 @@ export const PAYROLL_ACTION_PERMISSIONS = {
   export: 'payroll.export',
   archive: 'payroll.archive',
   cancelPayment: 'payroll.cancelPayment',
+  reactivate: 'payroll.reactivate',
 };
 
 /** Map a state-machine destination to the action that performs that transition. */
@@ -124,7 +125,7 @@ export function requirePayrollBranchContext(user, batch, action, context) {
   if (!user) return { ok: false, error: 'no_user', layer: 'context' };
   // Super admin is the global authority and bypasses branch-context checks.
   if (user.role === 'super_admin') return { ok: true };
-  const sensitiveActions = ['generate', 'edit', 'submit', 'approve', 'reject', 'disburse', 'archive', 'cancelPayment'];
+  const sensitiveActions = ['generate', 'edit', 'submit', 'approve', 'reject', 'disburse', 'archive', 'cancelPayment', 'reactivate'];
   if (!sensitiveActions.includes(action)) return { ok: true };
   const scope = userScope(user);
 
@@ -194,8 +195,29 @@ export function requirePayrollAction(user, action, batch, context) {
     }
   } else if ((action === 'approve' || action === 'reject') && st !== 'under_audit') {
     return { ok: false, error: `review_requires_under_audit:${st}`, layer: 'state' };
-  } else if (action === 'disburse' && st !== 'approved') {
-    return { ok: false, error: `disburse_requires_approved:${st}`, layer: 'state' };
+  } else if (action === 'disburse') {
+    if (st !== 'approved') {
+      return { ok: false, error: `disburse_requires_approved:${st}`, layer: 'state' };
+    }
+    // A batch that completed a structured full return is frozen until a
+    // sanctioned reactivation workflow exists; it simply cannot be paid again.
+    if (batch && batch.fullReturn && batch.fullReturn.completed === true) {
+      return { ok: false, error: 'reactivation_required', layer: 'state' };
+    }
+  } else if (action === 'reactivate') {
+    // Reactivate is the System Admin audited unlock of a fully-returned batch.
+    // It requires the payroll.reactivate permission (checked above), the
+    // super_admin role, AND a genuinely locked batch (approved + completed
+    // full-return). The dedicated engine operation does the marker work.
+    if (user.role !== 'super_admin') {
+      return { ok: false, error: 'super_admin_required', layer: 'permission' };
+    }
+    if (!(batch && batch.fullReturn && batch.fullReturn.completed === true)) {
+      return { ok: false, error: 'reactivate_requires_fully_returned', layer: 'state' };
+    }
+    if ((batch.status || 'draft') !== 'approved') {
+      return { ok: false, error: 'reactivate_requires_previous_approved', layer: 'state' };
+    }
   } else if (action === 'archive' && st !== 'paid') {
     return { ok: false, error: `archive_requires_paid:${st}`, layer: 'state' };
   } else if (action === 'cancelPayment' && st !== 'paid') {
@@ -264,6 +286,22 @@ export function fullReturnPayrollBatchGuarded(user, batch, opts = {}) {
   }
   const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
   return fullReturnPayrollBatch(batch, { ...opts, by: opts.by || actor });
+}
+
+/**
+ * System Admin reactivation / reopen of a fully-returned batch through the full
+ * guard stack (payroll.reactivate -> permission/scope/branch-context/state,
+ * then the dedicated engine recorder). This is the ONLY sanctioned engine path
+ * from UI to releasing the D2 lock. The server remains authoritative.
+ */
+export function reactivateFullReturnedBatchGuarded(user, batch, opts = {}) {
+  const gate = requirePayrollAction(user, 'reactivate', batch, opts.context);
+  if (!gate.ok) {
+    reportDenied('reactivate', batch, gate);
+    return { ok: false, error: gate.error, layer: gate.layer, batch };
+  }
+  const actor = opts.by || (user && (user.name || user.username || user.role)) || '';
+  return reactivateFullReturnedBatch(batch, { ...opts, by: opts.by || actor });
 }
 
 /** Exposure for tests/tooling: what can a user effectively do end-to-end? */

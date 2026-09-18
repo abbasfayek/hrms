@@ -353,7 +353,7 @@ const PAYROLL_STATE_TRANSITIONS = {
   paid: [],
 };
 
-const MONETARY_FIELDS = [
+export const MONETARY_FIELDS = [
   'basicSalary', 'housingAllowance', 'transportAllowance', 'otherAllowances',
   'overtimeAmount', 'bonuses', 'totalEarnings', 'grossSalary',
   'gosiEmployeeDeduction', 'gosiCompanyContribution', 'loanInstallment',
@@ -361,7 +361,7 @@ const MONETARY_FIELDS = [
   'otherDeductions', 'penaltiesDeduction', 'totalDeductions', 'netSalary',
 ];
 
-const CURRENCY_SNAPSHOT_FIELDS = [
+export const CURRENCY_SNAPSHOT_FIELDS = [
   'currency', 'salaryCurrency', 'exchangeRate', 'exchangeRateDate',
   'baseCurrency', 'baseAmount', 'exchangeRateStatus',
 ];
@@ -757,6 +757,97 @@ export function fullReturnPayrollBatch(batch, opts = {}) {
 }
 
 /**
+ * System Admin reactivation / reopen of a FULLY-RETURNED batch
+ * (fullReturn.completed === true, status 'approved').
+ *
+ * This is the sanctioned administrative exception that RELEASES the D2 lock.
+ * It is the symmetric counterpart of fullReturnPayrollBatch: a dedicated
+ * operation, NOT a state-machine edge (PAYROLL_STATE_TRANSITIONS stays
+ * untouched). It:
+ *   • only ever accepts a fully-returned batch (else it is refused),
+ *   • requires a mandatory, trimmed, non-empty reason,
+ *   • requires the previous status to be the post-return lock state 'approved',
+ *   • moves the completed fullReturn marker into the permanent returnHistory[]
+ *     and removes the active lock marker (business rule: completed === true
+ *     means LOCKED; only this audited operation may clear it),
+ *   • lands the batch in the correction state: status PAYROLL_RETURN_STATE
+ *     ('rejected', the existing "Returned / Needs Correction" reprocessing
+ *     state) with returnState 'needs_correction',
+ *   • stamps the reactivation marker + the full audit triple
+ *     (auditHistory / auditAttempts / versions),
+ *   • preserves EVERY financial value, snapshot, total and currency model —
+ *     it NEVER recomputes, clears, pays or touches loans,
+ *   • never touches rejectionHistory (server history-tampering checks stay valid).
+ *
+ * Returns a NEW batch object; the input is never mutated.
+ */
+export function reactivateFullReturnedBatch(batch, opts = {}) {
+  if (!batch) return { ok: false, error: 'no_batch', batch };
+  if (!(batch.fullReturn && batch.fullReturn.completed === true)) {
+    return { ok: false, error: 'only_fully_returned_can_reactivate', layer: 'state', batch };
+  }
+  if ((batch.status || 'draft') !== 'approved') {
+    return { ok: false, error: 'reactivate_requires_previous_approved', layer: 'state', batch };
+  }
+  const reason = String(opts.reason || '').trim();
+  if (!reason) {
+    return { ok: false, error: 'missing_reactivation_reason', layer: 'validation', batch };
+  }
+
+  const now = new Date().toISOString();
+  const actor = opts.by || '';
+  const next = cloneBatch(batch);
+  const prevRevision = Number(next.revision) || 0;
+  const revision = prevRevision + 1;
+
+  // Preserve the original full-return event in the permanent return history.
+  next.returnHistory = Array.isArray(batch.returnHistory) ? batch.returnHistory.slice() : [];
+  next.returnHistory.push({ ...batch.fullReturn });
+  // Release the lock marker — only as part of this audited operation.
+  next.fullReturn = undefined;
+  delete next.fullReturn;
+
+  next.status = PAYROLL_RETURN_STATE; // 'rejected'
+  next.fullReturnState = 'reactivated';
+  next.returnState = 'needs_correction';
+  next.reactivatedBy = actor;
+  next.reactivatedAt = now;
+  next.reactivation = {
+    completed: true,
+    at: now,
+    by: actor,
+    reason,
+    previousStatus: 'approved',
+    previousRevision: prevRevision,
+  };
+  next.revision = revision;
+  next.updatedAt = now;
+  next.payrollSchema = PAYROLL_SCHEMA;
+
+  next.auditHistory = Array.isArray(batch.auditHistory) ? batch.auditHistory.slice() : [];
+  next.auditHistory.push({ action: 'reactivated', from: 'approved', to: PAYROLL_RETURN_STATE, by: actor, at: now, reason, revision });
+  next.auditAttempts = Array.isArray(batch.auditAttempts) ? batch.auditAttempts.slice() : [];
+  next.auditAttempts.push({
+    attempt: (batch.auditAttempts ? batch.auditAttempts.length : 0) + 1,
+    result: 'reactivated',
+    by: actor,
+    at: now,
+    reason,
+    fromVersion: prevRevision,
+    toVersion: revision,
+  });
+  next.versions = pushVersion(next, {
+    type: 'reactivation',
+    version: revision,
+    status: PAYROLL_RETURN_STATE,
+    by: actor,
+    at: now,
+    reason,
+  });
+  return { ok: true, batch: next };
+}
+
+/**
  * Legacy P2.2 "reject-and-return" rule: when the Financial Audit rejects a
  * payroll, EVERY monetary figure in the batch is wiped to zero (statement renders as
  * empty/zeros instead of showing the previously submitted amounts) and the
@@ -773,6 +864,13 @@ export function fullReturnPayrollBatch(batch, opts = {}) {
  */
 export function clearPayrollAmounts(batch, opts = {}) {
   if (!batch) return batch;
+  // Paid batches and post-full-return batches are sealed financial records:
+  // clearing money fields on them is refused (mirrors the server seal and the
+  // returned-record gate). Draft / rejected batches keep the existing behavior.
+  if (batch.status === 'paid' || (batch.fullReturn && batch.fullReturn.completed === true)) {
+    console.warn('clearPayrollAmounts is not applicable to paid/returned batches; refusing');
+    return cloneBatch(batch);
+  }
   const cleared = { ...batch, items: (batch.items || []).map((it) => ({ ...it })) };
   cleared.status = 'draft';
   cleared.auditStatus = 'rejected';

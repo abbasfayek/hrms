@@ -6,7 +6,7 @@ import { storage } from '../storage.js';
 import { Icons } from '../icons.js';
 import { formatCurrency, formatDate, getCurrentMonth, formatPayMonth, formatAmountWithCode, summarizeCurrencySegmentsHtml, isPayrollViewEnabled, resolveEmployeeCurrency, escapeHtml } from '../types.js';
 import { generateMonthlyPayroll, generateBankPayrollFile, computePayrollReleaseSchedule, transitionPayroll, recordPayrollCorrection } from '../engines/payrollEngine.js';
-import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded } from '../engines/payrollAccess.js';
+import { transitionPayrollGuarded, recordPayrollCorrectionGuarded, archivePayrollBatchGuarded, reactivateFullReturnedBatchGuarded } from '../engines/payrollAccess.js';
 import { disbursePayrollAtomic, reversePayrollDisbursementAtomic } from '../engines/payrollDisbursement.js';
 import { transitionCorrectionGuarded, coApproveCorrectionGuarded, archiveCorrectionGuarded } from '../engines/payrollCorrectionAccess.js';
 import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
@@ -20,6 +20,7 @@ import { openDeductionBonusModal, openDeductionsBonusesListModal } from './Deduc
 import { openArchivePayrollModal } from './ArchivePayrollModal.js';
 import { openPayrollCorrectionModal } from './PayrollCorrectionModal.js';
 import { openPayrollFullReturnModal } from './PayrollFullReturnModal.js';
+import { openPayrollReactivateModal } from './PayrollReactivateModal.js';
 
 import { toast } from './Toast.js';
 import { showConfirmDialog, createModal } from './Modal.js';
@@ -86,6 +87,10 @@ export function renderPayrollView(container, options = {}) {
   // engine authorization (payroll.cancelPayment or super_admin — included in
   // super_admin's ALL_PERMISSIONS) instead of payroll.correction.create.
   const canCancelPayment = can(state.currentUser, 'payroll.cancelPayment') || state.currentUser?.role === 'super_admin';
+  // FR-1-D2b: Reactivation of a fully-returned batch is a System Admin only,
+  // server-authorized action: super_admin role AND payroll.reactivate. The
+  // engine guard independently re-checks both before any marker is applied.
+  const canReactivate = can(state.currentUser, 'payroll.reactivate') && state.currentUser?.role === 'super_admin';
 
   let activeTab = options.tab || persistedTab || 'payroll'; // 'payroll' | 'audit' | 'disbursed' | 'fully_returned' | 'loans' | 'increments' | 'corrections'
   let statusFilter = options.statusFilter || 'all'; // 'all' | 'draft' | 'under_audit' | 'approved' | 'paid' | 'fully_returned'
@@ -466,6 +471,11 @@ export function renderPayrollView(container, options = {}) {
                   </div>
                 </div>
                 <div style="display:flex; gap:8px;">
+                  ${canReactivate ? `
+                  <button type="button" class="btn btn-sm btn-danger btn-reactivate-selected" data-batch-id="${selectedBatch.id}">
+                    🔓 ${isEn ? 'Reactivate' : 'إعادة فتح'}
+                  </button>
+                  ` : ''}
                   <button type="button" class="btn btn-outline btn-sm btn-print-returned-payslips" data-month="${selectedBatch.month}">
                     ${Icons.printer ? Icons.printer(14) : '🖨️'} ${isEn ? 'Print Payslips' : 'طباعة الوصولات'}
                   </button>
@@ -619,6 +629,11 @@ export function renderPayrollView(container, options = {}) {
         if (selectedBatch) openBatchPayslipsPrintModal(selectedBatch, settings, null, companies);
       });
 
+      // FR-1-D2b: reactivate the selected fully-returned batch (System Admin).
+      targetArea.querySelector('.btn-reactivate-selected')?.addEventListener('click', () => {
+        if (selectedBatch) runReactivateFlow(selectedBatch);
+      });
+
       targetArea.querySelectorAll('.btn-view-returned-item-payslip').forEach((btn) => {
         btn.addEventListener('click', () => {
           const empId = btn.getAttribute('data-emp-id');
@@ -718,6 +733,46 @@ export function renderPayrollView(container, options = {}) {
             statusFilter = 'fully_returned';
             activeTab = 'fully_returned';
           }
+          updateHeaderTabs();
+          renderTabContent();
+        },
+      });
+    };
+
+    // FR-1-D2b: System Admin reactivation / reopen of a fully-returned batch.
+    // Mirrors runFullReturnFlow so every entry point converges on the same
+    // path: mandatory reason -> payrollAccess.reactivateFullReturnedBatchGuarded
+    // (permission + scope + state + SFAdmin engine recorder) -> materalized
+    // audit via storage.addPayrollBatch. Server remains authoritative; this
+    // only produces the new audited state for the currently-open batch.
+    const runReactivateFlow = (batch, opts = {}) => {
+      if (!batch) return;
+      if (!canReactivate) {
+        toast.error(isEn ? 'Insufficient permissions to reactivate this payroll.' : 'لا تملك صلاحية إعادة فتح هذا المسير.');
+        return;
+      }
+      if (!requireBranchForAction()) return;
+      openPayrollReactivateModal({
+        batch,
+        onConfirmed: (reason) => {
+          const res = reactivateFullReturnedBatchGuarded(state.currentUser, batch, {
+            by: state.currentUser?.name || state.currentUser?.username || state.currentUser?.role,
+            reason,
+            context: getPayrollBranchContext(),
+          });
+          if (!res.ok) {
+            toast.error(isEn ? `Failed to reactivate payroll: ${storage.recordErrorText(res.error, isEn)}` : `فشل إعادة فتح المسير: ${storage.recordErrorText(res.error, isEn)}`);
+            return;
+          }
+          storage.addPayrollBatch(res.batch);
+          storage.addAudit('reactivated', 'payroll', `${batch.month} → reactivated (System Admin): ${String(reason).trim()}`, batch.id);
+          toast.success(isEn ? 'Payroll reactivated and reopened for correction.' : 'تمت إعادة فتح المسير للتصحيح.');
+          currentBatch = res.batch;
+          // The batch is no longer fully-returned: land on the payroll tab
+          // where the reactivated batch is shown as Returned / Needs Correction.
+          currentMonth = batch?.month || currentMonth;
+          statusFilter = 'all';
+          activeTab = 'payroll';
           updateHeaderTabs();
           renderTabContent();
         },
@@ -1084,9 +1139,14 @@ export function renderPayrollView(container, options = {}) {
               </div>
             </div>
             <div>
-              <button type="button" class="btn btn-sm btn-danger" id="btn-view-all-fully-returned">
-                ↩️ ${isEn ? 'View in Returned Filter' : 'فتح في فلتر تم الترجيع بالكامل'}
-              </button>
+                ${canReactivate ? `
+                <button type="button" class="btn btn-sm btn-danger" id="btn-reactivate-main">
+                  🔓 ${isEn ? 'Reactivate (System Admin)' : 'إعادة فتح (System Admin)'}
+                </button>
+                ` : ''}
+                <button type="button" class="btn btn-sm btn-danger" id="btn-view-all-fully-returned">
+                  ↩️ ${isEn ? 'View in Returned Filter' : 'فتح في فلتر تم الترجيع بالكامل'}
+                </button>
             </div>
           </div>
         </div>
@@ -1473,6 +1533,14 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-full-return-main')?.addEventListener('click', () => {
         if (!currentBatch) return;
         runFullReturnFlow(currentBatch, { goToReturnedTab: true });
+      });
+
+      // FR-1-D2b: Reactivate (System Admin) entry points — the detail card and
+      // the main fully-returned banner. Both re-check canReactivate immediately
+      // because runReactivateFlow is the single shared sanctioned path.
+      contentArea.querySelector('#btn-reactivate-main')?.addEventListener('click', () => {
+        if (!currentBatch) return;
+        runReactivateFlow(currentBatch);
       });
 
       attachStatusFilterListeners(contentArea);

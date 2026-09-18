@@ -1243,6 +1243,14 @@ class StorageService {
       invalid_record: isEn ? 'Invalid record.' : 'سجل غير صالح.',
       not_found: isEn ? 'Record not found.' : 'السجل غير موجود.',
       branch_required: isEn ? 'Please select a branch before performing this action.' : 'يرجى تحديد الفرع أولاً قبل تنفيذ هذا الإجراء.',
+      legacy_loan_attribution_missing: isEn ? 'This payroll predates the safe loan attribution and no matching loan could be identified for the recorded deduction. Reconciliation is required before this payroll can be returned.' : 'هذا المسير يسبق نظام الإسناد الآمن للسلف ولا يوجد قرض مطابق يمكن تحديده للخصم المسجل. يلزم إجراء تسوية قبل إمكانية ترجيع هذا المسير.',
+      ambiguous_legacy_loan: isEn ? 'The recorded deduction could not be matched to exactly one provable loan (ambiguous or unprovable amount). Rejected to avoid reversing an incorrect loan.' : 'تعذر مطابقة الخصم المسجل مع قرض واحد مثبت بدقة (غموض أو مبلغ غير قابل للإثبات). تم الرفض لتجنب عكس قرض خاطئ.',
+      reactivation_required: isEn ? 'This payroll batch completed a structured full return and is frozen. Only a sanctioned System Admin reactivation may reopen it.' : 'أكمل هذا المسير عملية الترجيع الكامل وهو مجمّد. لا يمكن إعادة فتحه إلا عبر إعادة تفعيل معتمدة من System Admin.',
+      only_fully_returned_can_reactivate: isEn ? 'Only a fully-returned payroll batch (completed full return) can be reactivated.' : 'يمكن إعادة فتح مسير الرواتب المُرجَّع بالكامل فقط (اكتمل الترجيع).',
+      reactivate_requires_previous_approved: isEn ? 'A reactivated batch must transition from the post-return lock state (approved).' : 'لإعادة الفتح يجب أن يكون المسير في حالة القفل بعد الترجيع (approved).',
+      missing_reactivation_reason: isEn ? 'A mandatory reactivation reason is required.' : 'سبب إعادة الفتح الإلزامي مطلوب.',
+      super_admin_required: isEn ? 'Reactivation is restricted to System Administrators (super_admin).' : 'إعادة الفتح محصورة بمسؤولي النظام (super_admin).',
+      reactivate_requires_fully_returned: isEn ? 'The batch is not in the fully-returned state and cannot be reactivated.' : 'المسير ليس في حالة الترجيع الكامل ولا يمكن إعادة فتحه.',
     };
     return map[code] || (isEn ? 'Unable to save record.' : 'تعذر حفظ السجل.');
   }

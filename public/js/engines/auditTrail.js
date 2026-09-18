@@ -56,6 +56,7 @@ export const AUDIT_ACTIONS = {
   EXCHANGE_RATE_UPDATED: 'exchange_rate_updated',
   EXCHANGE_RATE_LOCKED: 'exchange_rate_locked',
   DENIED: 'denied',            // security-denied attempt (never a success event)
+  REACTIVATED: 'reactivated',  // System Admin audited lift of a fully-returned batch (approved -> rejected/needs_correction)
   RECORDS_CLEARED: 'records_cleared',
   DATA_RESET: 'data_reset',
   BACKUP_RESTORED: 'backup_restored',

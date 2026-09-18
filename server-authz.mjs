@@ -16,6 +16,7 @@ export const ALL_PERMISSIONS = [
   'increments.view', 'increments.add', 'increments.edit', 'increments.delete',
   'deductions.view', 'deductions.add', 'deductions.edit', 'deductions.delete',
   'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.approve', 'payroll.reject', 'payroll.submit', 'payroll.cancelPayment', 'payroll.archive', 'payroll.export', 'payroll.disburse',
+  'payroll.reactivate',
   'payroll.correction.create', 'payroll.correction.manual', 'payroll.correction.writeOff', 'payroll.correction.coApprove',
   'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.pay', 'eosb.delete',
   'companies.view', 'companies.manage',
@@ -527,26 +528,102 @@ function findStoredById(storedData, id) {
   return storedData.find((s) => s && s.id === id) || null;
 }
 
-// Sealed-financial check for a stored 'paid' batch: every monetary value and
-// the sealed exchange-rate snapshot must survive any write untouched, including
-// a genuine structured full return. Returns true when nothing financial moved.
+// ---------------------------------------------------------------------------
+// Sealed-financial field registry — server-side mirror of the client payroll
+// engines. ONE source of truth for BOTH financial seals: the paid-batch seal
+// (paidFinancialsUnchanged) and the post-full-return seal (returned_batch_immutable
+// gate in authorizePayrollRecord / authorizeSuperRecord). On purpose this is
+// NOT a second competing definition: it extends the single seal function.
+// ---------------------------------------------------------------------------
+export const PAYROLL_MONETARY_FIELDS = [
+  'basicSalary', 'housingAllowance', 'transportAllowance', 'otherAllowances',
+  'overtimeAmount', 'bonuses', 'totalEarnings', 'grossSalary',
+  'gosiEmployeeDeduction', 'gosiCompanyContribution', 'loanInstallment',
+  'absentDays', 'absenceDeduction', 'lateMinutes', 'lateDeduction',
+  'otherDeductions', 'penaltiesDeduction', 'totalDeductions', 'netSalary',
+];
+
+export const PAYROLL_CURRENCY_SNAPSHOT_FIELDS = [
+  'currency', 'salaryCurrency', 'exchangeRate', 'exchangeRateDate',
+  'baseCurrency', 'baseAmount', 'exchangeRateStatus',
+];
+
+export const PAYROLL_BATCH_TOTAL_FIELDS = [
+  'totalGross', 'totalDeductions', 'totalNet', 'totalGosi',
+  'totalCompanyGosi', 'totalEOSB',
+];
+
+// The payroll correction / reprocessing state a reactivated batch lands in —
+// mirrors public/js/engines/payrollEngine.js PAYROLL_RETURN_STATE ('rejected',
+// "Returned / Needs Correction"):
+const PAYROLL_RETURN_STATE_SERVER = 'rejected';
+
+// A stored payroll that has completed the structured full return: status
+// 'approved' (engine payrollEngine.js fullReturnPayrollBatch) with
+// fullReturn.completed === true. Such a record is administratively frozen.
+function isReturnedRecord(stored) {
+  return Boolean(stored && stored.fullReturn && stored.fullReturn.completed === true);
+}
+
+// Strip the per-sync version stamps so "identical content, newer updatedAt"
+// (the client's harmless conflict-token bump) is NOT mistaken for content
+// change, while any real field/status mutation still differs.
+function stripSyncStamps(record) {
+  if (!record || typeof record !== 'object') return record;
+  const copy = JSON.parse(JSON.stringify(record));
+  delete copy.updatedAt;
+  delete copy.createdAt;
+  return copy;
+}
+
+function contentEqualsIgnoringStamps(existing, rec) {
+  return canonical(stripSyncStamps(existing)) === canonical(stripSyncStamps(rec));
+}
+
+// Sealed-financial check for a stored financial record: every monetary value,
+// item-level currency snapshot, batch total, grouped currency total and sealed
+// governance/rate snapshot must survive any write untouched — including a
+// genuine structured full return. Returns true when nothing financial moved.
 function paidFinancialsUnchanged(existing, rec) {
-  if (existing && existing.ratesSnapshot && rec && rec.ratesSnapshot &&
-      JSON.stringify(existing.ratesSnapshot) !== JSON.stringify(rec.ratesSnapshot)) return false;
+  if (!existing || !rec) return true;
+
+  // Sealed snapshots + grouped currency totals survive canonical equality
+  // (order-insensitive), same mechanism already used by recordWouldChangeStored.
+  if (canonical(existing.ratesSnapshot) !== canonical(rec.ratesSnapshot)) return false;
+  if (canonical(existing.governance) !== canonical(rec.governance)) return false;
+  if (canonical(existing.currencyModel) !== canonical(rec.currencyModel)) return false;
+  if (canonical(existing.totalsByCurrency) !== canonical(rec.totalsByCurrency)) return false;
+
+  // Batch-level totals never move.
+  for (const f of PAYROLL_BATCH_TOTAL_FIELDS) {
+    const hasExisting = existing[f] !== undefined && existing[f] !== null;
+    const hasIncoming = rec[f] !== undefined && rec[f] !== null;
+    if (hasExisting || hasIncoming) {
+      if (existing[f] !== rec[f]) return false;
+    }
+  }
+
+  // Item-level monetary fields, matched by employeeId.
   const existingItems = (existing && existing.items) || [];
   const incomingItems = Array.isArray(rec && rec.items) ? rec.items : [];
   for (const inItem of incomingItems) {
     const exItem = existingItems.find((it) => it && it.employeeId === inItem.employeeId);
-    if (exItem) {
-      if ((inItem.exchangeRate !== undefined && inItem.exchangeRate !== null && inItem.exchangeRate !== exItem.exchangeRate) ||
-          (inItem.baseAmount !== undefined && inItem.baseAmount !== null && inItem.baseAmount !== exItem.baseAmount) ||
-          inItem.netSalary !== exItem.netSalary ||
-          inItem.grossSalary !== exItem.grossSalary ||
-          inItem.basicSalary !== exItem.basicSalary ||
-          inItem.totalDeductions !== exItem.totalDeductions ||
-          inItem.totalEarnings !== exItem.totalEarnings) {
-        return false;
+    if (!exItem) continue;
+    for (const f of PAYROLL_MONETARY_FIELDS) {
+      const hasExisting = exItem[f] !== undefined && exItem[f] !== null;
+      const hasIncoming = inItem[f] !== undefined && inItem[f] !== null;
+      if (hasExisting || hasIncoming) {
+        if (inItem[f] !== exItem[f]) return false;
       }
+    }
+  }
+
+  // Item-level currency snapshot fields, sealed when present on the incoming item.
+  for (const inItem of incomingItems) {
+    const exItem = existingItems.find((it) => it && it.employeeId === inItem.employeeId);
+    if (!exItem) continue;
+    for (const f of PAYROLL_CURRENCY_SNAPSHOT_FIELDS) {
+      if (inItem[f] !== undefined && inItem[f] !== null && inItem[f] !== exItem[f]) return false;
     }
   }
   return true;
@@ -564,6 +641,55 @@ function isFullReturnPayload(rec) {
   if (!String(fr.reason || '').trim()) return false;
   if (!Array.isArray(rec.auditHistory) ||
       !rec.auditHistory.some((a) => a && a.action === 'full_return' && a.from === 'paid' && a.to === 'approved')) return false;
+  return true;
+}
+
+// Payload-STRUCTURE validator ONLY — it NEVER substitutes for authorization.
+// A sanctioned reactivation write must prove it is the audited System Admin
+// lift, not a disguised edit:
+//   • resulting status is the correction state ('rejected', needs_correction),
+//   • a completed `reactivation` marker with mandatory reason and previous
+//     status 'approved',
+//   • the active fullReturn lock marker is GONE while the original full-return
+//     event survives byte-for-byte inside returnHistory[],
+//   • an auditHistory `reactivated` entry (approved -> rejected) exists,
+//   • EVERY financial value, currency snapshot, total, rate, governance and
+//     currency model is bit-identical (paidFinancialsUnchanged).
+// Authorization (super_admin + payroll.reactivate + real change) is enforced
+// separately by isAuthorizedReactivation.
+function isReactivationPayload(existing, rec) {
+  if (!existing || !rec || typeof rec !== 'object') return false;
+  if (rec.status !== PAYROLL_RETURN_STATE_SERVER) return false;
+  const rx = rec.reactivation;
+  if (!rx || rx.completed !== true) return false;
+  if (String(rx.previousStatus || '') !== 'approved') return false;
+  if (!String(rx.reason || '').trim()) return false;
+  if (rec.returnState !== 'needs_correction') return false;
+  if (rec.fullReturnState !== 'reactivated') return false;
+  // The completed lock marker must be lifted, never carried forward.
+  if (rec.fullReturn && rec.fullReturn.completed === true) return false;
+  // The original full-return event is preserved inside returnHistory[].
+  if (!Array.isArray(rec.returnHistory) ||
+      !rec.returnHistory.some((r) => r && canonical(r) === canonical(existing.fullReturn))) return false;
+  // The audited transition exists on the batch.
+  if (!Array.isArray(rec.auditHistory) ||
+      !rec.auditHistory.some((a) => a && a.action === 'reactivated' && a.from === 'approved' && a.to === rec.status)) return false;
+  // Reactivation may only change state/governance/audit — never financials.
+  if (!paidFinancialsUnchanged(existing, rec)) return false;
+  return true;
+}
+
+// FULL authorization gate for the sanctioned reactivation write: the actor must
+// independently be the authenticated System Admin AND hold payroll.reactivate,
+// the stored record must genuinely be the post-return lock ('approved' +
+// fullReturn.completed), the payload must structurally validate, and the write
+// must be a real change (a newer stamp actually applied by the server) — a
+// stale replay must never unlock anything.
+function isAuthorizedReactivation(user, existing, rec) {
+  if (!isSuper(user) || !can(user, 'payroll.reactivate')) return false;
+  if (!existing || existing.status !== 'approved') return false;
+  if (!isReactivationPayload(existing, rec)) return false;
+  if (!recordWouldChangeStored(existing, rec)) return false;
   return true;
 }
 
@@ -597,6 +723,23 @@ function authorizePayrollRecord(ctx, rec, storedData) {
       if (!can(user, 'payroll.edit')) return { reason: 'paid_batch_immutable', status: 403, recordId: rec.id };
     }
     return null; // unchanged echo of a paid batch — safe
+  }
+
+  // Post-full-return records (approved + fullReturn.completed === true) are
+  // frozen: financially AND content immutable, and their status is locked too
+  // (payment, re-approval, or any transition denied) until a sanctioned
+  // reactivation workflow exists (none yet — engine fullReturnPayrollBatch only
+  // ever returns approved batches). A genuine unchanged echo — including a
+  // harmless updatedAt-only bump, the client's conflict-token — is allowed;
+  // ANY real content change fails closed for ordinary and super writers alike.
+  if (isReturnedRecord(existing)) {
+    // The ONLY release from the lock is the sanctioned, independently-authorized
+    // System Admin reactivation write (super_admin + payroll.reactivate + a
+    // structurally-valid, financially-unchanged reactivation payload).
+    if (isAuthorizedReactivation(user, existing, rec)) return null;
+    if (!recordWouldChangeStored(existing, rec)) return null;
+    if (contentEqualsIgnoringStamps(existing, rec)) return null;
+    return { reason: 'returned_batch_immutable', status: 403, recordId: rec.id };
   }
 
   // Creation — a payroll only ever enters the machine as a draft.
@@ -708,7 +851,7 @@ const GLOBAL_ADMIN_WRITES = new Set([
 // authorizePayrollRecord: even the global authority cannot mutate a paid batch
 // except through a genuine full-return payload, and every changed record must
 // belong to the declared branch/company context.
-function authorizeSuperRecord(collection, rec, branchId, companyId, storedData) {
+function authorizeSuperRecord(collection, rec, branchId, companyId, storedData, user = null) {
   const scopeRec = (collection === 'deleted_records' && rec.data && typeof rec.data === 'object')
     ? rec.data
     : rec;
@@ -743,6 +886,19 @@ function authorizeSuperRecord(collection, rec, branchId, companyId, storedData) 
     }
     return null; // unchanged echo of a paid batch
   }
+
+  // Post-full-return records are frozen even for super_admin: same gate as
+  // authorizePayrollRecord, so the global authority cannot mutate, re-pay, or
+  // re-approve a returned batch beyond a content-identical echo — EXCEPT the
+  // sanctioned, independently-authorized reactivation write (super_admin +
+  // payroll.reactivate + valid financially-unchanged payload), which is the
+  // only legitimate release of the lock.
+  if (collection === 'payrolls' && isReturnedRecord(existing)) {
+    if (isAuthorizedReactivation(user, existing, rec)) return null;
+    if (!recordWouldChangeStored(existing, rec)) return null;
+    if (contentEqualsIgnoringStamps(existing, rec)) return null;
+    return { reason: 'returned_batch_immutable', status: 403, recordId: rec.id };
+  }
   return null;
 }
 
@@ -761,7 +917,7 @@ function validateSuperWrite(collection, incoming, ctx, storedData) {
 
   for (const rec of incoming) {
     if (!rec || typeof rec !== 'object') continue;
-    const gate = authorizeSuperRecord(collection, rec, branchId, companyId, storedData);
+    const gate = authorizeSuperRecord(collection, rec, branchId, companyId, storedData, ctx.user);
     if (gate) return gate;
   }
   return { ok: true };
