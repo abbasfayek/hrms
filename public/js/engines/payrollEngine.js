@@ -90,6 +90,7 @@ export function generateMonthlyPayroll(
     );
     let loanInstallment = 0;
     const currencyMismatchLoans = [];
+    const loanAttributions = [];
     const loanCurrencyOf = (loan) => String(loan.currency || resolveEmployeeCurrency(emp, settings, companies).code || 'USD').trim().toUpperCase();
     activeLoans.forEach((loan) => {
       const loanCurrency = loanCurrencyOf(loan);
@@ -104,13 +105,27 @@ export function generateMonthlyPayroll(
       }
       const schedule = loan.installments || [];
       const matchInst = schedule.find((inst) => inst.month === month && !inst.isPaid);
+      let attributedAmount = 0;
       if (matchInst) {
-        loanInstallment += Number(matchInst.amount) || 0;
+        attributedAmount = Number(matchInst.amount) || 0;
       } else if (schedule.length === 0 && Number(loan.installmentAmount) > 0) {
         // Loans without an explicit monthly schedule are treated as an
         // automatic installment run, capped by the remaining balance.
-        loanInstallment += Math.min(Number(loan.installmentAmount), Number(loan.remainingAmount));
+        attributedAmount = Math.min(Number(loan.installmentAmount), Number(loan.remainingAmount));
       }
+      if (attributedAmount > 0) {
+        // FR-1-D4 (CRIT-2): record WHICH loan underwrites this deduction — with
+        // its exact amount, month and currency — at generation time. The
+        // disbursement engine settles by these deterministic attributes and
+        // never by a heuristic employeeId lookup.
+        loanAttributions.push({
+          loanId: loan.id,
+          amount: Number(attributedAmount.toFixed(2)),
+          month,
+          currency: loanCurrency,
+        });
+      }
+      loanInstallment += attributedAmount;
     });
     loanInstallment = parseFloat(loanInstallment.toFixed(2));
 
@@ -191,6 +206,8 @@ export function generateMonthlyPayroll(
       lateDeduction,
       loanInstallment,
       currencyMismatchLoans,
+      loanAttributions: loanAttributions.length ? loanAttributions : undefined,
+      loanId: loanAttributions.length === 1 ? loanAttributions[0].loanId : undefined,
       notes: currencyMismatchLoans.length
         ? `[Currency guard] ${currencyMismatchLoans.length} advance(s) in ${[...new Set(currencyMismatchLoans.map((m) => m.loanCurrency))].join(', ')} skipped from payroll (salary currency: ${currency}).`
         : '',

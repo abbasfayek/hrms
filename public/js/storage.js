@@ -1474,6 +1474,47 @@ class StorageService {
   saveLoans(loans) {
     const beforeById = new Map((this.get(STORAGE_KEYS.LOANS, []) || []).map((l) => [String(l.id), l]));
     this.set(STORAGE_KEYS.LOANS, loans);
+    this._emitLoanPaidEvents(loans, beforeById);
+  }
+  // FR-1-D4 canonical raw access for the disbursement / full-return money path.
+  // These return the FULL stored collections — never the scoped getState()
+  // projection — so a company/branch-scoped actor's write-back could not
+  // otherwise erase another scope's records. The id-scoped persisters below
+  // merge ONLY the touched records back into the canonical array, preserving
+  // every out-of-scope and concurrent record byte-for-byte.
+  getRawLoans() {
+    return this.get(STORAGE_KEYS.LOANS, []);
+  }
+  getRawPayrolls() {
+    return this.get(STORAGE_KEYS.PAYROLLS, []);
+  }
+  persistLoansById(loans) {
+    if (!Array.isArray(loans) || loans.length === 0) return;
+    const stored = this.get(STORAGE_KEYS.LOANS, []) || [];
+    const storedById = new Map(stored.map((l) => [String(l && l.id), l]));
+    let changed = false;
+    (loans || []).forEach((loan) => {
+      if (!loan || loan.id === undefined || loan.id === null) return;
+      storedById.set(String(loan.id), loan);
+      changed = true;
+    });
+    if (!changed) return;
+    this.set(STORAGE_KEYS.LOANS, Array.from(storedById.values()));
+    this._emitLoanPaidEvents(loans, storedById);
+  }
+  persistPayrollsById(payrolls) {
+    if (!Array.isArray(payrolls) || payrolls.length === 0) return;
+    const stored = this.get(STORAGE_KEYS.PAYROLLS, []) || [];
+    const storedById = new Map(stored.map((b) => [String(b && b.id), b]));
+    let changed = false;
+    (payrolls || []).forEach((batch) => {
+      if (!batch || batch.id === undefined || batch.id === null) return;
+      storedById.set(String(batch.id), batch);
+      changed = true;
+    });
+    if (changed) this.set(STORAGE_KEYS.PAYROLLS, Array.from(storedById.values()));
+  }
+  _emitLoanPaidEvents(loans, beforeById) {
     // Phase 5: loan-payment disbursements (PayrollView release / Loan receipt).
     // Emit a `paid` event ONLY when a loan's paid amount actually increased.
     (loans || []).forEach((loan) => {

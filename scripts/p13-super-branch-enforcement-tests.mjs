@@ -138,8 +138,8 @@ const approvedBatch = {
   companyId: 'comp-1', branchId: 'br-1',
   totalSalary: 9000, totalDeductions: 1000, totalNetPay: 8000,
   items: [
-    { employeeId: 'emp-1', companyId: 'comp-1', branchId: 'br-1', basicSalary: 4500, totalDeductions: 500, totalEarnings: 0, netSalary: 4000, loanInstallment: 500 },
-    { employeeId: 'emp-2', companyId: 'comp-1', branchId: 'br-1', basicSalary: 4500, totalDeductions: 500, totalEarnings: 0, netSalary: 4000, loanInstallment: 500 },
+    { employeeId: 'emp-1', companyId: 'comp-1', branchId: 'br-1', basicSalary: 4500, totalDeductions: 500, totalEarnings: 0, netSalary: 4000, loanInstallment: 500, loanAttributions: [{ loanId: 'LOAN-A', amount: 500, month: '2026-09' }] },
+    { employeeId: 'emp-2', companyId: 'comp-1', branchId: 'br-1', basicSalary: 4500, totalDeductions: 500, totalEarnings: 0, netSalary: 4000, loanInstallment: 500, loanAttributions: [{ loanId: 'LOAN-B', amount: 500, month: '2026-09' }] },
   ],
   auditHistory: [], versions: [],
 };

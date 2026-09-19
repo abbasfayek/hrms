@@ -74,6 +74,7 @@ function createFixtureData() {
         basicSalary: 5000,
         netSalary: 4500,
         loanInstallment: 500,
+        loanAttributions: [{ loanId: 'loan-1', amount: 500, month: '2026-09', currency: 'USD' }],
         isPaid: false,
       },
       {
@@ -99,12 +100,16 @@ function createFixtureData() {
     {
       id: 'loan-1',
       employeeId: 'emp-101',
+      companyId: 'c-1',
+      branchId: 'br-1',
+      currency: 'USD',
       amount: 1500,
       paidAmount: 500,
       remainingAmount: 1000,
       status: 'active',
       installments: [
-        { month: '2026-08', amount: 500, isPaid: true, paidAt: '2026-08-28T00:00:00Z' }
+        { month: '2026-08', amount: 500, isPaid: true, paidAt: '2026-08-28T00:00:00Z' },
+        { month: '2026-09', amount: 500, isPaid: false }
       ]
     },
     {
@@ -178,7 +183,10 @@ test('Success path: loan is settled when remaining reaches 0', () => {
     items: [
       {
         employeeId: 'emp-101',
+        companyId: 'c-1',
+        branchId: 'br-1',
         loanInstallment: 500,
+        loanAttributions: [{ loanId: 'loan-1', amount: 500, month: '2026-10', currency: 'USD' }],
         basicSalary: 5000,
         netSalary: 4500,
       }
@@ -194,7 +202,11 @@ test('Success path: loan is settled when remaining reaches 0', () => {
     {
       id: 'loan-1',
       employeeId: 'emp-101',
+      companyId: 'c-1',
+      branchId: 'br-1',
+      currency: 'USD',
       amount: 1500,
+      installmentAmount: 500,
       paidAmount: 1000,
       remainingAmount: 500,
       status: 'active',
@@ -245,7 +257,8 @@ test('Failure path: draft status cannot be disbursed and loans are NOT settled',
   const storedLoan = storage.getState().loans.find(l => l.id === 'loan-1');
   assert.equal(storedLoan.remainingAmount, 1000, 'Loan remaining amount MUST NOT change');
   assert.equal(storedLoan.paidAmount, 500, 'Loan paid amount MUST NOT change');
-  assert.equal(storedLoan.installments.length, 1, 'No installment added');
+  assert.equal(storedLoan.installments.length, 2, 'No installment added');
+  assert.equal(storedLoan.installments.find((x) => x.month === '2026-09').isPaid, false, 'Month installment must remain unpaid');
 });
 
 // TEST 4: Permission Failure (HR lacks disburse permission) - No loan settlement
@@ -322,7 +335,8 @@ test('Rollback path: failure during loan write rolls back payroll status to appr
   const storedLoan = storage.getState().loans.find(l => l.id === 'loan-1');
   assert.equal(storedLoan.remainingAmount, 1000, 'Loan remaining amount must remain 1000');
   assert.equal(storedLoan.paidAmount, 500, 'Loan paid amount must remain 500');
-  assert.equal(storedLoan.installments.length, 1);
+  assert.equal(storedLoan.installments.length, 2, 'No installment added');
+  assert.equal(storedLoan.installments.find((x) => x.month === '2026-09').isPaid, false, 'Month installment must remain unpaid');
 });
 
 // TEST 7: Concurrency & Double-Submit Protection
