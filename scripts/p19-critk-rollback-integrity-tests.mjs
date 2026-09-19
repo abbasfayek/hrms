@@ -885,5 +885,286 @@ test('F1-M unrelated batches remain fully usable; blocked batch stays blocked (c
   assertRefusedNoMutation(fullReturn(mkPaidBatchForReturn(M)), snapshot());
 });
 
+// ==================================================================
+// K3-A — CRIT_K K3 financial-integrity remediation (T1–T7)
+//   K3-1  Conservation-guarded reversal of the ACTUAL settled amount
+//         (additive `settled` field) on the attributed/precise paths.
+//   K3-2  legacy_auto_reversal_accepted emitted only AFTER durable
+//         persistence; no orphaned acceptance on guard/write failure.
+//   K3-3  Reverse money path never mutates the caller's batch; safe
+//         with Object.freeze(batch) and deep-frozen items (both paths).
+// ==================================================================
+
+const mkD4Item = (over = {}) => ({
+  employeeId: 'emp-101', name: 'Employee One', companyId: 'c-1', branchId: 'br-1', currency: 'USD',
+  basicSalary: 5000, netSalary: 4500, loanInstallment: 150,
+  loanAttributions: [
+    { loanId: 'LOAN-A', amount: 100, month: M, currency: 'USD' },
+    { loanId: 'LOAN-B', amount: 50, month: M, currency: 'USD' },
+  ],
+  isPaid: false,
+  ...over,
+});
+
+const mkLegacyItem = (over = {}) => ({
+  employeeId: 'emp-101', name: 'Employee One', companyId: 'c-1', branchId: 'br-1', currency: 'USD',
+  basicSalary: 5000, netSalary: 4500, loanInstallment: 500,
+  isPaid: false,
+  ...over,
+});
+
+const mkLoanEx = (over = {}) => ({
+  id: 'LOAN-A', employeeId: 'emp-101', companyId: 'c-1', branchId: 'br-1', currency: 'USD',
+  amount: 200, totalAmount: 200, paidAmount: 150, remainingAmount: 50,
+  status: 'active', installments: [{ month: M, amount: 100, isPaid: false }],
+  ...over,
+});
+
+const mkPaidCustom = (month, items) => ({
+  ...mkBatch(month, { items }),
+  status: 'paid',
+  releasedAt: '2026-09-10T00:00:00Z',
+  releasedBy: 'Finance Pay Officer',
+});
+
+const acceptedAudits = () => (storage.getAuditLog() || []).filter((e) => e.action === 'legacy_auto_reversal_accepted');
+
+const reverseWith = (batch, context, reason = 'Audit reversal') =>
+  reversePayrollDisbursementAtomic({
+    user: OFFICER, batch, reason, storage, context, by: 'Finance Pay Officer',
+  });
+
+test('T1 partial attributed settlement (250/50/100): forward records ACTUAL 50; reverse restores EXACTLY 50, never the planned 100', () => {
+  const loanA = mkLoanEx();
+  const loanB = mkLoanEx({ id: 'LOAN-B', amount: 100, totalAmount: 100, paidAmount: 50, remainingAmount: 50, installments: [{ month: M, amount: 50, isPaid: false }] });
+  const batch = mkBatch(M, { items: [mkD4Item()] });
+  seed([batch], [loanA, loanB]);
+
+  const fwd = disburse(batch);
+  assert.equal(fwd.ok, true, fwd.error === undefined ? '' : String(fwd.error));
+  const item0 = fwd.batch.items[0];
+  assert.equal(item0.loanAttributions[0].settled, 50, 'LOAN-A actual settled recorded (capped from 100 by remaining 50)');
+  assert.equal(item0.loanAttributions[1].settled, 50, 'LOAN-B actual settled recorded');
+  assert.equal(item0.loanDeductedAmount, 100, 'item deducted = sum of actuals');
+  assert.equal(item0.loanId, undefined, 'multi-attribution item carries NO single loanId');
+  const pA = byId(rawLoans(), 'LOAN-A');
+  assert.equal(pA.paidAmount, 200, 'LOAN-A partially settled to 200');
+  assert.equal(pA.remainingAmount, 0);
+  assert.equal(pA.status, 'settled');
+
+  const rev = fullReturn(fwd.batch);
+  assert.equal(rev.ok, true, String(rev.error || ''));
+  const a = byId(rawLoans(), 'LOAN-A');
+  assert.equal(a.paidAmount, 150, 'exact actual restored (50) — no over-restore of planned 100');
+  assert.equal(a.remainingAmount, 50, 'remaining restored, never pushed past total');
+  assert.equal(a.status, 'active', 'settled loan re-activated only by a provable reversal');
+  assert.equal(a.installments.find((x) => x.month === M).isPaid, false, 'LOAN-A month entry unpaid again');
+  const b = byId(rawLoans(), 'LOAN-B');
+  assert.equal(b.paidAmount, 50, 'exact actual restored (50)');
+  assert.equal(b.remainingAmount, 50);
+  assert.equal(b.status, 'active');
+  assert.equal(b.installments.find((x) => x.month === M).isPaid, false);
+  const stored = byId(rawPayrolls(), batch.id);
+  assert.equal(stored.status, 'approved');
+  assert.equal(stored.fullReturn && stored.fullReturn.completed, true);
+});
+
+test('T2 full attributed settlement: forward settled == planned; reverse restores the full amount (no behavior change)', () => {
+  const loan = mkLoanEx({ id: 'LOAN-F', amount: 1500, totalAmount: 2000, paidAmount: 500, remainingAmount: 1500, installments: [{ month: M, amount: 500, isPaid: false }] });
+  const batch = mkBatch(M, { items: [{ ...mkD4Item(), loanInstallment: 500, loanAttributions: [{ loanId: 'LOAN-F', amount: 500, month: M, currency: 'USD' }] }] });
+  seed([batch], [loan]);
+
+  const fwd = disburse(batch);
+  assert.equal(fwd.ok, true, String(fwd.error || ''));
+  assert.equal(fwd.batch.items[0].loanAttributions[0].settled, 500, 'full settlement recorded');
+  assert.equal(byId(rawLoans(), 'LOAN-F').paidAmount, 1000);
+
+  const rev = fullReturn(fwd.batch);
+  assert.equal(rev.ok, true, String(rev.error || ''));
+  const l = byId(rawLoans(), 'LOAN-F');
+  assert.equal(l.paidAmount, 500);
+  assert.equal(l.remainingAmount, 1500);
+  assert.equal(l.installments.find((x) => x.month === M).isPaid, false);
+});
+
+test('T3 multiple items: per-loan ACTUAL settled restored exactly across employees, no cross-restore', () => {
+  const loanA = mkLoanEx();
+  const loanB = mkLoanEx({ id: 'LOAN-B', amount: 100, totalAmount: 100, paidAmount: 50, remainingAmount: 50, installments: [{ month: M, amount: 50, isPaid: false }] });
+  const loanC = mkLoanEx({ id: 'LOAN-C', employeeId: 'emp-102', amount: 150, totalAmount: 400, paidAmount: 300, remainingAmount: 100, installments: [{ month: M, amount: 150, isPaid: false }] });
+  const loanD = mkLoanEx({ id: 'LOAN-D', employeeId: 'emp-102', amount: 100, totalAmount: 200, paidAmount: 50, remainingAmount: 150, installments: [{ month: M, amount: 100, isPaid: false }] });
+  const it1 = mkD4Item();
+  const it2 = {
+    employeeId: 'emp-102', name: 'Employee Two', companyId: 'c-1', branchId: 'br-1', currency: 'USD',
+    basicSalary: 5000, netSalary: 4500, loanInstallment: 250,
+    loanAttributions: [
+      { loanId: 'LOAN-C', amount: 150, month: M, currency: 'USD' },
+      { loanId: 'LOAN-D', amount: 100, month: M, currency: 'USD' },
+    ],
+    isPaid: false,
+  };
+  const batch = mkBatch(M, { items: [it1, it2] });
+  seed([batch], [loanA, loanB, loanC, loanD]);
+
+  const fwd = disburse(batch);
+  assert.equal(fwd.ok, true, String(fwd.error || ''));
+  assert.equal(fwd.batch.items[0].loanAttributions[0].settled, 50, 'item1 LOAN-A actual 50');
+  assert.equal(fwd.batch.items[1].loanAttributions[0].settled, 100, 'item2 LOAN-C actual 100');
+  assert.equal(fwd.batch.items[1].loanAttributions[1].settled, 100, 'item2 LOAN-D actual 100');
+
+  const rev = fullReturn(fwd.batch);
+  assert.equal(rev.ok, true, String(rev.error || ''));
+  assert.equal(byId(rawLoans(), 'LOAN-A').paidAmount, 150);
+  assert.equal(byId(rawLoans(), 'LOAN-A').remainingAmount, 50);
+  assert.equal(byId(rawLoans(), 'LOAN-B').paidAmount, 50);
+  assert.equal(byId(rawLoans(), 'LOAN-C').paidAmount, 300);
+  assert.equal(byId(rawLoans(), 'LOAN-C').remainingAmount, 100);
+  assert.equal(byId(rawLoans(), 'LOAN-D').paidAmount, 50);
+  assert.equal(byId(rawLoans(), 'LOAN-D').remainingAmount, 150);
+});
+
+test('T4 conservation violation → fail-closed: NO partial persistence, caller byte-identical', () => {
+  const honestLoan = mkLoanEx({ id: 'LOAN-OK', amount: 100, totalAmount: 100, paidAmount: 100, remainingAmount: 0, installments: [{ month: M, amount: 100, isPaid: true }] });
+  const hostileLoan = mkLoanEx({ id: 'LOAN-BIG', amount: 500, totalAmount: 2000, paidAmount: 100, remainingAmount: 1900, installments: [{ month: M, amount: 500, isPaid: true }] });
+  const items = [
+    { employeeId: 'emp-101', companyId: 'c-1', branchId: 'br-1', basicSalary: 5000, netSalary: 4500, loanInstallment: 100, loanId: 'LOAN-OK', loanDeductedAmount: 100, isPaid: true },
+    { employeeId: 'emp-101', companyId: 'c-1', branchId: 'br-1', basicSalary: 5000, netSalary: 4500, loanInstallment: 500, loanId: 'LOAN-BIG', loanDeductedAmount: 500, isPaid: true },
+  ];
+  const batch = mkPaidCustom(M, items);
+  seed([batch], [honestLoan, hostileLoan]);
+  const before = snapshot();
+  const callerBytes = clone(batch);
+
+  const res = fullReturn(batch);
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'conservation_guard_violated');
+  assert.equal(res.layer, 'loan');
+  const after = snapshot();
+  assert.equal(after.p, before.p, 'payroll byte-identical — honest item NOT partially persisted');
+  assert.equal(after.l, before.l, 'loans byte-identical — honest item NOT partially persisted');
+  assert.equal(after.t, before.t, 'no audit trail mutation');
+  assert.equal(JSON.stringify(batch), JSON.stringify(callerBytes), 'caller batch untouched');
+
+  // remaining + reversal > totalAmount variant
+  const overLoan = mkLoanEx({ id: 'LOAN-OVER', amount: 600, totalAmount: 1000, paidAmount: 800, remainingAmount: 500, installments: [{ month: M, amount: 600, isPaid: true }] });
+  const batch2 = mkPaidCustom(M, [{ employeeId: 'emp-101', companyId: 'c-1', branchId: 'br-1', basicSalary: 5000, netSalary: 4500, loanInstallment: 600, loanId: 'LOAN-OVER', loanDeductedAmount: 600, isPaid: true }]);
+  seed([batch2], [overLoan]);
+  const res2 = fullReturn(batch2);
+  assert.equal(res2.ok, false);
+  assert.equal(res2.error, 'conservation_guard_violated');
+  assert.equal(byId(rawLoans(), 'LOAN-OVER').remainingAmount, 500, 'remaining never pushed past total');
+});
+
+test('T5 legacy guard race: guard fails AFTER legacy resolution → NO orphaned accepted audit, zero mutation, caller intact', () => {
+  const batch = mkPaidCustom(M, [mkLegacyItem()]);
+  const loan = mkSettledLoan();
+  seed([batch], [loan]);
+  const before = snapshot();
+  const callerBytes = clone(batch);
+
+  const res = reverseWith(batch, { companyId: 'c-2', branchId: 'br-2' });
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'company_mismatch', 'final guard must fail on the mismatched context');
+  assert.equal(res.layer, 'context');
+  assert.equal(acceptedAudits().length, 0, 'guard failure must NOT emit legacy_auto_reversal_accepted');
+  const trailAfter = trail();
+  assert.equal(trailAfter.filter((e) => e.action === 'full_return' || e.action === 'full_return_rollback' || String(e.action || '').startsWith('rollback_')).length, 0, 'guard failure must not emit any acceptance or rollback-chain event');
+  const after = snapshot();
+  assert.equal(after.p, before.p, 'payroll byte-identical');
+  assert.equal(after.l, before.l, 'loans byte-identical (legacy resolution applied only in-memory)');
+  assert.equal(JSON.stringify(batch), JSON.stringify(callerBytes), 'caller batch untouched, no legacy stamps leaked');
+});
+
+test('T6 deep-frozen input: disburse + reverse (legacy success, attributed success, guard failure) mutate nothing of the caller', () => {
+  const legacyBatch = mkPaidCustom(M, [mkLegacyItem()]);
+  Object.freeze(legacyBatch.items);
+  Object.freeze(legacyBatch.items[0]);
+  Object.freeze(legacyBatch);
+
+  const attrBatch = mkPaidCustom(M, [{ ...mkLegacyItem(), loanInstallment: 500, loanAttributions: [{ loanId: 'LOAN-1', amount: 500, month: M, currency: 'USD' }] }]);
+  attrBatch.items[0].loanAttributions.forEach((a) => Object.freeze(a));
+  Object.freeze(attrBatch.items[0].loanAttributions);
+  Object.freeze(attrBatch.items[0]);
+  Object.freeze(attrBatch.items);
+  Object.freeze(attrBatch);
+
+  const fwdBatch = mkBatch(M, { items: [mkD4Item()] });
+  fwdBatch.items[0].loanAttributions.forEach((a) => Object.freeze(a));
+  Object.freeze(fwdBatch.items[0].loanAttributions);
+  Object.freeze(fwdBatch.items[0]);
+  Object.freeze(fwdBatch.items);
+  Object.freeze(fwdBatch);
+  const fwdLoanA = mkLoanEx();
+  const fwdLoanB = mkLoanEx({ id: 'LOAN-B', amount: 100, totalAmount: 100, paidAmount: 50, remainingAmount: 50, installments: [{ month: M, amount: 50, isPaid: false }] });
+
+  // (1) FORWARD with deep-frozen caller batch.
+  seed([fwdBatch], [fwdLoanA, fwdLoanB]);
+  const fwd = disbursePayrollAtomic({ user: OFFICER, batch: fwdBatch, storage, context: { companyId: 'c-1', branchId: 'br-1' }, by: 'Finance Pay Officer' });
+  assert.equal(fwd.ok, true, String(fwd.error || ''));
+  assert.equal(Object.isFrozen(fwdBatch), true, 'caller batch still frozen');
+  assert.equal(fwdBatch.items[0].loanAttributions[0].settled, undefined, 'caller attrs never stamped (detached)');
+  assert.equal(fwdBatch.items[0].loanDeductedAmount, undefined, 'caller item never stamped');
+  assert.equal(fwd.batch.items[0].loanAttributions[0].settled, 50, 'output stamp carries the actual settled');
+
+  // (2) REVERSE legacy success with deep-frozen paid batch.
+  seed([legacyBatch], [mkSettledLoan()]);
+  const r1 = reversePayrollDisbursementAtomic({ user: OFFICER, batch: legacyBatch, reason: 'Audit reversal', storage, context: { companyId: 'c-1', branchId: 'br-1' }, by: 'Finance Pay Officer' });
+  assert.equal(r1.ok, true, String(r1.error || ''));
+  assert.equal(Object.isFrozen(legacyBatch), true, 'caller still frozen after success');
+  assert.equal(legacyBatch.items[0].loanId, undefined, 'caller item NOT stamped');
+  assert.equal(legacyBatch.items[0].loanDeductedAmount, undefined, 'caller item NOT stamped');
+  assert.equal(r1.batch.items[0].loanId, 'LOAN-1', 'OUTPUT batch carries the legacy stamp');
+  assert.equal(r1.batch.items[0].loanDeductedAmount, 500, 'OUTPUT batch carries the legacy amount');
+  assert.equal(byId(rawLoans(), 'LOAN-1').remainingAmount, 1000, 'loan reversed');
+
+  // (3) REVERSE attributed success with deep-frozen paid batch.
+  seed([attrBatch], [mkSettledLoan()]);
+  const attrItemBytes = JSON.stringify(attrBatch.items[0]);
+  const attrAttrsBytes = JSON.stringify(attrBatch.items[0].loanAttributions);
+  const r3 = reversePayrollDisbursementAtomic({ user: OFFICER, batch: attrBatch, reason: 'Audit reversal', storage, context: { companyId: 'c-1', branchId: 'br-1' }, by: 'Finance Pay Officer' });
+  assert.equal(r3.ok, true, String(r3.error || ''));
+  assert.equal(Object.isFrozen(attrBatch), true, 'caller still frozen after attributed success');
+  assert.equal(r3.batch.status, 'approved', 'attributed reverse commits the approved record');
+  assert.equal(r3.batch.fullReturn && r3.batch.fullReturn.completed, true);
+  assert.equal(acceptedAudits().length, 0, 'attributed path never emits a legacy acceptance');
+  assert.equal(byId(rawLoans(), 'LOAN-1').paidAmount, 500, 'attr.amount fallback restored');
+  assert.equal(JSON.stringify(attrBatch.items[0]), attrItemBytes, 'caller item byte-identical');
+  assert.equal(JSON.stringify(attrBatch.items[0].loanAttributions), attrAttrsBytes, 'caller attrs byte-identical');
+
+  // (4) REVERSE guard failure with deep-frozen batch.
+  seed([legacyBatch], [mkSettledLoan()]);
+  const before4 = snapshot();
+  const r4 = reverseWith(legacyBatch, { companyId: 'c-2', branchId: 'br-2' });
+  assert.equal(r4.ok, false);
+  assert.equal(r4.error, 'company_mismatch');
+  assert.equal(acceptedAudits().length, 0, 'no orphaned acceptance on frozen guard failure');
+  const after4 = snapshot();
+  assert.equal(after4.p, before4.p);
+  assert.equal(after4.l, before4.l);
+  assert.equal(Object.isFrozen(legacyBatch), true, 'caller still frozen after guard failure');
+});
+
+test('T7 retry semantics: second full return on a stale paid copy is refused from DURABLE state without double-reversal', () => {
+  const batch = mkPaidCustom(M, [mkLegacyItem()]);
+  const loan = mkSettledLoan();
+  seed([batch], [loan]);
+
+  const rev1 = fullReturn(batch);
+  assert.equal(rev1.ok, true, String(rev1.error || ''));
+  assert.equal(acceptedAudits().length, 1, 'successful legacy reversal emits exactly one acceptance');
+  assert.equal(byId(rawLoans(), 'LOAN-1').remainingAmount, 1000, 'loans reversed once');
+
+  const loansAfter1 = clone(rawLoans());
+  const payrollsAfter1 = clone(rawPayrolls());
+  const stale = clone(batch); // original paid copy, no fullReturn stamp
+
+  const rev2 = fullReturn(stale);
+  assert.equal(rev2.ok, false, 'stale copy must be refused');
+  assert.equal(rev2.error, 'legacy_loan_attribution_missing', 'refused from DURABLE loan state (entry now unpaid), not from caller stamps');
+  assert.equal(JSON.stringify(rawLoans()), JSON.stringify(loansAfter1), 'loans untouched by the retry — no double reversal');
+  assert.equal(JSON.stringify(rawPayrolls()), JSON.stringify(payrollsAfter1), 'payroll untouched by the retry');
+  assert.equal(acceptedAudits().length, 1, 'retry emits NO second acceptance');
+  assert.equal(stale.items[0].loanId, undefined, 'stale caller copy never mutated by the retry');
+});
+
 console.log(`\nP19 CRIT_K K2 rollback-integrity tests: ${passed}/${total} passed`);
 process.exitCode = process.exitCode || (passed === total ? 0 : 1);

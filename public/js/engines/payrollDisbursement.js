@@ -120,9 +120,19 @@ export function disbursePayrollAtomic({
     for (const it of (paidBatch.items || [])) {
       const installment = Number(it.loanInstallment) || 0;
       if (installment <= 0) continue;
-      const attrs = loanAttributesOf(it);
+      // CRIT_K K3-1: work on a DETACHED copy of the item's attributions. The
+      // transition clones items shallowly, so the item clone's loanAttributions
+      // array is still the CALLER's reference — stamping `settled` onto it in
+      // place would mutate (or throw on) a caller-supplied frozen batch. The
+      // engine keeps an owned clone array; existing D4 fields (loanId / amount
+      // / month / currency) survive byte-for-byte and the shipped batch simply
+      // carries one extra additive field per attribution.
+      const attrs = loanAttributesOf(it).map((a) => ({ ...a }));
       if (!attrs.length) {
         return { ok: false, error: 'unattributable_loan_deduction', layer: 'loan', batch };
+      }
+      if (Array.isArray(it.loanAttributions) && it.loanAttributions.length > 0) {
+        it.loanAttributions = attrs;
       }
       let totalDeducted = 0;
       for (const attr of attrs) {
@@ -141,6 +151,13 @@ export function disbursePayrollAtomic({
           remainingAmount: loan.remainingAmount,
           status: loan.status,
         });
+        // CRIT_K K3-1: record the ACTUAL settled amount (settlement caps the
+        // payment at the remaining balance, so `paid` is often less than the
+        // planned amount). The attributed reverse path restores exactly THIS
+        // amount instead of the planned amount — no over-restoration. Additive
+        // only; pre-change batches (no `settled`) reverse by the planned amount
+        // exactly as before.
+        attr.settled = Number(Number(s.paid).toFixed(2));
       }
       // Stamp the item with the EXACT loan(s) + amounts that were actually
       // settled (a partial installment lands here as the true deducted amount).
@@ -731,10 +748,17 @@ export function reversePayrollDisbursementAtomic({
     // return fail-closed — neither the payroll nor the loans are written.
     // Phase B applies the resolutions on the in-memory clones only; the
     // atomic persistence (payroll + loans + audit) happens below.
+    // CRIT_K K3-3: classify a DETACHED copy of the caller's items. The reverse
+    // money path stamps loanId / loanDeductedAmount during legacy resolution,
+    // and this engine must NEVER mutate the caller's batch (frozen or not).
+    const reverseItems = (batch.items || []).map((srcItem) =>
+      (srcItem && typeof srcItem === 'object') ? JSON.parse(JSON.stringify(srcItem)) : srcItem
+    );
     const legacyResolutions = [];
     const preciseItems = [];
     const attributedItems = [];
-    for (const it of (batch.items || [])) {
+    for (let idx = 0; idx < reverseItems.length; idx++) {
+      const it = reverseItems[idx];
       if (!it || typeof it !== 'object') continue;
       if (it.loanId && Number(it.loanDeductedAmount) > 0) {
         // Post-B+C exact path: attribution is trusted from the disbursement
@@ -766,26 +790,34 @@ export function reversePayrollDisbursementAtomic({
           }
           return { ok: false, error: res.error, layer: res.layer, batch };
         }
-        legacyResolutions.push({ it, res });
+        legacyResolutions.push({ idx, it, res });
       }
     }
 
-    // Phase B — apply all resolutions to the in-memory loan clones.
-    for (const { it, res } of legacyResolutions) {
+    // Phase B — apply all resolutions to the in-memory loan clones. The stamps
+    // go to the DETACHED clones (K3-3), and the acceptance audit is DEFERRED
+    // (K3-2) — it is emitted only after the reversal is durably persisted, so
+    // a guard failure or write failure never leaves an orphaned acceptance.
+    const legacyAcceptances = [];
+    for (const { idx, it, res } of legacyResolutions) {
       applyLegacyLoanReversal(res.loan, res.entry, res.amount);
       it.loanId = res.loan.id;
       it.loanDeductedAmount = res.amount;
       loansReversed = true;
       reversedLoanIds.add(String(res.loan.id));
-      storage.addAudit(
-        'legacy_auto_reversal_accepted',
-        'loans',
-        `${targetMonth} → employee ${String(it.employeeId)} loan ${res.loan.id} reversed by ${res.amount}`,
-        res.loan.id
-      );
+      legacyAcceptances.push({
+        idx,
+        employeeId: it.employeeId,
+        loanId: res.loan.id,
+        amount: res.amount,
+      });
     }
-    // Post-B+C exact path (unchanged behavior — precise reversal of stamped
-    // items, partial installments included).
+    // Post-B+C exact path (precise reversal of stamped items, partial
+    // installments included) with CRIT_K K3-1 conservation guards: the reversal
+    // may never exceed what the loan actually collected or push remainingAmount
+    // past totalAmount. Guards run against the running in-memory clones BEFORE
+    // any money moves; a violation refuses the whole return fail-closed — no
+    // partial persistence.
     for (const it of preciseItems) {
       const amount = Number(it.loanDeductedAmount) || 0;
       const loan = allLoans.find((l) => l && l.id === it.loanId);
@@ -793,6 +825,13 @@ export function reversePayrollDisbursementAtomic({
       const byAmount = loan.installments.find((x) => x && x.month === targetMonth && x.isPaid && Math.abs(Number(x.amount || 0) - amount) < EPS);
       const scheduleEntry = byAmount || loan.installments.find((x) => x && x.month === targetMonth && x.isPaid);
       if (!scheduleEntry) continue;
+
+      if (!(amount <= Number(loan.paidAmount) + EPS)) {
+        return { ok: false, error: 'conservation_guard_violated', layer: 'loan', batch };
+      }
+      if (!((Number(loan.remainingAmount) || 0) + amount <= (Number(loan.totalAmount) || 0) + EPS)) {
+        return { ok: false, error: 'conservation_guard_violated', layer: 'loan', batch };
+      }
 
       scheduleEntry.isPaid = false;
       delete scheduleEntry.paidAt;
@@ -807,16 +846,31 @@ export function reversePayrollDisbursementAtomic({
       reversedLoanIds.add(String(loan.id));
     }
     // FR-1-D4: generation-time attribution reversal. Each attributed loan is
-    // reversed by its exact recorded amount (partial installments included),
+    // reversed by the amount ACTUALLY settled from it (K3-1: the additive
+    // `settled` field stamped at disbursement, partial installments included),
     // matched against a paid schedule entry of the batch month when present.
+    // Batches disbursed before the field existed fall back to the planned
+    // amount — the exact previous behavior. CRIT_K K3-1 conservation guards
+    // refuse the whole return fail-closed before anything is persisted if a
+    // reversal would ever exceed the loan's collected amount or push
+    // remainingAmount past totalAmount.
     for (const it of attributedItems) {
       for (const attr of (it.loanAttributions || [])) {
-        const amount = Number(attr.amount) || 0;
+        const planned = Number(attr.amount) || 0;
+        const settleMark = Number(attr.settled);
+        const amount = (Number.isFinite(settleMark) && settleMark > 0) ? settleMark : planned;
         const loan = allLoans.find((l) => l && l.id === attr.loanId);
         if (!loan || !Array.isArray(loan.installments) || amount <= 0) continue;
-        const byAmount = loan.installments.find((x) => x && x.month === targetMonth && x.isPaid && Math.abs(Number(x.amount || 0) - amount) < EPS);
+        const byAmount = loan.installments.find((x) => x && x.month === targetMonth && x.isPaid && Math.abs(Number(x.amount || 0) - planned) < EPS);
         const scheduleEntry = byAmount || loan.installments.find((x) => x && x.month === targetMonth && x.isPaid);
         if (!scheduleEntry) continue;
+
+        if (!(amount <= Number(loan.paidAmount) + EPS)) {
+          return { ok: false, error: 'conservation_guard_violated', layer: 'loan', batch };
+        }
+        if (!((Number(loan.remainingAmount) || 0) + amount <= (Number(loan.totalAmount) || 0) + EPS)) {
+          return { ok: false, error: 'conservation_guard_violated', layer: 'loan', batch };
+        }
 
         scheduleEntry.isPaid = false;
         delete scheduleEntry.paidAt;
@@ -838,9 +892,28 @@ export function reversePayrollDisbursementAtomic({
     // this is the single sanctioned engine path.
     const frRes = fullReturnPayrollBatchGuarded(user, batch, { by: actorName, reason, context });
     if (!frRes.ok) {
+      // K3-2: a failing guard means the reversal was never committed — NO
+      // legacy_auto_reversal_accepted event is emitted here. K3-3: the caller's
+      // batch was never mutated (all stamps were applied to detached clones).
       return { ok: false, error: frRes.error, layer: frRes.layer, batch };
     }
     const updatedBatch = frRes.batch;
+
+    // K3-3: re-apply the legacy attribution stamps to the OUTPUT batch. The
+    // guarded engine returns a fresh clone while the caller's batch stays
+    // byte-identical; the persisted record still carries the provable stamps
+    // exactly as before, one stamp per reversed legacy item (index + employeeId
+    // matched — item order is preserved through the pure full-return recorder).
+    if (legacyAcceptances.length) {
+      const outItems = updatedBatch.items || [];
+      for (const acc of legacyAcceptances) {
+        const out = outItems[acc.idx];
+        if (out && out.employeeId === acc.employeeId) {
+          out.loanId = acc.loanId;
+          out.loanDeductedAmount = acc.amount;
+        }
+      }
+    }
 
     try {
       const batchWrite = storage.addPayrollBatch(updatedBatch);
@@ -852,6 +925,18 @@ export function reversePayrollDisbursementAtomic({
         if (loanWrite && loanWrite.ok === false) {
           throw new Error(loanWrite.error || 'loan_write_failed');
         }
+      }
+      // K3-2: EVERYTHING is now durable. Only now is the legacy auto-reversal
+      // recorded as accepted — a write failure above means the reversal did NOT
+      // commit and must not claim acceptance (no orphaned events). On success
+      // the audit order is accepted → full_return.
+      for (const acc of legacyAcceptances) {
+        storage.addAudit(
+          'legacy_auto_reversal_accepted',
+          'loans',
+          `${targetMonth} → employee ${String(acc.employeeId)} loan ${acc.loanId} reversed by ${acc.amount}`,
+          acc.loanId
+        );
       }
       storage.addAudit('full_return', 'payroll', `${targetMonth} → fully returned: ${String(reason).trim()}`, updatedBatch.id);
 
