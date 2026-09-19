@@ -80,6 +80,11 @@ const STORAGE_KEYS = {
   AUDIT: 'hrms_audit_v3',
   AUDIT_TRAIL: 'hrms_audit_trail_v3',
   DELETED_RECORDS: 'hrms_deleted_records_v3',
+  // CRIT_K F1: durable fail-closed re-entry block for financially divergent
+  // payroll batches. DEVICE-LOCAL operational state (not a server collection)
+  // keyed by composite identity, independent of the payroll record's own
+  // divergence marker so a marker-write failure cannot erase the block.
+  DIVERGENT_PAYROLL_KEYS: 'hrms_divergent_payroll_keys_v3',
 };
 
 // Map storage keys to server collection names
@@ -575,6 +580,9 @@ class StorageService {
     this.set(STORAGE_KEYS.PAYROLLS, []);
     this.set(STORAGE_KEYS.EOSB, []);
     this.set(STORAGE_KEYS.CORRECTIONS, []);
+    // CRIT_K F1: a device-level data wipe also lifts the fail-closed divergence
+    // block registry (device-local operational guard, not user data).
+    this.set(STORAGE_KEYS.DIVERGENT_PAYROLL_KEYS, []);
     this.notify();
     // Phase 6: the payroll collection was wiped, so the local last-known-state
     // baselines must be dropped too — a month re-created after a data clear is
@@ -667,6 +675,56 @@ class StorageService {
     } catch (e) {
       console.error(`Error writing ${key} to storage:`, e);
     }
+  }
+
+  // Financial-path verified write: persist, then read back and prove the
+  // requested record is durably stored in the expected state (deep semantic
+  // equality of the actual persisted value). Never throws; returns
+  // { ok:false, error } for silent, missing, or corrupted writes.
+  _setVerified(key, value, expect = []) {
+    this.set(key, value);
+    const readBack = this.get(key, null);
+    if (readBack === null || readBack === undefined) {
+      return { ok: false, error: 'verification_read_failure' };
+    }
+    for (const exp of expect) {
+      if (!exp || (exp.id == null && !exp.match)) continue;
+      const target = Array.isArray(readBack)
+        ? readBack.find((r) => (exp.match ? !!exp.match(r) : (r && String(r.id) === String(exp.id))))
+        : readBack;
+      if (!target) {
+        return { ok: false, error: `verification_missing:${exp.id != null ? exp.id : 'record'}` };
+      }
+      if (exp.expected !== undefined && !this._semanticEquals(target, exp.expected)) {
+        return { ok: false, error: `verification_mismatch:${exp.id != null ? exp.id : 'record'}` };
+      }
+    }
+    return { ok: true };
+  }
+
+  // Deep semantic equality over plain JSON shapes (key order irrelevant;
+  // undefined-valued keys are treated as absent).
+  _semanticEquals(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return a === b;
+    const aArr = Array.isArray(a);
+    const bArr = Array.isArray(b);
+    if (aArr !== bArr) return false;
+    if (aArr) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (!this._semanticEquals(a[i], b[i])) return false;
+      }
+      return true;
+    }
+    const aKeys = Object.keys(a).filter((k) => a[k] !== undefined);
+    const bKeys = Object.keys(b).filter((k) => b[k] !== undefined);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const k of aKeys) {
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!this._semanticEquals(a[k], b[k])) return false;
+    }
+    return true;
   }
 
   subscribe(callback) {
@@ -1489,8 +1547,11 @@ class StorageService {
     return this.get(STORAGE_KEYS.PAYROLLS, []);
   }
   persistLoansById(loans) {
-    if (!Array.isArray(loans) || loans.length === 0) return;
+    if (!Array.isArray(loans) || loans.length === 0) return { ok: true };
     const stored = this.get(STORAGE_KEYS.LOANS, []) || [];
+    // R6: capture the PRE-mutation state BEFORE any overwrite so the emitted
+    // paid events compare a real old → new transition (not old === new).
+    const beforeById = new Map(stored.map((l) => [String(l && l.id), l]));
     const storedById = new Map(stored.map((l) => [String(l && l.id), l]));
     let changed = false;
     (loans || []).forEach((loan) => {
@@ -1498,12 +1559,15 @@ class StorageService {
       storedById.set(String(loan.id), loan);
       changed = true;
     });
-    if (!changed) return;
-    this.set(STORAGE_KEYS.LOANS, Array.from(storedById.values()));
-    this._emitLoanPaidEvents(loans, storedById);
+    if (!changed) return { ok: true };
+    const expected = loans.filter((l) => l && l.id !== undefined && l.id !== null);
+    const verify = this._setVerified(STORAGE_KEYS.LOANS, Array.from(storedById.values()), expected.map((l) => ({ id: String(l.id), expected: l })));
+    if (!verify.ok) return verify;
+    this._emitLoanPaidEvents(loans, beforeById);
+    return { ok: true };
   }
   persistPayrollsById(payrolls) {
-    if (!Array.isArray(payrolls) || payrolls.length === 0) return;
+    if (!Array.isArray(payrolls) || payrolls.length === 0) return { ok: true };
     const stored = this.get(STORAGE_KEYS.PAYROLLS, []) || [];
     const storedById = new Map(stored.map((b) => [String(b && b.id), b]));
     let changed = false;
@@ -1512,7 +1576,9 @@ class StorageService {
       storedById.set(String(batch.id), batch);
       changed = true;
     });
-    if (changed) this.set(STORAGE_KEYS.PAYROLLS, Array.from(storedById.values()));
+    if (!changed) return { ok: true };
+    const expected = payrolls.filter((b) => b && b.id !== undefined && b.id !== null);
+    return this._setVerified(STORAGE_KEYS.PAYROLLS, Array.from(storedById.values()), expected.map((b) => ({ id: String(b.id), expected: b })));
   }
   _emitLoanPaidEvents(loans, beforeById) {
     // Phase 5: loan-payment disbursements (PayrollView release / Loan receipt).
@@ -1649,13 +1715,14 @@ class StorageService {
     // payroll is never silently reverted to draft/approved by a stale device
     // pushing an older copy of the same month during the next sync.
     if (batch && typeof batch === 'object') batch.updatedAt = new Date().toISOString();
-    // Phase 5: capture the last KNOWN state of this month (captured at the
-    // previous write — the aliased object may already carry the new status).
+    // Phase 5: the transition baseline is derived below from the DURABLE
+    // previous persisted record (fresh read of the list BEFORE this write), so
+    // a later rollback restore is always reflected — the map is only a fallback
+    // for months with no persisted record yet.
     const monthKey = batch && (batch.month !== undefined || batch.id) ? (batch.month || (batch.id && batch.id.replace('PAYROLL-', ''))) : null;
     const compositeKey = batch && batch.month !== undefined && batch.companyId && batch.branchId
       ? `${batch.month}|${batch.companyId}|${batch.branchId}`
       : monthKey;
-    const baseline = monthKey ? (this._payrollBaselines.get(compositeKey) || null) : null;
     // Phase 4: stamp transaction-level exchange-rate snapshots (items +
     // totalsByCurrency + governance summary). Purely additive; already-sealed
     // committed records are never re-stamped, missing-rate records are never
@@ -1668,9 +1735,21 @@ class StorageService {
     const list = this.get(STORAGE_KEYS.PAYROLLS, []);
     const idx = list.findIndex((b) => b.month === batch.month && b.companyId === batch.companyId && b.branchId === batch.branchId);
     const hadStored = idx !== -1;
+    const prevStored = idx !== -1 ? list[idx] : null;
+    const baseline = prevStored
+      ? {
+          status: prevStored.status || 'draft',
+          correctionsLen: (prevStored.corrections || []).length || 0,
+          archived: !!prevStored.archived,
+          view: payrollFinancialView(prevStored),
+        }
+      : (monthKey ? (this._payrollBaselines.get(compositeKey) || null) : null);
     if (idx !== -1) list[idx] = batch;
     else list.unshift(batch);
-    this.set(STORAGE_KEYS.PAYROLLS, list);
+    // Verified write: persist, read back, and prove this month's record landed
+    // in the exact expected (stamped) state before rate-lock / audit follow.
+    const verify = this._setVerified(STORAGE_KEYS.PAYROLLS, list, [{ match: (b) => !!b && b.month === batch.month && b.companyId === batch.companyId && b.branchId === batch.branchId, expected: batch }]);
+    if (!verify.ok) return verify;
     // Lock rates pinned by this save only if the batch is committed now: any
     // currency freshly resolved HERE, plus every non-base currency already
     // stamped on the batch that is still unlocked (draft-then-commit path).
@@ -1681,7 +1760,7 @@ class StorageService {
       });
       if (lockCandidates.size) this._lockRatesForCodes([...lockCandidates]);
     }
-    // Phase 5: derive the transition against the last-known baseline, then
+    // Phase 5: derive the transition against the durable baseline, then
     // record THIS write as the new baseline. Plain re-saves emit nothing.
     if (monthKey) {
       this._auditPayroll(baseline, batch, { hadStored });
@@ -1692,6 +1771,7 @@ class StorageService {
         view: payrollFinancialView(batch),
       });
     }
+    return { ok: true };
   }
 
   // Full-return is a plain DELETE: the payroll is removed from the archive and
@@ -1927,6 +2007,109 @@ class StorageService {
   // Recompute the full hash chain. Returns { valid, count, brokenAt, head }.
   auditTrailIntegrity() {
     return verifyAuditTrail(this._auditEnvelope());
+  }
+
+  // CRIT_K K2-E/F: rollback lifecycle audit event (hash-chained). Never throws
+  // — an audit-write failure must never hide the original financial failure.
+  // `record` is the affected payroll batch; `action` is one of the rollback
+  // lifecycle actions; `opts` may carry recoveryToken / rollbackStatus / reason.
+  auditRollback(record, action, opts = {}) {
+    try {
+      const batch = (record && typeof record === 'object') ? record : null;
+      const batchItems = (batch && Array.isArray(batch.items)) ? batch.items : [];
+      const companyId = batch ? String(batch.companyId || (batchItems[0] && batchItems[0].companyId) || '') : '';
+      const branchId = batch ? String(batch.branchId || (batchItems[0] && batchItems[0].branchId) || '') : '';
+      const employeeIds = [...new Set(batchItems.map((it) => it && it.employeeId).filter(Boolean))];
+      const event = {
+        recordType: AUDIT_RECORD_TYPES.PAYROLL,
+        recordId: String((batch && batch.month !== undefined && batch.month !== null) ? batch.month : ((batch && batch.id) || 'unknown')),
+        payrollId: batch ? String(batch.id || '') : '',
+        companyId,
+        branchId,
+        employeeIds,
+        employeeId: employeeIds.length ? employeeIds[0] : null,
+        action,
+        outcome: action === AUDIT_ACTIONS.ROLLBACK_COMPLETE ? 'success' : 'failure',
+        actor: this._recordActor((opts.by || (batch && (batch.releasedBy || batch.paidBy || batch.by))) || undefined),
+        fromStatus: batch ? (batch.status || null) : null,
+        toStatus: null,
+        oldValue: opts.oldValue != null ? opts.oldValue : null,
+        newValue: opts.newValue != null ? opts.newValue : null,
+        reason: String(opts.reason || '').slice(0, 500),
+        versionId: null,
+        auditAttempt: null,
+        rejection: null,
+        corrections: null,
+        rollbackStatus: opts.rollbackStatus || null,
+        recoveryToken: opts.recoveryToken || null,
+        financial: null,
+      };
+      return this.appendAuditEvent(event);
+    } catch (e) {
+      console.error('Rollback audit failed:', e);
+      return null;
+    }
+  }
+
+  // CRIT_K K2-C: persist the minimal additive divergence marker on the affected
+  // payroll batch (transactionState: "rollback_divergent" + opaque recoveryToken).
+  // Operational state only — financial fields, payroll amounts and audit history
+  // are never overwritten. Returns { ok, record } or { ok:false, error }.
+  markPayrollDivergent(month, companyId, branchId, recoveryToken, opts = {}) {
+    try {
+      const list = this.get(STORAGE_KEYS.PAYROLLS, []);
+      if (!Array.isArray(list)) return { ok: false, error: 'payroll_collection_unverifiable' };
+      const idx = list.findIndex((b) => b && b.month === month && String(b.companyId || '') === String(companyId || '') && String(b.branchId || '') === String(branchId || ''));
+      if (idx === -1) return { ok: false, error: 'payroll_not_found' };
+      const current = list[idx];
+      const record = { ...current, transactionState: 'rollback_divergent', recoveryToken, divergentAt: new Date().toISOString(), divergentBy: opts.by || null };
+      list[idx] = record;
+      this.set(STORAGE_KEYS.PAYROLLS, list);
+      const readBack = this.get(STORAGE_KEYS.PAYROLLS, []);
+      const found = (Array.isArray(readBack) ? readBack : []).find((b) => b && b.month === month && String(b.companyId || '') === String(companyId || '') && String(b.branchId || '') === String(branchId || ''));
+      if (!found || found.transactionState !== 'rollback_divergent' || found.recoveryToken !== recoveryToken) {
+        return { ok: false, error: 'divergence_marker_unverifiable' };
+      }
+      return { ok: true, record: found };
+    } catch (e) {
+      console.error('Divergence marker failed:', e);
+      return { ok: false, error: 'divergence_marker_failed' };
+    }
+  }
+
+  // CRIT_K F1: durably latch the composite identity of a financially divergent
+  // payroll batch (month|companyId|branchId, or id:...). Written INDEPENDENTLY
+  // of the payroll record's own transactionState marker and of any returned
+  // object, so a failed/missing divergence marker — or a later clean-copy
+  // caller — cannot bypass the re-entry block. Verified write with read-back
+  // proof; additive; never touches financial amounts. Returns { ok:true } when
+  // already blocked or durably recorded, else { ok:false, error }.
+  rememberDivergentPayroll(compositeKey) {
+    try {
+      if (!compositeKey || typeof compositeKey !== 'string') return { ok: false, error: 'invalid_divergent_key' };
+      const list = this.get(STORAGE_KEYS.DIVERGENT_PAYROLL_KEYS, []);
+      const keys = Array.isArray(list) ? list.filter((k) => typeof k === 'string' && k) : [];
+      if (keys.includes(compositeKey)) return { ok: true };
+      keys.push(compositeKey);
+      return this._setVerified(STORAGE_KEYS.DIVERGENT_PAYROLL_KEYS, keys, [
+        { match: (r) => r === compositeKey },
+      ]);
+    } catch (e) {
+      console.error('Divergence block registry failed:', e);
+      return { ok: false, error: 'divergent_block_failed' };
+    }
+  }
+
+  // CRIT_K F1: true when the composite identity is durably blocked against any
+  // further financial mutation. Read-only; never throws.
+  isDivergentPayrollBlocked(compositeKey) {
+    try {
+      const list = this.get(STORAGE_KEYS.DIVERGENT_PAYROLL_KEYS, []);
+      return Array.isArray(list) && typeof compositeKey === 'string' && list.includes(compositeKey);
+    } catch (e) {
+      console.error('Divergence block check failed:', e);
+      return false;
+    }
   }
 
   _actor(user) {

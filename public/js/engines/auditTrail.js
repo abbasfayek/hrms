@@ -57,6 +57,18 @@ export const AUDIT_ACTIONS = {
   EXCHANGE_RATE_LOCKED: 'exchange_rate_locked',
   DENIED: 'denied',            // security-denied attempt (never a success event)
   REACTIVATED: 'reactivated',  // System Admin audited lift of a fully-returned batch (approved -> rejected/needs_correction)
+  // CRIT_K Phase K2: rollback lifecycle truth. These record the STORAGE
+  // rollback of a failed financial transaction. `rollback_attempted` is
+  // emitted when rollback starts; `rollback_complete` ONLY after read-back
+  // verification proves the affected records were restored; 
+  // `rollback_partial` / `rollback_failed` ONLY after verification proves the
+  // restore is incomplete; `financial_divergence` accompanies any partial or
+  // failed restore and MUST carry recoveryToken.
+  ROLLBACK_ATTEMPTED: 'rollback_attempted',
+  ROLLBACK_COMPLETE: 'rollback_complete',
+  ROLLBACK_PARTIAL: 'rollback_partial',
+  ROLLBACK_FAILED: 'rollback_failed',
+  FINANCIAL_DIVERGENCE: 'financial_divergence',
   RECORDS_CLEARED: 'records_cleared',
   DATA_RESET: 'data_reset',
   BACKUP_RESTORED: 'backup_restored',
