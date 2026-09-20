@@ -1459,9 +1459,10 @@ export function renderPayrollView(container, options = {}) {
         const isReturnedNow = res.batch.returnState === 'resubmitted';
         storage.addAudit(isReturnedNow ? 'resubmit' : 'generate', 'payroll', `${currentMonth} → ${isEn ? (isReturnedNow ? 'Re-submitted to Financial Audit' : 'Financial Audit') : (isReturnedNow ? 'أُعيد إرساله للتدقيق المالي' : 'التدقيق المالي')}`, currentBatch.id);
         toast.success(isEn ? (isReturnedNow ? `Payroll for ${currentMonth} re-submitted to Financial Audit.` : `Payroll for ${currentMonth} transferred to Financial Audit.`) : (isReturnedNow ? `أُعيد إرسال مسير رواتب ${currentMonth} للتدقيق المالي.` : `تم ترحيل مسير رواتب ${currentMonth} إلى قسم التدقيق المالي بنجاح`));
-        // The submitter only goes to the audit stage when they may review it;
-        // otherwise they return to the locked batch on the payroll tab.
-        activeTab = canReviewAudit ? 'audit' : 'payroll';
+        currentMonth = res.batch.month;
+        // Upon successful resubmission to financial audit, land directly on the audit tab
+        // so the resubmitted batch is immediately visible in the audit review list.
+        activeTab = 'audit';
         updateHeaderTabs();
         renderTabContent();
       };
