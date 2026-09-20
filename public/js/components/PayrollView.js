@@ -216,14 +216,21 @@ export function renderPayrollView(container, options = {}) {
   const { companyId: currentCompanyId, branchId: currentBranchId } = getPayrollBranchContext();
 
   let currentMonth = options.month || defaultPayMonth();
+  // If options specifies a batchId or we have a persisted active reference, prioritize authoritative lookup by ID.
+  const targetBatchId = options.batchId || null;
 
   // Get current month batch from storage or generate dynamically (only when
   // that month's payroll is actually due — never before its payday).
-  let currentBatch = getLivePayrolls().find((b) => b.month === currentMonth && b.companyId === currentCompanyId && b.branchId === currentBranchId);
+  let currentBatch = targetBatchId
+    ? getLivePayrolls().find((b) => b && b.id === targetBatchId)
+    : getLivePayrolls().find((b) => b.month === currentMonth && b.companyId === currentCompanyId && b.branchId === currentBranchId);
+  if (currentBatch) {
+    currentMonth = currentBatch.month;
+  }
   if (currentBatch && currentBatch.releaseStatus !== 'released') {
     computePayrollReleaseSchedule(currentBatch, companies);
   }
-  if (!currentBatch && isMonthAvailable(currentMonth)) {
+  if (!currentBatch && !targetBatchId && isMonthAvailable(currentMonth)) {
     currentBatch = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
     // Tag the generated batch with current branch context
     currentBatch.companyId = currentCompanyId;
@@ -1461,10 +1468,11 @@ export function renderPayrollView(container, options = {}) {
         toast.success(isEn ? (isReturnedNow ? `Payroll for ${currentMonth} re-submitted to Financial Audit.` : `Payroll for ${currentMonth} transferred to Financial Audit.`) : (isReturnedNow ? `أُعيد إرسال مسير رواتب ${currentMonth} للتدقيق المالي.` : `تم ترحيل مسير رواتب ${currentMonth} إلى قسم التدقيق المالي بنجاح`));
         currentMonth = res.batch.month;
         // Upon successful resubmission to financial audit, land directly on the audit tab
-        // so the resubmitted batch is immediately visible in the audit review list.
+        // with authoritative batch lookup by ID so re-renders never lose the target batch.
+        options.batchId = res.batch.id;
         activeTab = 'audit';
         updateHeaderTabs();
-        renderTabContent();
+        renderTabContent(container, options);
       };
       contentArea.querySelector('#btn-transfer-to-audit')?.addEventListener('click', () => submitToAudit());
       contentArea.querySelector('#btn-resubmit-payroll')?.addEventListener('click', () => submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح'));
@@ -1486,6 +1494,9 @@ export function renderPayrollView(container, options = {}) {
         currentBatch = corr.batch;
         storage.addPayrollBatch(currentBatch);
         submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح');
+        if (currentBatch && currentBatch.id) {
+          options.batchId = currentBatch.id;
+        }
       });
 
       // Go to audit shortcut
@@ -2459,7 +2470,7 @@ export function renderPayrollView(container, options = {}) {
         ${Icons.dollar(16)} ${isEn ? 'Due & Active Payrolls' : 'الرواتب المستحقة والمسيرات'}
       </button>
       ${canReviewAudit ? `
-      <button type="button" class="tab-btn ${activeTab === 'audit' ? 'active' : ''}" data-tab="audit" id="tab-payroll-audit">
+      <button type="button" class="tab-btn ${activeTab === 'audit' || (currentBatch && currentBatch.status === 'under_audit') ? 'active' : ''}" data-tab="audit" id="tab-payroll-audit">
         ${Icons.shieldCheck(16)} ${isEn ? 'Financial Audit Stage' : 'قسم التدقيق والمراجعة'}
       </button>
     ` : ''}
