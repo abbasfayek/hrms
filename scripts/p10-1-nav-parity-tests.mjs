@@ -54,8 +54,13 @@ ok('client company_hr has NO users.view by default', !CLIENT_DEFAULTS.company_hr
 ok('client company_hr has NO users.manage by default', !CLIENT_DEFAULTS.company_hr.includes('users.manage'));
 ok('server company_hr has NO settings.view by default', !SERVER_DEFAULTS.company_hr.includes('settings.view'));
 ok('server company_hr has NO users.view by default', !SERVER_DEFAULTS.company_hr.includes('users.view'));
-ok('client defaults stay in exact parity with server defaults',
-  JSON.stringify([...CLIENT_DEFAULTS.company_hr].sort()) === JSON.stringify([...SERVER_DEFAULTS.company_hr].sort()));
+ok('client company_hr defaults are server company_hr defaults WITHOUT companies.manage (intended H-1 divergence)',
+  JSON.stringify([...CLIENT_DEFAULTS.company_hr].sort()) ===
+    JSON.stringify([...SERVER_DEFAULTS.company_hr].filter((p) => p !== 'companies.manage').sort()));
+ok('server company_hr KEEPS scoped companies.manage (server side of H-1)',
+  SERVER_DEFAULTS.company_hr.includes('companies.manage'));
+ok('client company_hr does NOT grant companies.manage (client side of H-1)',
+  !CLIENT_DEFAULTS.company_hr.includes('companies.manage'));
 
 console.log('\n[2] company_hr does NOT see/open users');
 ok('company_hr users nav entry is hidden', isHidden(companyHr, 'users') === true);

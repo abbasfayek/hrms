@@ -51,6 +51,21 @@ ok('Same role key-set on both sides', clientRoles.length === serverRoles.length 
 for (const role of clientRoles) {
   const c = Array.isArray(CLIENT[role]) ? CLIENT[role] : [];
   const s = Array.isArray(SERVER[role]) ? SERVER[role] : [];
+  if (role === 'company_hr') {
+    // H-1 contract: company_hr is the ONLY role that intentionally diverges.
+    // The client UI drops companies.manage (a super-only global write) while
+    // the server KEEPS it as a scoped grant — verifying the scoped write is
+    // still permitted for the holder. Everything else in the matrix must stay
+    // byte-identical between the two sides (this is the H-1-diverge pin).
+    const extraClient = c.filter((p) => !s.includes(p));
+    const extraServer = s.filter((p) => !c.includes(p));
+    ok('company_hr: client and server agree except the H-1 companies.manage divergence',
+      extraClient.length === 0 &&
+      extraServer.length === 1 &&
+      extraServer[0] === 'companies.manage',
+      `clientOnly=[${extraClient.join(',')}] serverOnly=[${extraServer.join(',')}] client=${c.length} server=${s.length}`);
+    continue;
+  }
   const onlyClient = c.filter((p) => !s.includes(p));
   const onlyServer = s.filter((p) => !c.includes(p));
   const dupes = c.length !== s.length;
