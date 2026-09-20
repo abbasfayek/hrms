@@ -155,7 +155,7 @@ const MIME_TYPES = {
 const ALLOWED_COLLECTIONS = [
   'companies', 'users', 'settings', 'employees', 'leaves',
   'overtime', 'loans', 'increments', 'attendance', 'holidays',
-  'payrolls', 'eosb', 'hourly_leaves', 'hourly_leave_settings',
+  'payrolls', 'eosb', 'corrections', 'hourly_leaves', 'hourly_leave_settings',
   'audit', 'deleted_records', 'audit_trail'
 ];
 
@@ -165,7 +165,7 @@ const ALLOWED_COLLECTIONS = [
 // never silently destroyed by a reset.
 const CLEARABLE_COLLECTIONS = [
   'employees', 'leaves', 'hourly_leaves', 'overtime', 'loans',
-  'increments', 'attendance', 'holidays', 'payrolls', 'eosb',
+  'increments', 'attendance', 'holidays', 'payrolls', 'eosb', 'corrections',
 ];
 
 function jsonResponse(res, data, status = 200) {

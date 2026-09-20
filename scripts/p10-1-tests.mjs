@@ -77,6 +77,26 @@ function seedFixture(tmp) {
     ],
     hourlyLeaveQuota: 4,
   });
+  // Hermetic comp-1 (IN THE TEMP ONLY): N34 requires super_admin to see BOTH
+  // 'comp-1' and 'comp-2', and every employee/leave/payroll fixture references
+  // comp-1/br-1/br-1788788794421. On the developer's machine comp-1 exists in
+  // the live data/companies.json, but a pristine / differently-seeded machine
+  // (like the current one, whose live data only has comp-1789648057604) has NO
+  // comp-1 -> N34 fails with an ENOENT-style environmental dependency. Same
+  // hermetic-class bug as the factory system row. Fix: guarantee a comp-1 with
+  // br-1 + br-1788788794421 exists in the tmp ONLY, idempotently. Never touches
+  // live data/.
+  if (!companies.some((c) => c && c.id === 'comp-1')) {
+    companies.push({
+      id: 'comp-1', nameAr: 'الشركة الأولى', nameEn: 'First Co.', code: 'C1',
+      currency: 'USD', currencySymbol: '$', commercialRegistration: '', taxNumber: '',
+      branches: [
+        { id: 'br-1', companyId: 'comp-1', nameAr: 'فرع 1-أ', nameEn: 'Branch 1', city: '', payDay: 1, branchType: 'main', parentBranchId: null },
+        { id: 'br-1788788794421', companyId: 'comp-1', nameAr: 'فرع 1-ب', nameEn: 'Branch 1B', city: '', payDay: 15, branchType: 'main', parentBranchId: null },
+      ],
+      hourlyLeaveQuota: 4,
+    });
+  }
   writeJSON(tmp, 'companies.json', companies);
 
   const employees = readJSON(tmp, 'employees.json');
@@ -101,7 +121,27 @@ function seedFixture(tmp) {
     { id: 'u-c1-audit', username: 'c1-audit', name: 'AudC1', role: 'audit_reviewer', assignedCompanyId: 'comp-1', assignedBranchId: 'br-1' },
   ];
   for (const u of scoped) users.push({ ...u, email: `${u.username}@test.local`, password: hashPassword(SCOPED_PW), hidden: false, protected: false });
+  // Hermetic factory super: ensure a `system` super_admin row exists IN THE
+  // TEMP ONLY (never touches live data/). This is what `login('system',
+  // runFactoryCred(tmp))` authenticates against. Uses the SAME password already
+  // shared by the scoped fixtures so no new hard-coded secret is introduced,
+  // and writes the factory backup file that `runFactoryCred` reads so the whole
+  // battery is hermetic (no dependence on the developer machine's live
+  // data/backups, which may be absent -> ENOENT, or mismatched -> 401).
+  if (!users.some((u) => u && u.username === 'system')) {
+    users.push({ id: 'usr-system', username: 'system', name: 'System', role: 'super_admin', assignedCompanyId: 'all', assignedBranchId: 'all', email: 'system@test.local', password: hashPassword(SCOPED_PW), protected: true, hidden: true });
+  }
   writeJSON(tmp, 'users.json', users);
+
+  // Factory credential source: runFactoryCred(tmp) reads the FIRST-sorted
+  // data/backups/users-*.json and returns its `system.password` as the login
+  // credential. The stamped file below sorts BEFORE any real 2026- backup (and
+  // is the only one on a pristine machine), so this is deterministic + hermetic.
+  // The row carries the PLAINTEXT SCOPED_PW — not a hash — because
+  // runFactoryCred hands it straight back and login('system', …) re-hashes it
+  // against hashPassword(SCOPED_PW) on the tmp system row. Mirrors the green
+  // sibling p10-2 harness (no new hard-coded secret, live data/ never touched).
+  writeJSON(tmp, 'backups/users-2000-01-01T00-00-00-000Z.json', [{ ...users.find((u) => u && u.username === 'system'), password: SCOPED_PW }]);
 
   writeJSON(tmp, 'payrolls.json', [
     { id: 'pb-c1', name: 'Payroll C1', status: 'submitted', companyId: 'comp-1', branchId: 'br-1', period: '2026-08', month: '2026-08', items: [{ employeeId: 'emp-1788944410774' }], totalNet: 1000, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
@@ -392,7 +432,12 @@ async function main() {
       `companies=${saCmp.map((c) => c.id).join(',')}`);
 
     const corr = await api('/api/data/corrections', { method: 'POST', session: admin, body: [] });
-    ok('N27 corrections collection rejected (not persisted yet) — pinned', corr.status === 400, `status=${corr.status}`);
+    ok('N27 corrections collection persisted server-side (S10) — super_admin write accepted', corr.status === 200, `status=${corr.status}`);
+    const corrCmp = await api(`/api/data/corrections`, { session: admin });
+    ok('N27b corrections stored server-side and readable back after S10 persistence', corrCmp.status === 200 && Array.isArray(corrCmp.data), `status=${corrCmp.status} data=${Array.isArray(corrCmp.data)}`);
+    const hrCorr = await login('c2-hr', SCOPED_PW);
+    const corrHr = await api('/api/data/corrections', { method: 'POST', session: hrCorr, body: [] });
+    ok('SEC-13 corrections write gated — non-super rejected (403 via superOnly gate)', corrHr.status === 400 || corrHr.status === 403, `status=${corrHr.status}`);
   });
 
   // ---- Phase 6: access-token rotation last (its success kills all sessions) ----

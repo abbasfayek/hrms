@@ -211,7 +211,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
 'payroll.view', 'payroll.generate', 'payroll.edit', 'payroll.submit', 'payroll.export',
     'payroll.correction.create', 'payroll.correction.manual',
     'eosb.view', 'eosb.calculate', 'eosb.approve', 'eosb.pay', 'eosb.delete',
-    'companies.view', 'companies.manage',
+    'companies.view',
     'reports.view', 'reports.export',
     'audit.view',
   ],
