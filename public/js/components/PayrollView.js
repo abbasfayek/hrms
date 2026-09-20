@@ -923,11 +923,9 @@ export function renderPayrollView(container, options = {}) {
         return;
       }
 
-      // Payroll transferred to audit or already approved is NOT part of the
-      // active prep list anymore — it lives in the Financial Audit tab. Show a
-      // compact shortcut instead of the full editable screen so a reviewed
-      // payroll stops appearing in the active payroll records.
-      if (isUnderAudit || isApproved) {
+      // Only batches under audit are diverted to the audit shortcut card.
+      // Approved batches now remain in the active payroll/disbursement UI.
+      if (isUnderAudit) {
         contentArea.innerHTML = `
           <div class="card" style="margin-bottom:20px; padding:18px 24px; background:var(--bg-card-hover);">
             <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
@@ -1099,7 +1097,7 @@ export function renderPayrollView(container, options = {}) {
         </div>
         ` : ''}
 
-        ${isApproved && !isPaid ? `
+        ${isApproved && !isPaid && canDisburse ? `
         <div class="alert-box alert-success" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); padding:14px 18px; border-radius:8px;">
           <div>
             <strong style="color:#059669; font-size:14px;">✅ ${isEn ? 'Audit Approved! Payroll is locked and authorized for payment.' : 'تم اعتماد المسير بنجاح من التدقيق المالي وهو مؤمن وجاهز للصرف البنكي الآن.'}</strong>
@@ -1169,19 +1167,7 @@ export function renderPayrollView(container, options = {}) {
         </div>
         ` : ''}
 
-        ${isApproved && !isPaid && canDisburse && releaseDue ? `
-        <div class="alert-box alert-success" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.4); padding:14px 18px; border-radius:8px;">
-          <div>
-            <strong style="color:#059669; font-size:14px;">💰 ${isEn ? `Payday ${currentBatch.releaseDate} — Salaries are ready for final release.` : `يوم الصرف ${currentBatch.releaseDate} — رواتب هذا الشهر جاهزة للتحرير النهائي.`}</strong>
-            <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">
-              ${isEn ? 'Review the net amounts below, then confirm the final release for everyone on the system.' : 'أجرِ المراجعة النهائية للمبالغ الصافية ثم أكّد التحرير النهائي ليصبح الرواتب متاحة للجميع.'}
-            </div>
-          </div>
-          <button type="button" class="btn btn-sm btn-success" id="btn-disburse-payroll-banner-final">
-            💵 ${isEn ? 'Final Review & Release' : 'مراجعة نهائية وتحرير الرواتب'}
-          </button>
-        </div>
-        ` : ''}
+
 
         <!-- Payroll Metrics Grid -->
         <div class="grid grid-cols-4" style="margin-bottom:20px;">
@@ -1797,6 +1783,9 @@ export function renderPayrollView(container, options = {}) {
         storage.addPayrollBatch(res.batch);
         storage.addAudit('approve', 'payroll', `${selectedAuditBatch.month} → ${isEn ? 'audit approved (returns to HR for payment)' : 'اعتماد التدقيق (يعود لمسؤول الرواتب للصرف)'}`, selectedAuditBatch.id);
         toast.success(isEn ? 'Audit approved. Payroll returned to HR — press Pay Salary when ready.' : 'تم اعتماد التدقيق. أُعيد المسير لمسؤول الرواتب — اضغط صرف الراتب عند الجاهزية.');
+        // Switch to the approved month in the payroll tab so its Pay Salary button
+        // is directly accessible for the live approved batch.
+        currentMonth = res.batch.month;
         activeTab = 'payroll';
         updateHeaderTabs();
         renderTabContent();
