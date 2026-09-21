@@ -1383,7 +1383,7 @@ return {
               <button type="button" class="btn btn-outline" id="btn-export-rep-corrections" ${corrections.length === 0 ? 'disabled' : ''}>
                 ${Icons.download(16)} ${isEn ? 'Export (Excel)' : 'تصدير Excel'}
               </button>
-              <button type="button" class="btn btn-primary" onclick="window.print()">
+              <button type="button" class="btn btn-primary" id="btn-print-corrections-report">
                 ${Icons.printer(16)} ${isEn ? 'Print Report' : 'طباعة التقرير'}
               </button>
             </div>
@@ -1501,6 +1501,68 @@ return {
           });
         });
         exportToXLSX(`Payroll_Corrections_${reportMonth}`, isEn ? 'Payroll_Corrections' : 'تصحيحات_الرواتب', rows);
+      });
+
+      reportArea.querySelector('#btn-print-corrections-report')?.addEventListener('click', () => {
+        if (corrections.length === 0) {
+          toast.info(isEn ? 'No corrections to print.' : 'لا توجد تصحيحات للطباعة.');
+          return;
+        }
+
+        const moneyPlain = (c) => {
+          const view = correctionFinancialView(c);
+          if (!view || !view.currencies || !view.currencies.length) return '0.00';
+          return summarizeCurrencySegments(view.currencies.map((g) => ({ code: g.code, amount: g.amount })));
+        };
+
+        const columns = [
+          { key: 'number', label: isEn ? 'Number' : 'الرقم' },
+          { key: 'direction', label: isEn ? 'Direction' : 'الاتجاه' },
+          { key: 'rateSource', label: isEn ? 'Rate source' : 'مصدر السعر' },
+          { key: 'amount', label: isEn ? 'Amount (signed)' : 'المبلغ (موقّع)' },
+          { key: 'recovery', label: isEn ? 'Recovery' : 'الاسترداد' },
+          { key: 'status', label: isEn ? 'Status' : 'الحالة' },
+          { key: 'manual', label: isEn ? 'Manual' : 'يدوي' },
+        ];
+
+        const rows = corrections.map((c) => ({
+          number: c.displayNumber || c.correctionId,
+          direction: c.direction === 'debit' ? (isEn ? 'Debit' : 'خصم') : (isEn ? 'Credit' : 'إضافة'),
+          rateSource: rateSourceOf(c),
+          amount: moneyPlain(c),
+          recovery: (c.recovery && c.recovery.method) ? c.recovery.method : '—',
+          status: statusText(c),
+          manual: c.manualEntry ? '✓' : '—',
+        }));
+
+        const segOriginal = summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g.net })));
+        const segCorrections = summarizeCurrencySegments((net && net.currencies || []).map((g) => ({ code: g.code, amount: g.correctionsNet })));
+        const segNet = summarizeCurrencySegments((net && net.currencies || []).map((g) => ({ code: g.code, amount: g.net })));
+
+        const totalsRow = {
+          number: t('reports.overallTotal'),
+          direction: '-',
+          rateSource: '-',
+          amount: `${isEn ? 'Original' : 'الأصلي'}: ${segOriginal}  |  ${isEn ? 'Σ Corrections' : 'Σ التصحيحات'}: ${segCorrections}  |  ${isEn ? 'Net/Effective' : 'صافي/فعال'}: ${segNet}`,
+          recovery: '-',
+          status: '-',
+          manual: '-',
+        };
+
+        const activeComp = companies.find((c) => c.id === storage.getSelectedCompanyId());
+        const compName = isEn ? (activeComp?.nameEn || settings.companyNameEn || 'HRMS Enterprise') : (activeComp?.nameAr || settings.companyName || 'بينو سوفت');
+
+        openPrintConfigModal({
+          title: tf('reports.correctionTitle', { month: reportMonth }),
+          companyName: compName,
+          branchName: storage.getSelectedBranchId() !== 'all' ? storage.getSelectedBranchId() : '',
+          period: reportMonth,
+          columns,
+          rows,
+          orientation: 'landscape',
+          direction: isEn ? 'ltr' : 'rtl',
+          totals: totalsRow,
+        });
       });
     }
   }
