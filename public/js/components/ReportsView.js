@@ -572,6 +572,9 @@ return {
               <button type="button" class="btn btn-outline" id="btn-export-comparison-xlsx" ${!canCompare ? 'disabled' : ''}>
                 ${Icons.download(16)} ${isEn ? 'Export Excel' : 'تصدير Excel'}
               </button>
+              <button type="button" class="btn btn-primary" id="btn-print-comparison-report" ${!canCompare ? 'disabled' : ''}>
+                ${Icons.printer(16)} ${isEn ? 'Print Report' : 'طباعة التقرير'}
+              </button>
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -718,6 +721,62 @@ return {
           [hd('سبب الفرق بالتفصيل', 'Detailed Reason')]: r.reasonText,
         }));
         exportToXLSX(`Month_Comparison_${prevMonth}_vs_${nextMonth}`, (isEn ? `Month_Comparison_${prevMonth}_vs_${nextMonth}` : `مقارنة_${prevMonth}_مع_${nextMonth}`), exportData);
+      });
+
+      reportArea.querySelector('#btn-print-comparison-report')?.addEventListener('click', () => {
+        if (!canCompare || comparisonRows.length === 0) {
+          toast.info(isEn ? 'No comparison data to print.' : 'لا توجد بيانات مقارنة للطباعة.');
+          return;
+        }
+
+        const columns = [
+          { key: 'employee', label: t('reports.employee') },
+          { key: 'department', label: t('reports.department') },
+          { key: 'prevNet', label: tf('reports.netMonth', { month: prevMonth }) },
+          { key: 'nextNet', label: tf('reports.netMonth', { month: nextMonth }) },
+          { key: 'variance', label: t('reports.variance') },
+          { key: 'socialSecurity', label: isEn ? 'Social Security (Employee + Company)' : 'التأمينات الاجتماعية (موظف + شركة)' },
+          { key: 'reason', label: t('reports.varianceReason') },
+        ];
+
+        const rows = comparisonRows.map((r) => {
+          const prevCurrency = r.itemPrev?.currency || settings.currency || 'USD';
+          const nextCurrency = r.itemNext?.currency || settings.currency || 'USD';
+          const diffSign = r.diffNet > 0 ? '+' : '';
+          return {
+            employee: `${r.emp.fullName} (${r.emp.employeeNumber || '-'})`,
+            department: r.emp.department || '-',
+            prevNet: formatAmountWithCode(r.prevNet, prevCurrency),
+            nextNet: formatAmountWithCode(r.nextNet, nextCurrency),
+            variance: `${diffSign}${formatAmountWithCode(r.diffNet, nextCurrency)}`,
+            socialSecurity: `${formatAmountWithCode(r.nextGosi, nextCurrency)}${r.itemNext ? ` [${isEn ? 'Emp' : 'موظف'}: ${formatAmountWithCode(r.itemNext.gosiEmployeeDeduction, nextCurrency)} | ${isEn ? 'Co' : 'شركة'}: ${formatAmountWithCode(r.itemNext.gosiCompanyContribution, nextCurrency)}]` : ''}`,
+            reason: r.reasonText,
+          };
+        });
+
+        const totalsRow = {
+          employee: t('reports.grandTotal'),
+          prevNet: summarizeCurrencySegments(totalsByCurrencyPrev.map(g => ({ code: g.code, amount: g.net }))),
+          nextNet: summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.net }))),
+          variance: (totalDiff >= 0 ? '+' : '') + summarizeCurrencySegments([{ code: batchNext?.totalsByCurrency?.[0]?.code || 'USD', amount: totalDiff }]),
+          socialSecurity: summarizeCurrencySegments(totalsByCurrencyNext.map(g => ({ code: g.code, amount: g.companyGosi }))),
+          reason: '',
+        };
+
+        const activeComp = companies.find((c) => c.id === storage.getSelectedCompanyId());
+        const compName = isEn ? (activeComp?.nameEn || settings.companyNameEn || 'HRMS Enterprise') : (activeComp?.nameAr || settings.companyName || 'بينو سوفت');
+
+        openPrintConfigModal({
+          title: t('reports.monthComparisonTitle'),
+          companyName: compName,
+          branchName: storage.getSelectedBranchId() !== 'all' ? storage.getSelectedBranchId() : '',
+          period: `${prevMonth} → ${nextMonth}`,
+          columns,
+          rows,
+          orientation: 'landscape',
+          direction: isEn ? 'ltr' : 'rtl',
+          totals: totalsRow,
+        });
       });
 
     // ==========================================
