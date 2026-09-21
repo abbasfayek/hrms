@@ -1447,12 +1447,13 @@ export function renderPayrollView(container, options = {}) {
 
       // Transfer to Audit (draft → under_audit) or Resubmit (rejected → under_audit)
       const submitToAudit = (rejectionNote) => {
+        const liveBatch = storage.getState().payrolls.find(b => b && b.id === currentBatch.id) || currentBatch;
         if (!canSubmitAudit) {
           toast.error(isEn ? 'Insufficient permissions to submit payroll to Financial Audit.' : 'لا تملك صلاحية ترحيل المسير إلى التدقيق المالي.');
           return;
         }
         if (!requireBranchForAction()) return;
-        const res = transitionPayrollGuarded(state.currentUser, currentBatch, 'under_audit', {
+        const res = transitionPayrollGuarded(state.currentUser, liveBatch, 'under_audit', {
           by: storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب'),
           context: getPayrollBranchContext(),
           rejectionReason: rejectionNote,
@@ -1477,11 +1478,11 @@ export function renderPayrollView(container, options = {}) {
       contentArea.querySelector('#btn-transfer-to-audit')?.addEventListener('click', () => submitToAudit());
       contentArea.querySelector('#btn-resubmit-payroll')?.addEventListener('click', () => submitToAudit(isEn ? 'Re-submitted after correction' : 'أُعيد إرساله بعد التصحيح'));
       contentArea.querySelector('#btn-correct-resubmit-payroll')?.addEventListener('click', () => {
-        const prev = currentBatch;
+        const liveBatch = storage.getState().payrolls.find(b => b && b.id === currentBatch.id) || currentBatch;
         const regenerated = generateMonthlyPayroll(employees, overtime, loans, attendance, { month: currentMonth, adjustments: increments, companies }, settings);
         computePayrollReleaseSchedule(regenerated, companies);
         const actor = storage.getActiveUser()?.name || (isEn ? 'Payroll Admin' : 'مسؤول الرواتب');
-        const corr = recordPayrollCorrectionGuarded(state.currentUser, prev, regenerated, {
+        const corr = recordPayrollCorrectionGuarded(state.currentUser, liveBatch, regenerated, {
           by: actor,
           context: getPayrollBranchContext(),
           reason: isEn ? 'Corrected and resubmitted after audit return' : 'تصحيح وإعادة إرسال بعد إعادة التدقيق',
