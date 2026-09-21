@@ -11,6 +11,7 @@ import { computeReportProratedSalary } from '../engines/wageEngine.js';
 import { computeNetEffective } from '../engines/payrollCorrectionEngine.js';
 import { correctionFinancialView } from '../engines/payrollCorrectionModel.js';
 import { toast } from './Toast.js';
+import { openPrintConfigModal } from './PrintConfigModal.js';
 import { i18n, t, tf } from '../i18n.js';
 
 export function renderReportsView(container, options = {}) {
@@ -261,7 +262,7 @@ return {
               <button type="button" class="btn btn-outline" id="btn-export-audit-xlsx" ${auditRows.length === 0 && !storedBatch ? 'disabled' : ''}>
                 ${Icons.download(16)} ${isEn ? 'Export Audit (Excel)' : 'تصدير تقرير التدقيق'}
               </button>
-              <button type="button" class="btn btn-primary" onclick="window.print()">
+              <button type="button" class="btn btn-primary" id="btn-print-audit-report">
                 ${Icons.printer(16)} ${isEn ? 'Print Report' : 'طباعة التقرير'}
               </button>
             </div>
@@ -350,6 +351,66 @@ return {
       reportArea.querySelector('#report-month-input')?.addEventListener('change', (e) => {
         reportMonth = e.target.value;
         renderReportContent();
+      });
+
+      reportArea.querySelector('#btn-print-audit-report')?.addEventListener('click', () => {
+        const columns = [
+          { key: 'number', label: t('reports.number') },
+          { key: 'employee', label: t('reports.employee') },
+          { key: 'department', label: t('reports.department') },
+          { key: 'basicSalary', label: t('reports.basicSalary') },
+          { key: 'allowances', label: t('reports.allowances') },
+          { key: 'overtime', label: t('reports.overtime') },
+          { key: 'grossSalary', label: t('reports.grossSalary') },
+          { key: 'loanInstallment', label: isEn ? 'Loan Installment' : 'قسط السلفة' },
+          { key: 'absencePenalty', label: isEn ? 'Absences & Penalties' : 'خصم غياب وتأخر' },
+          { key: 'gosiEmployee', label: isEn ? 'Social Security (Emp)' : 'تأمينات الموظف' },
+          { key: 'netSalary', label: t('reports.netSalary') },
+          { key: 'leavesTaken', label: t('reports.monthlyLeaves') },
+          { key: 'leaveBalance', label: t('reports.remainingLeaveBalance') },
+          { key: 'remainingAdvances', label: t('reports.remainingAdvances') },
+        ];
+
+        const rows = auditRows.map((r) => ({
+          number: r.emp ? r.emp.employeeNumber : '-',
+          employee: r.it.employeeName,
+          department: r.it.department,
+          basicSalary: formatAmountWithCode(r.it.basicSalary, r.currency),
+          allowances: formatAmountWithCode(r.it.housingAllowance + r.it.transportAllowance + r.it.otherAllowances, r.currency),
+          overtime: r.it.overtimeAmount > 0 ? formatAmountWithCode(r.it.overtimeAmount, r.currency) : '-',
+          grossSalary: formatAmountWithCode(r.it.grossSalary, r.currency),
+          loanInstallment: r.it.loanInstallment > 0 ? '- ' + formatAmountWithCode(r.it.loanInstallment, r.currency) : '-',
+          absencePenalty: r.it.absenceDeduction + r.it.lateDeduction > 0 ? '- ' + formatAmountWithCode(r.it.absenceDeduction + r.it.lateDeduction, r.currency) : '-',
+          gosiEmployee: '- ' + formatAmountWithCode(r.it.gosiEmployeeDeduction, r.currency),
+          netSalary: formatAmountWithCode(r.it.netSalary, r.currency),
+          leavesTaken: r.monthLeavesTaken,
+          leaveBalance: (r.leaveBal.remainingAnnualBalance !== undefined ? r.leaveBal.remainingAnnualBalance : (r.leaveBal.remainingDays || 0)),
+          remainingAdvances: formatAmountWithCode(r.remainingLoanTotal, r.currency),
+        }));
+
+        const totalsRow = {
+          number: t('reports.grandTotal'),
+          grossSalary: summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.gross }))),
+          loanInstallment: '- ' + summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.deductions }))),
+          absencePenalty: '- ' + summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.net }))),
+          gosiEmployee: '- ' + summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.companyGosi }))),
+          netSalary: summarizeCurrencySegments(totalsByCurrency.map(g => ({ code: g.code, amount: g.net }))),
+        };
+
+        const activeComp = companies.find((c) => c.id === storage.getSelectedCompanyId());
+        const compName = isEn ? (activeComp?.nameEn || settings.companyNameEn || 'HRMS Enterprise') : (activeComp?.nameAr || settings.companyName || 'بينو سوفت');
+
+        openPrintConfigModal({
+          title: tf('reports.employeeAuditTitle', { month: reportMonth }),
+          companyName: compName,
+          branchName: storage.getSelectedBranchId() !== 'all' ? storage.getSelectedBranchId() : '',
+          period: reportMonth,
+          columns,
+          rows,
+          orientation: 'landscape',
+          direction: isEn ? 'ltr' : 'rtl',
+          totals: totalsRow,
+        });
       });
 
       reportArea.querySelector('#btn-export-audit-xlsx')?.addEventListener('click', () => {
