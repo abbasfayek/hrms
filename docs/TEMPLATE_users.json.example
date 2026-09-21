@@ -1,0 +1,19 @@
+{
+  "_NOTE": "EXAMPLE / TEMPLATE ONLY - not a live file. Do NOT copy this into data/users.json verbatim.",
+  "_NOTE_2": "Replace every placeholder with the operator's OWN values. The operator MUST supply the password; it is never generated or guessed by an agent.",
+  "_NOTE_3": "Only username and password are required by the login code (server.js). role/name/email/id are used by the app; assignedCompanyId/assignedBranchId default to 'all' when absent but are set explicitly here for clarity.",
+  "_NOTE_4": "Plaintext passwords are auto-upgraded to PBKDF2 on the FIRST successful login. Alternatively pre-hash with: npm run migrate (backs up data/users.json first).",
+  "_NOTE_5": "Edit this file ONLY while the production server is stopped (see PRODUCTION_SETUP_v1.2.0.md).",
+  "users": [
+    {
+      "id": "usr-admin",
+      "username": "REPLACE_WITH_YOUR_ADMIN_USERNAME",
+      "password": "REPLACE_WITH_YOUR_OWN_STRONG_PASSWORD",
+      "name": "System Administrator",
+      "email": "REPLACE_WITH_YOUR_ADMIN_EMAIL",
+      "role": "super_admin",
+      "assignedCompanyId": "all",
+      "assignedBranchId": "all"
+    }
+  ]
+}
