@@ -14,6 +14,11 @@ import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// Hermetic super-admin fixture seeded into the sandbox (TEST-ONLY password;
+// never runtime users, data/backups, the `system` account, or a production
+// secret).
+const SUPER = { username: 'clear-admin', password: 'ClearAdmin@2026!' };
+
 let passed = 0;
 let failed = 0;
 const failures = [];
@@ -51,6 +56,20 @@ function makeTmpApp() {
 
 function seedFixture(tmp) {
   const companies = readJSON(tmp, 'companies.json');
+  // The suite's own records reference comp-1/br-1 (payrolls, leaves, loans and
+  // the post-clear write below), so the sandbox companies must contain them —
+  // mirroring the hermetic fixtures of the sibling suites (never relies on the
+  // developer machine's live data/companies.json shape).
+  if (!companies.some((c) => c && Array.isArray(c.branches) && c.branches.some((b) => b && b.id === 'br-1'))) {
+    companies.push({
+      id: 'comp-1', nameAr: 'الشركة الأولى', nameEn: 'First Co.', code: 'C1',
+      currency: 'USD', currencySymbol: '$', commercialRegistration: '', taxNumber: '',
+      branches: [
+        { id: 'br-1', companyId: 'comp-1', nameAr: 'فرع رئيسي', nameEn: 'Main Branch', city: '', payDay: 1, branchType: 'main', parentBranchId: null },
+      ],
+      hourlyLeaveQuota: 4,
+    });
+  }
   companies.push({
     id: 'comp-2', nameAr: 'الشركة الثانية', nameEn: 'Second Co.', code: 'C2',
     currency: 'USD', currencySymbol: '$', commercialRegistration: '', taxNumber: '',
@@ -74,6 +93,11 @@ function seedFixture(tmp) {
     { id: 'u-c2-hr', username: 'c2-hr', name: 'HR Comp2', role: 'company_hr', assignedCompanyId: 'comp-2', assignedBranchId: 'all' },
   ];
   for (const u of scoped) users.push({ ...u, email: `${u.username}@test.local`, password: hashPassword('SecretPass-101'), hidden: false, protected: false });
+  // Hermetic super_admin INSIDE the sandbox with a known test password, so the
+  // super-only checks never depend on runtime users or backups.
+  if (!users.some((u) => u && u.username === SUPER.username)) {
+    users.push({ id: 'usr-clear-admin', username: SUPER.username, name: 'Clear-All Admin', role: 'super_admin', assignedCompanyId: 'all', assignedBranchId: 'all', email: 'clear-admin@test.local', password: hashPassword(SUPER.password), protected: false, hidden: false });
+  }
   writeJSON(tmp, 'users.json', users);
 
   writeJSON(tmp, 'payrolls.json', [
@@ -133,18 +157,6 @@ async function login(base, username, password) {
   return r.status === 200 && r.data && r.data.session ? r.data.session : null;
 }
 
-function factorySuperCred(tmp) {
-  const backupsDir = path.join(tmp, 'data', 'backups');
-  if (!fs.existsSync(backupsDir)) return '';
-  const files = fs.readdirSync(backupsDir).filter((f) => /^users-/.test(f)).sort();
-  if (!files.length) return '';
-  try {
-    const raw = JSON.parse(fs.readFileSync(path.join(backupsDir, files[0]), 'utf-8'));
-    const u = Array.isArray(raw) ? raw.find((x) => x && x.username === 'system') : null;
-    return u ? u.password : '';
-  } catch { return ''; }
-}
-
 const CLEARABLE = ['employees', 'leaves', 'hourly_leaves', 'overtime', 'loans', 'increments', 'attendance', 'holidays', 'payrolls', 'eosb'];
 const PRESERVED = ['companies', 'users', 'settings'];
 
@@ -165,8 +177,7 @@ async function main() {
     ok('C-03 non-super attempt did NOT wipe any employee file', Array.isArray(diskBefore) && diskBefore.length > 0, `rows=${Array.isArray(diskBefore) ? diskBefore.length : 'n/a'}`);
 
     // 2) Super admin clears
-    const superPw = factorySuperCred(tmp);
-    const admin = await login(BASE, 'system', superPw);
+    const admin = await login(BASE, SUPER.username, SUPER.password);
     ok('C-04 super admin login', Boolean(admin), 'super login failed');
     const cleanRes = await request(BASE, '/api/clear-all', { method: 'POST', session: admin });
     ok('C-05 super_admin clear-all succeeds (200)', cleanRes.status === 200 && cleanRes.data && cleanRes.data.success === true, `status=${cleanRes.status} body=${JSON.stringify(cleanRes.data)}`);
@@ -221,9 +232,9 @@ async function main() {
     const { storage } = await import(new URL('public/js/storage.js', `file://${ROOT}/`.replace(/\\/g, '/')).href);
     await new Promise((r) => setTimeout(r, 200));
 
-    const loginRes = await storage.serverLogin('system', superPw);
+    const loginRes = await storage.serverLogin(SUPER.username, SUPER.password);
     ok('C-11 client storage server-login ok', loginRes.ok === true, JSON.stringify(loginRes));
-    storage.setActiveUser('system');
+    storage.setActiveUser(SUPER.username);
 
     // Break the network: the client attempts the server wipe, goes offline.
     globalThis.fetch = async () => { throw new Error('offline'); };

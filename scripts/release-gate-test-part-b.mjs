@@ -9,13 +9,45 @@
 //   - /api/backup and /api/restore work under a session
 //   - data survives a server restart, and login still works after restart
 //
-// Factory passwords are read at RUNTIME from the migration backup and are
-// never printed.
+// Super-admin credentials are hermetic: a fixture account with a KNOWN
+// TEST-ONLY password is written into the throwaway data copy, so the live
+// login checks never depend on the operator's runtime users, data/backups,
+// the `system` account, or any production secret.
 
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
+
+// Hermetic super-admin for the throwaway server (TEST-ONLY password; never a
+// production secret and never derived from data/backups or runtime data).
+const GATE_ADMIN = { username: 'gate-admin', password: 'GateAdmin@2026!' };
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+  return `pbkdf2$${salt.toString('base64')}$${100000}$${hash.toString('base64')}`;
+}
+
+// Ensure the throwaway data copy carries a KNOWN super_admin, then return the
+// credentials that are guaranteed to exist INSIDE that sandbox. Reads the
+// sandbox users.json only (never data/backups, never the `system` account).
+function ensureSandboxSuperAdmin(tmpDir) {
+  const usersFile = path.join(tmpDir, 'data', 'users.json');
+  const users = fs.existsSync(usersFile) ? JSON.parse(fs.readFileSync(usersFile, 'utf-8')) : [];
+  if (!Array.isArray(users)) throw new Error('sandbox users.json is not an array');
+  if (!users.some((u) => u && u.username === GATE_ADMIN.username)) {
+    users.push({
+      id: 'usr-gate-admin', username: GATE_ADMIN.username, name: 'Release Gate Admin',
+      email: 'gate-admin@test.local', role: 'super_admin', assignedCompanyId: 'all',
+      assignedBranchId: 'all', jobTitle: 'اختبار بوابة الإصدار', avatar: 'ب',
+      password: hashPassword(GATE_ADMIN.password), protected: false, hidden: false,
+    });
+  }
+  fs.writeFileSync(usersFile, JSON.stringify(users, null, 2), 'utf-8');
+  return { username: GATE_ADMIN.username, password: GATE_ADMIN.password };
+}
 
 export async function runPartB({ ROOT, ok, PORT }) {
   console.log('\n=== Part B — Live server integration (temp copy) ===');
@@ -25,6 +57,7 @@ export async function runPartB({ ROOT, ok, PORT }) {
   for (const f of ['server.js', 'index.html', 'server-authz.mjs']) fs.copyFileSync(path.join(ROOT, f), path.join(tmpDir, f));
   copySync(path.join(ROOT, 'public'), path.join(tmpDir, 'public'));
   copySync(path.join(ROOT, 'data'), path.join(tmpDir, 'data'));
+  const creds = ensureSandboxSuperAdmin(tmpDir);
   const BASE = `http://localhost:${PORT}`;
 
   function bootServer() {
@@ -61,19 +94,6 @@ export async function runPartB({ ROOT, ok, PORT }) {
     });
   }
 
-  // Read the "system" factory password from the migration backup (runtime only).
-  function readFactoryCreds() {
-    const backupsDir = path.join(tmpDir, 'data', 'backups');
-    if (!fs.existsSync(backupsDir)) return null;
-    const files = fs.readdirSync(backupsDir).filter((f) => /^users-/.test(f)).sort();
-    if (!files.length) return null;
-    try {
-      const raw = JSON.parse(fs.readFileSync(path.join(backupsDir, files[0]), 'utf-8'));
-      const u = Array.isArray(raw) ? raw.find((x) => x && x.username === 'system') : null;
-      return u ? { username: u.username, password: u.password } : null;
-    } catch { return null; }
-  }
-
   let server;
   try {
     server = await bootServer();
@@ -87,16 +107,11 @@ export async function runPartB({ ROOT, ok, PORT }) {
     // 2) Wrong password is rejected (single failure — avoids the rate limiter).
     const bad = await fetch(`${BASE}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'system', password: 'definitely-wrong' }),
+      body: JSON.stringify({ username: GATE_ADMIN.username, password: 'definitely-wrong' }),
     });
     ok('wrong password rejected (401)', bad.status === 401);
 
-    // 3) Real login with POST-migration (hashed) credentials.
-    const creds = readFactoryCreds();
-    if (!creds) {
-      console.log('  (no migration backup found — live login checks skipped)');
-      return;
-    }
+    // 3) Real login with the sandbox's POST-migration (hashed) credentials.
     const login = await fetch(`${BASE}/api/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(creds),

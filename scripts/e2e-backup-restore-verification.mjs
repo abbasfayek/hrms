@@ -7,12 +7,36 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
+
+// Hermetic super-admin for BOTH sandboxes (TEST-ONLY password). Login and
+// backup/restore checks act on this fixture that lives inside the throwaway
+// data — never on the operator's runtime users, data/backups, or a production
+// secret.
+const RESTORE_ADMIN = { username: 'restore-admin', password: 'RestoreAdmin@2026!' };
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+  return `pbkdf2$${salt.toString('base64')}$${100000}$${hash.toString('base64')}`;
+}
+
+function fixtureUsers() {
+  return [
+    {
+      id: 'usr-restore-admin', username: RESTORE_ADMIN.username, name: 'Restore Admin',
+      email: 'restore-admin@test.local', role: 'super_admin', assignedCompanyId: 'all',
+      assignedBranchId: 'all', jobTitle: 'أدمين اختبار الاستعادة', avatar: 'ن',
+      password: hashPassword(RESTORE_ADMIN.password), protected: false, hidden: false,
+    },
+  ];
+}
 
 function ok(name, cond, msg = '') {
   if (!cond) {
@@ -121,8 +145,12 @@ async function run() {
   for (const f of ['server.js', 'index.html', 'server-authz.mjs']) fs.copyFileSync(path.join(ROOT, f), path.join(tmpClean, f));
   copySync(path.join(ROOT, 'public'), path.join(tmpClean, 'public'));
   fs.mkdirSync(path.join(tmpClean, 'data'), { recursive: true });
-  // Seed only the initial users.json so super_admin exists to run restore
-  fs.copyFileSync(path.join(ROOT, 'data', 'users.json'), path.join(tmpClean, 'data', 'users.json'));
+  // Seed BOTH sandboxes with the SAME hermetic users fixture so every login in
+  // this suite uses credentials that exist inside the temporary data (never
+  // runtime users, never data/backups, never a production secret).
+  const usersFixture = fixtureUsers();
+  fs.writeFileSync(path.join(tmpPrimary, 'data', 'users.json'), JSON.stringify(usersFixture, null, 2));
+  fs.writeFileSync(path.join(tmpClean, 'data', 'users.json'), JSON.stringify(usersFixture, null, 2));
 
   const primaryChild = spawnServer(tmpPrimary, PORT_PRIMARY);
   let cleanChild = null;
@@ -131,16 +159,7 @@ async function run() {
     await waitForServer(PORT_PRIMARY);
     ok('1.1 Primary production-replica server started', true);
 
-    const creds = (() => {
-      const backupsDir = path.join(ROOT, 'data', 'backups');
-      const files = fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir).filter((f) => /^users-/.test(f)).sort() : [];
-      if (files.length) {
-        const raw = JSON.parse(fs.readFileSync(path.join(backupsDir, files[0]), 'utf-8'));
-        const u = Array.isArray(raw) ? raw.find((x) => x && x.username === 'system') : null;
-        if (u) return { username: u.username, password: u.password };
-      }
-      return { username: 'system', password: 'password123' };
-    })();
+    const creds = { username: RESTORE_ADMIN.username, password: RESTORE_ADMIN.password };
 
     // Login as super_admin on primary server
     const loginRes = await httpRequest(`http://localhost:${PORT_PRIMARY}/api/auth/login`, {

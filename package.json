@@ -25,7 +25,7 @@
     "backup:test": "node scripts/e2e-backup-restore-verification.mjs",
     "clear:test": "node scripts/clear-all-tests.mjs",
     "branchgate:test": "node scripts/branch-gate-client-tests.mjs",
-    "test": "npm run release:test && npm run p101:test && npm run p102:test && npm run branch:isolation && npm run backup:test && npm run clear:test && npm run branchgate:test"
+    "test": "node scripts/run-test-gate.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",
