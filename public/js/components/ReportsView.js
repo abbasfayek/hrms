@@ -802,7 +802,7 @@ return {
               <button type="button" class="btn btn-outline btn-sm" id="btn-export-rep-payroll" ${payrollItems.length === 0 ? 'disabled' : ''}>
                 ${Icons.download(14)} ${isEn ? 'Export Excel' : 'تصدير Excel'}
               </button>
-              <button type="button" class="btn btn-primary btn-sm" onclick="window.print()">
+              <button type="button" class="btn btn-primary btn-sm" id="btn-print-payroll-report">
                 ${Icons.printer(14)} ${isEn ? 'Print Report' : 'طباعة التقرير'}
               </button>
             </div>
@@ -908,6 +908,69 @@ return {
           [hd('صافي الراتب', 'Net Salary')]: it.netSalary,
         }));
         exportToXLSX(`Payroll_Report_${reportMonth}`, (isEn ? `Payroll_Report_${reportMonth}` : `رواتب_${reportMonth}`), exportData);
+      });
+
+      reportArea.querySelector('#btn-print-payroll-report')?.addEventListener('click', () => {
+        if (payrollItems.length === 0) {
+          toast.warning(isEn ? 'No stored payroll rows for this month to print.' : 'لا توجد صفوف مسير مخزنة لهذا الشهر للطباعة.');
+          return;
+        }
+
+        const currencyOf = (it) => it.currency || settings.currency || 'USD';
+
+        const columns = [
+          { key: 'employee', label: t('payroll.employee') },
+          { key: 'basicSalary', label: t('payroll.basicSalary') },
+          { key: 'housing', label: t('payroll.housing') },
+          { key: 'transport', label: t('payroll.transport') },
+          { key: 'overtime', label: t('payroll.overtime') },
+          { key: 'totalEarnings', label: t('payroll.totalEarnings') },
+          { key: 'socialSecurity', label: isEn ? 'Social Security' : 'تأمينات' },
+          { key: 'loanAdvance', label: isEn ? 'Loan Advance' : 'سلفة' },
+          { key: 'absenceLate', label: isEn ? 'Absence/Late' : 'خصم غياب' },
+          { key: 'netSalaryTransferred', label: t('payroll.netSalaryTransferred') },
+        ];
+
+        const rows = payrollItems.map((it) => {
+          const cur = currencyOf(it);
+          return {
+            employee: it.employeeName,
+            basicSalary: formatAmountWithCode(it.basicSalary, cur),
+            housing: formatAmountWithCode(it.housingAllowance, cur),
+            transport: formatAmountWithCode(it.transportAllowance, cur),
+            overtime: it.overtimeAmount > 0 ? formatAmountWithCode(it.overtimeAmount, cur) : '-',
+            totalEarnings: formatAmountWithCode(it.grossSalary, cur),
+            socialSecurity: `- ${formatAmountWithCode(it.gosiEmployeeDeduction, cur)}`,
+            loanAdvance: it.loanInstallment > 0 ? `- ${formatAmountWithCode(it.loanInstallment, cur)}` : '-',
+            absenceLate: it.absenceDeduction + it.lateDeduction > 0 ? `- ${formatAmountWithCode(it.absenceDeduction + it.lateDeduction, cur)}` : '-',
+            netSalaryTransferred: formatAmountWithCode(it.netSalary, cur),
+          };
+        });
+
+        const segGross = summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g.gross })));
+        const segDeductions = summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g.deductions })));
+        const segNet = summarizeCurrencySegments((storedBatch.totalsByCurrency || []).map((g) => ({ code: g.code, amount: g.net })));
+
+        const totalsRow = {
+          totalEarnings: segGross,
+          socialSecurity: `- ${segDeductions}`,
+          netSalaryTransferred: segNet,
+        };
+
+        const activeComp = companies.find((c) => c.id === storage.getSelectedCompanyId());
+        const compName = isEn ? (activeComp?.nameEn || settings.companyNameEn || 'HRMS Enterprise') : (activeComp?.nameAr || settings.companyName || 'بينو سوفت');
+
+        openPrintConfigModal({
+          title: tf('reports.payrollDetailTitle', { month: reportMonth }),
+          companyName: compName,
+          branchName: storage.getSelectedBranchId() !== 'all' ? storage.getSelectedBranchId() : '',
+          period: reportMonth,
+          columns,
+          rows,
+          orientation: 'landscape',
+          direction: isEn ? 'ltr' : 'rtl',
+          totals: totalsRow,
+        });
       });
 
     // ==========================================
