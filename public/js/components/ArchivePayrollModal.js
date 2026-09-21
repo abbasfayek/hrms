@@ -27,7 +27,7 @@ export function openArchivePayrollModal({ onDone }) {
       <input type="number" class="form-input ap-count" value="${count}" min="1" placeholder="${isEn ? 'Employees' : 'عدد الموظفين'}" style="padding:7px 8px;" inputmode="numeric">
       <input type="date" class="form-input ap-paid-date" value="${paidDate}" style="padding:7px 8px;" title="${isEn ? 'Disbursed date' : 'تاريخ الصرف'}">
       <input type="text" class="form-input ap-note" value="${note}" placeholder="${isEn ? 'Note (optional)' : 'ملاحظة (اختياري)'}" style="padding:7px 8px;">
-      <button type="button" class="btn btn-icon btn-outline ap-remove" title="${isEn ? 'Remove' : 'حذف'}">${Icons.trash(15)}</button>
+      <button type="button" class="btn btn-icon btn-outline ap-remove" title="${t('delete')}">${Icons.trash(15)}</button>
     </div>
   `;
 
