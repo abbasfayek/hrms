@@ -954,7 +954,7 @@ return {
               <button type="button" class="btn btn-outline btn-sm" id="btn-export-rep-gosi">
                 ${Icons.download(14)} ${isEn ? 'Export Excel' : 'تصدير Excel'}
               </button>
-              <button type="button" class="btn btn-primary btn-sm" onclick="window.print()">
+              <button type="button" class="btn btn-primary btn-sm" id="btn-print-gosi-report">
                 ${Icons.printer(14)} ${isEn ? 'Print' : 'طباعة'}
               </button>
             </div>
@@ -1023,6 +1023,61 @@ return {
           [isEn ? 'Total Monthly Contribution' : 'إجمالي الاشتراك الشهري']: r.totalContribution,
         }));
         exportToXLSX(`SocialSecurity_Report`, isEn ? 'SocialSecurity_Report' : 'تقرير_التأمينات_الاجتماعية', exportData);
+      });
+
+      reportArea.querySelector('#btn-print-gosi-report')?.addEventListener('click', () => {
+        if (gosiRows.length === 0) {
+          toast.info(isEn ? 'No GOSI data to print.' : 'لا توجد بيانات تأمينات للطباعة.');
+          return;
+        }
+
+        const columns = [
+          { key: 'employee', label: t('leaves.employee') },
+          { key: 'department', label: t('leaves.department') },
+          { key: 'registeredWage', label: t('reports.registeredWage') },
+          { key: 'employeeRate', label: t('reports.employeeRate') },
+          { key: 'employeeDeduction', label: t('reports.employeeDeduction') },
+          { key: 'companyRate', label: t('reports.companyRate') },
+          { key: 'companyContribution', label: t('reports.companyContribution') },
+          { key: 'totalContribution', label: t('reports.totalContribution') },
+        ];
+
+        const rows = gosiRows.map((r) => ({
+          employee: r.emp.fullName,
+          department: r.emp.department || '-',
+          registeredWage: r.isSubject ? formatAmountWithCode(r.regWage, settings.currency || 'USD') : t('reports.notSubject'),
+          employeeRate: r.isSubject ? `${r.empPct}%` : '-',
+          employeeDeduction: r.isSubject ? formatAmountWithCode(r.empDeduction, settings.currency || 'USD') : '-',
+          companyRate: r.isSubject ? `${r.compPct}%` : '-',
+          companyContribution: r.isSubject ? formatAmountWithCode(r.compContribution, settings.currency || 'USD') : '-',
+          totalContribution: r.isSubject ? formatAmountWithCode(r.totalContribution, settings.currency || 'USD') : '-',
+        }));
+
+        const totalsRow = {
+          employee: t('reports.overallTotal'),
+          department: '',
+          registeredWage: formatAmountWithCode(totalRegWage, settings.currency || 'USD'),
+          employeeRate: '-',
+          employeeDeduction: formatAmountWithCode(totalEmpDeduction, settings.currency || 'USD'),
+          companyRate: '-',
+          companyContribution: formatAmountWithCode(totalCompContribution, settings.currency || 'USD'),
+          totalContribution: formatAmountWithCode(grandTotalGosi, settings.currency || 'USD'),
+        };
+
+        const activeComp = companies.find((c) => c.id === storage.getSelectedCompanyId());
+        const compName = isEn ? (activeComp?.nameEn || settings.companyNameEn || 'HRMS Enterprise') : (activeComp?.nameAr || settings.companyName || 'بينو سوفت');
+
+        openPrintConfigModal({
+          title: t('reports.gosiTitle'),
+          companyName: compName,
+          branchName: storage.getSelectedBranchId() !== 'all' ? storage.getSelectedBranchId() : '',
+          period: reportMonth,
+          columns,
+          rows,
+          orientation: 'landscape',
+          direction: isEn ? 'ltr' : 'rtl',
+          totals: totalsRow,
+        });
       });
 
     // ==========================================
